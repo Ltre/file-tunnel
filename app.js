@@ -8561,10 +8561,13 @@ async function cloneForwardFileInfo(fileInfo, targetSessionId) {
 }
 
 async function forwardHistoryMessage(messageId) {
+    const sourceSessionId = state.sessionId, socket = state.socket, sender = state.deviceId;
+    const checkContext = () => { if (sourceSessionId !== state.sessionId || socket !== state.socket || sender !== state.deviceId) throw new Error('当前隧道已变化，请重新选择转发目标'); };
     const source = await getFromStore('messages', messageId);
     if (!source) throw new Error('找不到原传输记录');
     const targetSessionId = await chooseForwardTargetSession();
     if (!targetSessionId) return;
+    checkContext();
     localStorage.setItem(LAST_FORWARD_SESSION_STORAGE_KEY, targetSessionId);
     const message = {
         ...source,
@@ -8592,13 +8595,16 @@ async function forwardHistoryMessage(messageId) {
             totalSize: files.reduce((sum, file) => sum + (Number(file.size) || 0), 0)
         };
     }
-    await new Promise((resolve, reject) => {
-        state.socket.timeout(10000).emit('forward-message', { targetSessionId, message }, (err, response) => {
+    checkContext();
+    const response = await new Promise((resolve, reject) => {
+        socket.timeout(10000).emit('forward-message', { targetSessionId, message, targetDeviceId: tunnelDeviceId(targetSessionId), targetAccessGrant: savedTunnelGrant(targetSessionId) }, (err, response) => {
             if (err) return reject(new Error('服务器响应超时'));
-            if (!response?.ok) return reject(new Error(response?.error || '服务器拒绝转发'));
+            const failures = { 'target-tunnel-access-required':'目标隧道访问凭据无效，请重新加入后再试', 'permission-denied':'当前设备没有转发所需的隧道权限', 'forward-file-cache-required':'转发文件缓存尚未准备完成，请重试', 'forward-record-not-stored':'转发记录未保存，请检查目标隧道后重试' };
+            if (!response?.ok) return reject(new Error(failures[response?.error] || response?.error || '服务器拒绝转发'));
             resolve(response);
         });
     });
+    if (response.message) Object.assign(message, response.message);
     await saveToStore('messages', message);
     showAppToast('已转发到所选隧道');
     historyLog('history-message-forwarded', { messageId, targetMessageId: message.id, targetSessionId });

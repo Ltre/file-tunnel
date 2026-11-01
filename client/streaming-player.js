@@ -53,21 +53,29 @@
         slider.oninput = () => { volume = Number(slider.value); applyAudioPolicy(); update(); }; volumeLabel.append(slider); controls.append(volumeLabel);
         // Resume is also the user gesture for browsers that block audible autoplay.
         let fullscreen = false, landscape = false, controlsTimer, controlsPressed = false;
+        function hideFullscreenControls() {
+            clearTimeout(controlsTimer);
+            host.classList.remove('sc-fullscreen-controls-visible');
+        }
         function showFullscreenControls() {
             if (!fullscreen) return;
             host.classList.toggle('sc-fullscreen-controls-visible', true);
             clearTimeout(controlsTimer);
             controlsTimer = setTimeout(() => {
                 if (controlsPressed || dragging) { showFullscreenControls(); return; }
-                host.classList.remove('sc-fullscreen-controls-visible');
-            }, 3000);
+                hideFullscreenControls();
+            }, 2000);
         }
         const fullscreenKey = event => {
             if (event.key === 'Escape') { exitFullscreen(); return; }
             showFullscreenControls();
         };
         host.addEventListener('pointermove', event => { if (event.pointerType !== 'touch') showFullscreenControls(); });
-        host.addEventListener('click', event => { if (event.target?.closest('.sc-stage')) showFullscreenControls(); });
+        host.addEventListener('click', event => {
+            if (!fullscreen || !event.target?.closest('.sc-stage') || event.target.closest('button,a,input,select,textarea,[contenteditable]')) return;
+            if (host.classList.contains('sc-fullscreen-controls-visible')) hideFullscreenControls();
+            else showFullscreenControls();
+        });
         host.addEventListener('pointerdown', event => {
             if (!fullscreen || !event.target?.closest('.sc-local-controls,.sc-seek')) return;
             controlsPressed = true; showFullscreenControls();
@@ -90,8 +98,7 @@
         }
         function exitFullscreen() {
             fullscreen = false;
-            clearTimeout(controlsTimer); controlsPressed = false;
-            host.classList.remove('sc-fullscreen-controls-visible');
+            hideFullscreenControls(); controlsPressed = false;
             host.classList.remove('sc-media-fullscreen'); host.classList.remove('sc-fullscreen-rotated');
             global.removeEventListener('resize', resizeFullscreen);
             global.visualViewport?.removeEventListener('resize', resizeFullscreen);

@@ -16,7 +16,7 @@ function fixture({ readFails=false, bitmapFails=false, defer=false, controlledTi
     class Image {set src(_value){queueMicrotask(()=>this.onerror?.());}}
     const form=new Node('section');form.children.push(new Node('label'));
     const pendingCovers=new Map(),draft={coverId:''};
-    const ctx={document:{createElement:tag=>new Node(tag)},Image,FileReader:Reader,Blob,ArrayBuffer,queueMicrotask,
+    const ctx={document:{createElement:tag=>new Node(tag),createElementNS:(_namespace,tag)=>new Node(tag)},Image,FileReader:Reader,Blob,ArrayBuffer,queueMicrotask,
         setTimeout:controlledTimeouts?(run=>{timers.set(++timerId,run);return timerId;}):setTimeout,
         clearTimeout:controlledTimeouts?(id=>timers.delete(id)):clearTimeout,
         URL:{createObjectURL:blob=>{const value='blob:fixture-'+urls.length;urls.push({value,blob});return value;},revokeObjectURL:value=>released.push(value)},
@@ -25,7 +25,7 @@ function fixture({ readFails=false, bitmapFails=false, defer=false, controlledTi
             const token=new Uint8Array(await blob.arrayBuffer())[0],image={width:120,height:80,token,close(){released.push('bitmap:'+token);}};images.push(image);
             if(defer)await new Promise(resolve=>waiters.push({token,resolve}));return image;
         }},
-        pendingCovers,t:value=>value,ui:{stationId:'station'},uid:()=> 'token-'+urls.length,saveUi(){},main:new Node('main'),coverImage:()=>new Node('img'),button:(title,run)=>({title,run})};
+        pendingCovers,t:value=>value,ui:{stationId:'station'},uid:()=> 'token-'+urls.length,saveUi(){},main:new Node('main'),coverImage:()=>new Node('img'),button:(title,run)=>Object.assign(new Node('button'),{title,run})};
     const start=source.includes('    async function decodeCover(')?source.indexOf('    async function decodeCover('):source.indexOf('    function coverEditor(');
     vm.runInNewContext(source.slice(start,source.indexOf('    function title(')),ctx);ctx.coverEditor(form,draft,'station');
     const field=form.children.find(node=>node.tag==='label').inserted,input=field.children[0].children[0];

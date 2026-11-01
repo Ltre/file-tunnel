@@ -34,7 +34,7 @@ function permissionsFixture(t){
     const context={sessions,tunnelAccess,canUseTunnelCapability:(_s,_d,capability)=>readable&&capability==='read'};
     const helper=section(server,'function canReadForwardedFile(', 'function getSessionPermissionPayload(');
     assert.ok(helper,'the forwarded-file grant must be checked by the actual server middleware helper');vm.runInNewContext(helper,context);
-    return {...context,source,target,provider,viewer,setReadable:value=>{readable=value;}};
+    return {...context,context,source,target,provider,viewer,setReadable:value=>{readable=value;}};
 }
 test('a target-only viewer can request exactly its forwarded file without acquiring source tunnel access',t=>{
     const f=permissionsFixture(t),file={id:'forwarded-file',backupSourceSessionId:f.source,forwardedSourceGrant:f.tunnelAccess.issueFileForward(f.source,f.target,'record-id','forwarded-file')};
@@ -114,11 +114,11 @@ function forwardingFixture(t,{mode='collection',failAfter=Infinity}={}) {
         fileToArrayBuffer:file=>file.arrayBuffer(),saveToStore:async(store,value)=>saved.push({store,value}),notifyMusicLibraryAssetAvailable(){},
         fileAssetTransfer:{announce:async asset=>handlers.get('file-asset-available')({sessionId:f.source,asset})},enqueueMediaPosterCache(){},refreshFileMessage:async()=>{},historyLog(){}};
     let attempts=0;
-    sourceSocket.timeout=()=>({emit:(name,data,ack)=>++attempts>failAfter?ack(null,{ok:true,stored:false,reason:'message-too-large'}):handlers.get(name)(data,response=>ack(null,response))});
+    sourceSocket.timeout=()=>({emit:(name,data,ack)=>++attempts>failAfter?ack(null,{ok:true,stored:false,reason:'message-too-large'}):handlers.get(name)(JSON.parse(JSON.stringify(data)),response=>ack(null,JSON.parse(JSON.stringify(response))))});
     vm.runInNewContext(section(app,'function createFileInfoFromFile(', 'function canEditWebZip(')+
         section(app,'async function storeAndAnnounceFileAsset(', 'async function storeAndAnnounceExternalFileAsset(')+
         section(app,'async function sendDiskFilesToTunnel(', 'async function maybeImportTransferHistoryBackupFile('),appContext);
-    return {...f,handlers,events,saved,sourceState,sourceSocket,viewerHandlers,viewerSocket,received,
+    return {...f,handlers,events,saved,sourceState,sourceSocket,viewerHandlers,viewerSocket,received,appContext,environment,
         send:files=>appContext.sendDiskFilesToTunnel(files,{id:f.target,shortCode:'BBBBB'}),
         incoming:(event,data)=>{let allowed=false;middleware([event,data],()=>{allowed=true;viewerHandlers.get(event)?.(data);});return allowed;},
         sourceCall:(event,data)=>new Promise(resolve=>handlers.get(event)(data,resolve)),
@@ -129,6 +129,7 @@ function forwardingFixture(t,{mode='collection',failAfter=Infinity}={}) {
 
 test('real bridge and socket handlers forward a collection in place and relay its bytes to a B-only device',async t=>{
     const f=forwardingFixture(t),files=[new File(['first bytes'],'first.txt',{type:'text/plain'}),new File(['second bytes'],'second.txt',{type:'text/plain'})];
+    f.tunnelAccess.issueFileForward=()=>assert.fail('tunnel forwarding must not issue per-file credentials');
     Object.defineProperty(files[1],'relativePath',{value:'folder/second.txt'});
     await f.send(files);
     assert.equal(f.sourceState.sessionId,f.source);assert.equal(f.sourceState.socket,f.sourceSocket);
@@ -184,4 +185,87 @@ test('the actual forward handler does not broadcast an unstored record as if it 
     const f=forwardingFixture(t);f.setHistoryLimit(1);
     await assert.rejects(f.send([new File(['one'],'one.txt',{type:'text/plain'})]),/转发记录未保存/);
     assert.equal(f.sessions.get(f.target).history.length,0);assert.equal(f.events.filter(event=>event.name==='message').length,0);
+});
+
+for(const type of ['file','collection'])test('history '+type+' forwarding authorizes a target-only restore using the real client, forward handler and read gate',async t=>{
+    const f=forwardingFixture(t),body=Buffer.from('copied history file bytes'),file={id:'original-history-file',name:'history.txt',type:'text/plain',size:body.length,isSmall:false,isAsset:true};
+    f.tunnelAccess.issueFileForward=()=>assert.fail('ordinary tunnel forwarding must not issue per-file credentials');
+    const message={id:'original-history-record',type,sender:f.provider,sessionId:f.source,...(type==='file'?{fileInfo:file}:{collection:{id:'original-collection',files:[file]}})};
+    const stored=new Map([['messages:'+message.id,message],['files:'+file.id,{...file,data:body.buffer.slice(body.byteOffset,body.byteOffset+body.byteLength)}]]);
+    Object.assign(f.appContext,{getFromStore:async(store,id)=>stored.get(store+':'+id),saveToStore:async(store,value)=>{stored.set(store+':'+value.id,value);f.saved.push({store,value});},
+        chooseForwardTargetSession:async()=>f.target,LAST_FORWARD_SESSION_STORAGE_KEY:'history-forward',localStorage:{setItem(){}},getCollectionFiles:value=>value.collection.files,
+        hasCompleteFileCache:value=>Boolean(value?.data)});
+    f.environment.canUseTunnelCapability=(_session,_device,capability)=>['read','sendFile'].includes(capability);
+    vm.runInNewContext(section(app,'async function cloneForwardFileInfo(', 'async function downloadFileFromMessage('),f.appContext);
+    await f.appContext.forwardHistoryMessage(message.id);
+    const forwarded=f.sessions.get(f.target).history[0].message,copy=type==='file'?forwarded.fileInfo:forwarded.collection.files[0];
+    assert.notEqual(copy.id,file.id);assert.equal(stored.has('files:'+copy.id),true,'the forwarded file has its own cache entry');
+    const cachedRecord=stored.get('messages:'+forwarded.id),cachedCopy=type==='file'?cachedRecord.fileInfo:cachedRecord.collection.files[0];
+    assert.equal(cachedCopy.forwardedToSessionId,f.target,'the sender persists the accepted destination copy returned in the ACK');
+    assert.equal(copy.forwardedSourceGrant,undefined,'tunnel copies do not require newly issued per-file credentials');
+    assert.equal(f.incoming('file-asset-request',{sessionId:f.target,sourceSessionId:f.source,assetId:copy.id}),true,'restore must not report 来源隧道尚未获得访问权');
+    assert.equal(f.events.some(event=>event.name==='permission-denied'),false);
+    assert.equal((await f.sourceCall('file-asset-relay-start',{sessionId:f.source,to:f.viewer,asset:copy})).ok,true);
+    assert.equal((await f.sourceCall('file-asset-relay-chunk',{sessionId:f.source,to:f.viewer,assetId:copy.id,chunk:body})).ok,true);
+    assert.equal((await f.sourceCall('file-asset-relay-complete',{sessionId:f.source,to:f.viewer,assetId:copy.id})).ok,true);
+    assert.deepEqual(Buffer.concat(f.received),body,'the unchanged relay delivers the target-owned copy');
+    assert.equal(f.incoming('file-asset-request',{sessionId:f.target,sourceSessionId:f.source,assetId:file.id}),false,'the copied file does not grant access to the original asset');
+});
+
+test('legacy forwarded copies use persisted server forwarding records, not client-claimed source metadata',async t=>{
+    const f=permissionsFixture(t),dir=fs.mkdtempSync(path.join(os.tmpdir(),'legacy-forward-261101-'));
+    const store=await require('../server/infra-store').createInfraStore({dataDir:dir});
+    t.after(()=>{store.close();fs.rmSync(dir,{recursive:true,force:true});});f.context.infraStore=store;
+    const file={id:'forwarded-file',name:'copy.txt',size:12,type:'text/plain',backupSourceSessionId:f.source,forwardedToSessionId:f.target};
+    const message={id:'legacy-forward',sender:f.provider,type:'file',fileInfo:file,forwardedFrom:{sessionId:f.source,messageId:'old-original'}};
+    f.sessions.get(f.target).history.push({message});
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),false,'client fields alone do not authorize a private source file');
+    store.recordHistoryMessage(f.target,message,{source:'history-reconcile'});
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),false,'an ordinary client history upload is not a server forwarding record');
+    store.recordHistoryMessage(f.target,message,{source:'cross-tunnel-forward'});f.sessions.get(f.source).fileAssets.clear();
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),true,'an existing server-accepted copy can be restored after provider indexes disappear');
+    store.recordHistoryMessage(f.target,message,{source:'message-updated'});
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),true,'editing a copied record must retain its server-recorded forwarding provenance after restart');
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,'private-file'),false);
+    file.forwardedSourceGrant='f1.invalid';assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),true,'a stale legacy field cannot take away server-recorded copy ownership');delete file.forwardedSourceGrant;
+    message.sender='forged-sender';assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),false);message.sender=f.provider;
+    file.forwardedToSessionId='other-target';assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),false);file.forwardedToSessionId=f.target;
+    store.run('UPDATE transfer_records SET payload_json = ? WHERE session_id = ? AND message_id = ?',[JSON.stringify({...message,fileInfo:{...file,id:'another-file'}}),f.target,message.id]);
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),false,'the persisted file must match the requested copy');
+    const forged={...message,fileInfo:{...file,id:'private-original'}};store.recordHistoryMessage(f.target,forged,{source:'message-updated'});f.sessions.get(f.target).history=[{message:forged}];
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,forged.fileInfo.id),false,'editing a forwarded record cannot assign its ownership to another private source file');
+    f.sessions.get(f.target).history=[{message}];
+    store.recordHistoryMessage(f.target,message,{source:'cross-tunnel-forward'});store.run('UPDATE transfer_records SET deleted_at = 1 WHERE session_id = ? AND message_id = ?',[f.target,message.id]);
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),false,'a deleted server record cannot be revived by client history');
+});
+
+test('a reconciled legacy copy with an inherited old credential retains ownership, but cannot claim the original private file',async t=>{
+    const f=permissionsFixture(t),dir=fs.mkdtempSync(path.join(os.tmpdir(),'reconciled-copy-261101-'));
+    const store=await require('../server/infra-store').createInfraStore({dataDir:dir});t.after(()=>{store.close();fs.rmSync(dir,{recursive:true,force:true});});f.context.infraStore=store;
+    const original={id:'old-original',sender:f.provider,type:'file',fileInfo:{id:'private-file',name:'copy.txt',size:12,type:'text/plain',forwardedSourceGrant:'f1.inherited'}};
+    store.recordHistoryMessage(f.source,original,{source:'socket-message'});
+    const file={...original.fileInfo,id:'forwarded-file',backupSourceSessionId:f.source,forwardedToSessionId:f.target};
+    const message={id:'reconciled-copy',sender:f.provider,type:'file',fileInfo:file,forwardedFrom:{sessionId:f.source,messageId:original.id}};
+    store.recordFileAsset(f.source,file,{sourceDeviceId:f.provider});store.recordHistoryMessage(f.target,message,{source:'history-reconcile'});f.sessions.get(f.target).history=[{message}];
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),true,'the server recorded a separate copy registered by the forwarder, despite overwritten audit source and inherited old credential');
+    const savedCopyId=file.id;file.id='private-file';assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),false,'a client cannot substitute the private original ID');file.id=savedCopyId;
+    const duplicate={...original,id:'same-name-original',fileInfo:{...original.fileInfo,id:'other-private-file'}};store.recordHistoryMessage(f.source,duplicate,{source:'socket-message'});
+    const forged={...message,fileInfo:{...file,id:'private-file'},forwardedFrom:{sessionId:f.source,messageId:duplicate.id}};
+    store.recordHistoryMessage(f.target,forged,{source:'history-reconcile'});f.sessions.get(f.target).history=[{message:forged}];
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,'private-file'),false,'same-name, same-size source records cannot be used to impersonate a distinct forwarded copy');
+    store.recordHistoryMessage(f.target,message,{source:'history-reconcile'});f.sessions.get(f.target).history=[{message}];
+    message.forwardedFrom.messageId='unrelated-record';assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),false);message.forwardedFrom.messageId=original.id;
+    store.run('UPDATE file_assets SET source_device_id = ? WHERE session_id = ? AND file_id = ?',['another-provider',f.source,file.id]);
+    assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),false,'client metadata cannot assign someone else’s private asset to a copied record');
+    store.run('UPDATE file_assets SET source_device_id = ? WHERE session_id = ? AND file_id = ?',[f.provider,f.source,file.id]);
+    store.markHistoryDeleted(f.source,original.id);assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),true,'deleting the original source record does not delete the destination copy');
+    store.markHistoryDeleted(f.target,message.id);assert.equal(f.canReadForwardedFile(f.target,f.viewer,f.source,file.id),false);
+});
+
+test('a destination cache serves its own copy without consulting the original source permission',async t=>{
+    const f=forwardingFixture(t);await f.send([new File(['owned bytes'],'copy.txt',{type:'text/plain'})]);
+    const file=f.sessions.get(f.target).history[0].message.fileInfo;
+    f.sessions.get(f.source).fileAssets.clear();f.sessions.get(f.target).fileAssets.set(file.id,{metadata:file,providers:new Set([f.viewer])});
+    const data={sessionId:f.target,sourceSessionId:f.source,assetId:file.id};
+    assert.equal(f.incoming('file-asset-discovery',data),true);assert.equal(data.sourceSessionId,f.target,'use the destination provider, not the old source locator');
 });

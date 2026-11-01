@@ -35,6 +35,7 @@ async function fixture(t) {
     let baseline = snapshot(), body, focus, navigation, openings = 0;
     const calls = [], ui = { drafts: {}, stationId: station.id };
     const context = { ready: Promise.resolve(), dirty: () => false, open: async () => { openings++; }, account: () => '', structuredClone,
+        checkSaveDurations:async()=>{},syncSourceCache:async()=>{},
         config: { tunnels: async () => [{ sessionId: 'tunnel', accessGrant: 'grant' }], currentTunnel: () => 'tunnel' },
         uid: () => 'inserted', ui, localConfig: () => structuredClone(baseline), saveConfig: (_id, value) => { baseline = structuredClone(value); }, saveUi() {}, closeDialog() {},
         navigate: (...args) => { navigation = args; }, pendingCovers: new Map(), saveFlights: new Map(), discardCover() {},
@@ -48,7 +49,7 @@ async function fixture(t) {
             if (route.endsWith('/revision')) return service.revision(station.id, actor, value);
             return service.edit(station.id, actor, value);
         } };
-    vm.runInNewContext(section('    async function reconcileRevision(', '    function editor(') + section('    async function importRecord(', '    async function sendMarkdown('), context);
+    vm.runInNewContext(section('    const revisionInput =', '    function editor(') + section('    async function importRecord(', '    async function sendMarkdown('), context);
     return { context, ui, service, actor, station, snapshot, calls,
         baseline: value => { baseline = structuredClone(value); }, getBaseline: () => structuredClone(baseline), body: () => body,
         navigation: () => navigation, openings: () => openings,

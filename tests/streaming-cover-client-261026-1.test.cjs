@@ -22,10 +22,10 @@ async function choose({ decodeFails = false, loadFails = false, blobFails = fals
         readAsArrayBuffer(file) { setImmediate(() => { if (readFails) this.onerror?.(); else { this.result = new ArrayBuffer(file.size); this.onload?.(); } }); }
         readAsDataURL() { setImmediate(() => { if (readFails) this.onerror?.(); else { this.result = 'data:image/png;base64,fixture'; this.onload?.(); } }); }
     }
-    const context = { document: { createElement: tag => new Node(tag) }, Image, FileReader, Blob, ArrayBuffer, global: {}, setTimeout, clearTimeout,
+    const context = { document: { createElement: tag => new Node(tag), createElementNS: (_namespace, tag) => new Node(tag) }, Image, FileReader, Blob, ArrayBuffer, global: {}, setTimeout, clearTimeout,
         URL: { createObjectURL: () => 'blob:test', revokeObjectURL: value => revoked.push(value) },
         pendingCovers: covers, t: value => value, ui: { stationId: 'station' }, uid: () => 'cover-token', saveUi() {},
-        main: new Node('main'), coverImage: () => new Node('img'), button: (title, run) => ({ title, run }) };
+        main: new Node('main'), coverImage: () => new Node('img'), button: (title, run) => Object.assign(new Node('button'), { title, run }) };
     vm.runInNewContext(code.slice(code.indexOf('    async function decodeCover('), code.indexOf('    function title(')), context);
     context.coverEditor(form, d, 'station');
     const field = form.children.find(node => node.tag === 'label').inserted;

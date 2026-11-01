@@ -135,7 +135,7 @@ test('a late empty list response cannot replace the latest nonempty discovery re
     const source = read('client/streaming-console.js'), pending = [], list = {children:[],replaceChildren(){this.children=[];},append(node){this.children.push(node);}};
     const node = () => ({dataset:{},children:Array.from({length:6},()=>({classList:{add(){}}})),classList:{add(){}},setAttribute(){},remove(){},prepend(){},append(){},querySelector(){return node();}});
     const context = {listRequest:0,renderVersion:1,ui:{view:'discover'},account:() => 'alice',currentUser:{id:'alice'},discoveryTimes:{},
-        request:() => new Promise(resolve => pending.push(resolve)),main:{querySelector:() => list,append(){}},lastList:[],t:value => value,localStorage:{setItem(){}},key:String,userText:String,stateLabel:String,
+        request:() => new Promise(resolve => pending.push(resolve)),main:{querySelector:() => list,append(){}},lastList:[],t:value => value,localStorage:{setItem(){}},key:String,esc:String,userText:String,stateLabel:String,
         button:node,coverImage:node,document:{createElement:node}};
     const start = source.indexOf('    async function refreshList(');
     vm.runInNewContext(source.slice(start,source.indexOf('    async function createStation(',start))+';this.refresh=refreshList;',context);

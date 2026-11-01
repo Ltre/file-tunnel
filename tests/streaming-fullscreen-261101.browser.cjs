@@ -26,12 +26,17 @@ const {createFixture}=require('./support/streaming-console-fixture.cjs');
     const geometry=await page.evaluate(()=>{const host=document.querySelector('.sc-player'),stage=host.querySelector('.sc-stage'),video=host.querySelector('video');return{host:host.clientHeight,stage:stage.clientHeight,video:video.clientHeight,rotated:host.classList.contains('sc-fullscreen-rotated')};});
     assert.equal(geometry.rotated,true);if(!(geometry.stage>=geometry.host-1&&geometry.video>=geometry.host-1))failures.push('rotated video does not fill the full player height '+JSON.stringify({control,theme,...geometry}));
    }
-   await page.waitForTimeout(3250);if(await page.locator('.sc-local-pause').isVisible())failures.push('controls did not hide after three seconds');
+   await page.waitForTimeout(2250);if(await page.locator('.sc-local-pause').isVisible())failures.push('controls did not hide after two seconds');
+   const blank=await page.locator('.sc-stage').evaluate(node=>{const r=node.getBoundingClientRect();return{x:r.left+r.width/2,y:r.top+r.height/3};});
+   await page.touchscreen.tap(blank.x,blank.y);assert.equal(await page.locator('.sc-local-pause').isVisible(),true,'a tap reveals hidden controls');
+   await page.touchscreen.tap(blank.x,blank.y);if(await page.locator('.sc-local-pause').isVisible())failures.push('a second tap did not immediately hide controls');
    await page.mouse.move(100,100);assert.equal(await page.locator('.sc-local-pause').isVisible(),true,'mouse movement reveals controls');
+   await page.mouse.click(blank.x,blank.y);if(await page.locator('.sc-local-pause').isVisible())failures.push('a mouse click did not immediately hide visible controls');
+   await page.mouse.move(110,110);
    const sound=page.locator('.sc-sound-toggle');await sound.click();assert.equal(await page.locator('.sc-media>video').evaluate(video=>video.muted),true,'revealed mute remains functional');
    await page.locator('.sc-exit-fullscreen').click();assert.equal(await page.locator('.sc-local-pause').isVisible(),true,'normal controls are restored on exit');
    await page.evaluate(()=>player.close());assert.equal(await page.locator('.sc-player').count(),0);
   }
-  assert.deepEqual(errors,[]);assert.deepEqual(failures,[]);console.log('PASS viewer/controller fullscreen: full-height video, default hidden controls, touch/mouse reveal, three-second hide, mute and exit');
+  assert.deepEqual(errors,[]);assert.deepEqual(failures,[]);console.log('PASS viewer/controller fullscreen: full-height video, default hidden controls, touch/mouse reveal, two-second hide, tap/click hide, mute and exit');
  }finally{await browser?.close();await f.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

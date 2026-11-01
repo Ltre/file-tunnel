@@ -13,7 +13,7 @@ test('resource inventory finds a complete referenced cache stored under a differ
 });
 test('an expired invitation closes the originating preview after the console opens',async()=>{
     let opened=false,closed=false;const source=read('client/streaming-console.js');
-    const context={open:async()=>{opened=true;},inspectInvitation:async()=>{throw Error('STREAM_INVITE_EXPIRED');},error(){}};
+    const context={open:async()=>{opened=true;},inspectInvitation:async(_token,{onOpen})=>{await context.open();onOpen?.();throw Error('STREAM_INVITE_EXPIRED');},error(){}};
     vm.runInNewContext(section(source,'    async function openInvitation(', '    async function sendMarkdown('),context);
     assert.equal(await context.openInvitation('expired',{onOpen:()=>{assert.ok(opened);closed=true;}}),false);assert.equal(closed,true);
 });
@@ -58,7 +58,8 @@ for(const before of [true,false])test('adding a record keeps existing program id
 test('saving a cover does not discard a newer selection made while saving',async()=>{
     const revoked=[],d={name:'Name',configVersion:1,items:[],coverPending:'old'},saved=[];let release;
     const covers=new Map([['station',{token:'old',blob:new Blob(['old']),url:'old-url'}]]);
-    const context={saveFlights:new Map(),ui:{drafts:{station:d}},localConfig:()=>null,account:()=> 'owner',structuredClone,pendingCovers:covers,
+    const context={saveFlights:new Map(),ui:{stationId:'station',drafts:{station:d}},localConfig:()=>null,account:()=> 'owner',structuredClone,pendingCovers:covers,
+        checkSaveDurations:async()=>{},syncSourceCache:async()=>{},
         t:value=>value,reconcileRevision:async()=>{},saveConfig:(_id,value)=>saved.push(value),saveUi(){},URL:{revokeObjectURL:url=>revoked.push(url)},
         request:async(route)=>route.endsWith('/cover')?{coverId:'saved-hash'}:new Promise(resolve=>{release=resolve;})};
     vm.runInNewContext(section(read('client/streaming-console.js'),'    async function persistDraft(', '    function editor('),context);

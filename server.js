@@ -3910,8 +3910,34 @@ function canReadForwardedFile(targetSessionId, deviceId, sourceSessionId, fileId
         const message = entry.message;
         if (Array.isArray(target.deletedMessageIds) ? target.deletedMessageIds.includes(message?.id) : target.deletedMessageIds?.has?.(message?.id)) return false;
         const files = message?.type === 'file' ? [message.fileInfo] : message?.type === 'collection' ? message.collection?.files || [] : [];
-        return files.some(file => file?.id === fileId && file.backupSourceSessionId === sourceSessionId &&
-            tunnelAccess.verifyFileForward(file.forwardedSourceGrant, sourceSessionId, targetSessionId, message.id, fileId));
+        return files.some(file => {
+            if (file?.id !== fileId || file.backupSourceSessionId !== sourceSessionId) return false;
+            if (target.fileAssets?.get(fileId)?.providers?.size) return true;
+            if (entry.forwardedSourceSessionId === sourceSessionId && file.forwardedToSessionId === targetSessionId) return true;
+            // Read compatibility for copies accepted before ownership was recorded;
+            // new tunnel forwards do not issue or require per-file credentials.
+            if (file.forwardedSourceGrant && tunnelAccess.verifyFileForward(file.forwardedSourceGrant, sourceSessionId, targetSessionId, message.id, fileId)) return true;
+            // Older records may have inherited a predecessor's credential, and
+            // history reconciliation may have replaced their audit source.
+            if (file.forwardedToSessionId !== targetSessionId) return false;
+            try {
+                const saved = infraStore?.get('SELECT source, sender_device_id, payload_json, deleted_at FROM transfer_records WHERE session_id = ? AND message_id = ?', [targetSessionId, message.id]);
+                if (!saved || saved.deleted_at || saved.sender_device_id !== message.sender) return false;
+                const recorded = JSON.parse(saved.payload_json), savedFiles = recorded.type === 'file' ? [recorded.fileInfo] : recorded.type === 'collection' ? recorded.collection?.files || [] : [];
+                const copy = savedFiles.find(value => value?.id === fileId && value.backupSourceSessionId === sourceSessionId && value.forwardedToSessionId === targetSessionId);
+                if (recorded.id !== message.id || !copy) return false;
+                if (saved.source === 'cross-tunnel-forward') return true;
+                const origin = recorded.forwardedFrom;
+                if (origin?.sessionId !== sourceSessionId || !origin.messageId || origin.messageId !== message.forwardedFrom?.messageId || origin.sessionId !== message.forwardedFrom?.sessionId) return false;
+                const asset = infraStore.get('SELECT source_device_id, file_name, mime_type, file_size FROM file_assets WHERE session_id = ? AND file_id = ?', [sourceSessionId, fileId]);
+                if (!asset || asset.source_device_id !== saved.sender_device_id || asset.file_name !== copy.name || asset.mime_type !== copy.type || Number(asset.file_size) !== Number(copy.size)) return false;
+                if (infraStore.get('SELECT 1 AS found FROM transfer_files WHERE session_id = ? AND file_id = ? LIMIT 1', [sourceSessionId, fileId])) return false;
+                const predecessor = infraStore.get('SELECT payload_json FROM transfer_records WHERE session_id = ? AND message_id = ?', [sourceSessionId, origin.messageId]);
+                if (!predecessor) return false;
+                const original = JSON.parse(predecessor.payload_json), originals = original.type === 'file' ? [original.fileInfo] : original.type === 'collection' ? original.collection?.files || [] : [];
+                return originals.some(value => value?.id && value.id !== fileId && value.name === copy.name && value.type === copy.type && Number(value.size) === Number(copy.size));
+            } catch (_) { return false; }
+        });
     }) || false;
 }
 
@@ -10027,7 +10053,8 @@ io.on('connection', (socket) => {
                 infraStore.findShortCodeForSession(targetSessionId)
             );
             let targetSenderId = currentDevice;
-            if (data.fileSource === 'disk-cache') {
+            const forwardingFiles = data.fileSource === 'disk-cache' || ['file', 'collection'].includes(message.type);
+            if (forwardingFiles) {
                 const targetDeviceId = sanitizeString(data.targetDeviceId, 80);
                 if (!tunnelAccess.verify(data.targetAccessGrant, targetSessionId, targetDeviceId)) return typeof ack === 'function' && ack({ ok:false, error:'target-tunnel-access-required' });
                 targetSenderId = targetDeviceId;
@@ -10037,8 +10064,10 @@ io.on('connection', (socket) => {
                 for (const file of files) {
                     file.backupSourceSessionId = currentSession;
                     file.forwardedToSessionId = targetSessionId;
-                    file.forwardedSourceGrant = tunnelAccess.issueFileForward(currentSession,targetSessionId,message.id,file.id);
+                    delete file.forwardedSourceGrant;
                 }
+                message.sessionId = targetSessionId;
+                if (message.forwardedFrom) message.forwardedFrom = { ...message.forwardedFrom, sessionId: currentSession };
             }
             const forwardCapability = ['text', 'markdown'].includes(message.type) ? 'sendText' : message.type === 'rich' ? 'sendRich' : 'sendFile';
             if (!canUseTunnelCapability(targetSession, targetSenderId, forwardCapability)) {
@@ -10051,10 +10080,11 @@ io.on('connection', (socket) => {
                 source: 'cross-tunnel-forward',
                 auditFileAssets: getSessionAuditFileAssets(sourceSession)
             });
-            if (data.fileSource === 'disk-cache' && !historyResult.stored && !['duplicate','duplicate-file'].includes(historyResult.reason)) return typeof ack === 'function' && ack({ok:false,error:'forward-record-not-stored',reason:historyResult.reason || ''});
+            if (forwardingFiles && historyResult.stored) targetSession.history.find(entry => entry.message.id === message.id).forwardedSourceSessionId = currentSession;
+            if (forwardingFiles && !historyResult.stored && !['duplicate','duplicate-file'].includes(historyResult.reason)) return typeof ack === 'function' && ack({ok:false,error:'forward-record-not-stored',reason:historyResult.reason || ''});
             emitToReadableSessionDevices(targetSession, 'message', { message });
             scheduleSessionHistoryBroadcast(targetSessionId, 'cross-tunnel-forward');
-            if (typeof ack === 'function') ack({ ok: true, stored: Boolean(historyResult.stored), reason:historyResult.reason || '', ...(data.fileSource === 'disk-cache' ? {message} : {}) });
+            if (typeof ack === 'function') ack({ ok: true, stored: Boolean(historyResult.stored), reason:historyResult.reason || '', ...(forwardingFiles ? {message} : {}) });
         } catch (err) {
             console.error('forward-message error:', err);
             if (typeof ack === 'function') ack({ ok: false, error: 'forward-failed' });

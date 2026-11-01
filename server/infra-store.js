@@ -536,7 +536,7 @@ class InfraStore {
         const now = normalizeTimestamp(options.now, Date.now());
         const createdAt = normalizeTimestamp(message.timestamp || message.createdAt || message.created_at, now);
         const previous = this.get(
-            'SELECT deleted_at FROM transfer_records WHERE session_id = ? AND message_id = ?',
+            'SELECT deleted_at, source FROM transfer_records WHERE session_id = ? AND message_id = ?',
             [sessionId, messageId]
         );
         if (previous?.deleted_at) {
@@ -554,6 +554,14 @@ class InfraStore {
         });
         const fileIds = new Set(files.map(file => file.fileId));
         const payloadJson = safeJsonStringify(message, '{}');
+        let historySource = String(options.source || message.source || '');
+        if (previous?.source === 'cross-tunnel-forward' && historySource !== 'cross-tunnel-forward') {
+            const prior = this.get('SELECT payload_json FROM transfer_records WHERE session_id = ? AND message_id = ?', [sessionId, messageId]);
+            const copies = value => value?.type === 'file' ? [value.fileInfo].filter(Boolean) : Array.isArray(value?.collection?.files) ? value.collection.files.filter(Boolean) : [];
+            const scope = file => JSON.stringify([file.id, file.backupSourceSessionId, file.forwardedToSessionId]);
+            const accepted = new Set(copies(safeJsonParse(prior?.payload_json, null)).map(scope));
+            if (copies(message).every(file => !file.backupSourceSessionId || accepted.has(scope(file)))) historySource = 'cross-tunnel-forward';
+        }
 
         this.run('BEGIN');
         try {
@@ -575,7 +583,7 @@ class InfraStore {
                 messageId,
                 String(message.type || 'unknown'),
                 String(message.sender || message.senderDeviceId || message.sender_device_id || ''),
-                String(options.source || message.source || ''),
+                historySource,
                 createdAt,
                 now,
                 payloadJson

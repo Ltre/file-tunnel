@@ -35,6 +35,7 @@
     const localFiles = new Map(), players = new Map(), noticeIds = new Map();
     const pendingCovers = new Map();
     let pendingEditorFocus = null;
+    let invitationAttempt = 0, invitationResult = null;
     const durationJobs = new Map(), durationQueue = [], previewTickets = new Map(); let durationActive = 0, refreshEditorItems, candidateObservers = [];
     const key = name => 'streaming:' + config.deviceId() + ':' + name;
     const account = () => global.DiskClient?.getAccount() || '';
@@ -381,6 +382,7 @@
     }
     function minimize(fromHistory = false) {
         if (!root || root.hidden) return;
+        ++invitationAttempt;
         root.hidden = true; saveUi(); global.dispatchEvent(new Event('streaming-visibility-change'));
         presentPlayers();
         if (!fromHistory && history.state?.streamingConsole) { const next = { ...history.state }; delete next.streamingConsole; history.replaceState(next, '', location.href); }
@@ -413,6 +415,7 @@
     }
     function navigate(view, stationId = '', force = false, originList) {
         if (!force && dirty() && !(stationId === ui.stationId && ['edit', 'import'].includes(view))) { confirmLeave(() => navigate(view, stationId, true, originList)); return; }
+        ++invitationAttempt;
         // A list/editor is a presentation change; selecting another station
         // replaces the sole playback owner, including a background/small player.
         if(['watch','control'].includes(view)&&smallWindow)smallWindow.hidden=true;
@@ -514,7 +517,7 @@
         renderedIdentity = viewIdentity();
         for (const [key, player] of players) if (['watch', 'control'].includes(ui.view) && key !== ui.stationId + ':' + account()) { player.close(); players.delete(key); }
         candidateObservers.forEach(observer => observer.disconnect()); candidateObservers = []; pickerVersion++;
-        parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-split-import', 'sc-disk-import', 'sc-editor-page', 'sc-viewer-page','sc-has-cover','sc-basic-open'); banner.hidden = true;
+        parkPlayers(); main.replaceChildren(); main.classList.remove('sc-import-page', 'sc-split-import', 'sc-disk-import', 'sc-editor-page', 'sc-viewer-page','sc-has-cover','sc-basic-open','sc-invitation-result','sc-invitation-unavailable'); banner.hidden = true;
         root.querySelectorAll('[data-sc-view]').forEach(node => node.classList.toggle('selected', node.dataset.scView === ui.view));
         const loading = document.createElement('p'); loading.className = 'sc-page-loading'; loading.setAttribute('role','status'); loading.textContent = t('正在加载串流台界面…'); main.append(loading); main.setAttribute('aria-busy','true');
         try {
@@ -535,6 +538,7 @@
             else if (ui.view === 'access') await accessPage(version);
             else if (ui.view === 'blacklist') await blacklistPage(version);
             else if (ui.view === 'invitation') invitationPage();
+            else if (ui.view === 'invitation-result') invitationResultPage();
             if (version !== renderVersion) return;
             root.querySelector('.sc-main').scrollTop = ui.scroll[ui.view + ':' + ui.stationId] || 0;
             global.TunnelI18n?.translate(root);
@@ -1615,10 +1619,39 @@
     function invitationPage() {
         title('通过邀请进入'); const input = document.createElement('textarea'); input.placeholder = t('粘贴邀请链接或邀请码'); input.setAttribute('aria-label', t('邀请链接或邀请码')); main.append(input, button('核对邀请', () => inspectInvitation(input.value)));
     }
-    async function inspectInvitation(value) {
-        const token = String(value.includes('stream_invite=') ? new URL(value, location.origin).searchParams.get('stream_invite') || '' : value).trim();
-        const response = await request('/invitations/' + encodeURIComponent(token), 'POST', { decision: 'accept' });
-        closeDialog(); await open(); navigate('watch', response.stationId, false, 'discover'); await sync();
+    function invitationResultPage() {
+        const result = invitationResult || {}, code = result.code || '';
+        const unavailable = ['STREAM_INVITE_INVALID','STREAM_INVITE_REVOKED','STREAM_INVITE_EXPIRED'].includes(code);
+        main.classList.add('sc-invitation-result'); main.classList.toggle('sc-invitation-unavailable', unavailable);
+        title(result.pending ? '正在核对邀请…' : unavailable ? '邀请已失效' : '暂时无法使用此邀请');
+        const status = document.createElement('p'); status.className = 'sc-card'; status.setAttribute('role','status');
+        const messages = { STREAM_INVITE_INVALID:'邀请不存在或已被删除，请索取新邀请', STREAM_INVITE_REVOKED:'邀请已撤销，请索取新邀请', STREAM_INVITE_EXPIRED:'邀请已到期，请索取新邀请', STREAM_INVITE_DEVICE:'这是发给其它设备的定向邀请', STREAM_KICKED:'此设备已被踢出，请联系创建者重新允许', STREAM_INVITE_CONTEXT_CHANGED:'账号已切换，请重新核对邀请' };
+        status.textContent = t(result.pending ? '正在核对邀请，请稍候…' : messages[code] || '邀请核对未完成，请检查连接后重试或索取新邀请') + (code ? ' [' + code + ']' : '');
+        const actions = document.createElement('div'); actions.className = 'sc-actions';
+        if (!result.pending && !unavailable && result.token) actions.append(button('重试', () => inspectInvitation(result.token)));
+        actions.append(button('通过邀请进入', () => navigate('invitation')), button('返回列表', () => navigate('discover')));
+        main.append(status, actions);
+    }
+    async function inspectInvitation(value, { onOpen } = {}) {
+        await ready;
+        if (dirty()) { confirmLeave(() => inspectInvitation(value, { onOpen }).catch(error)); return false; }
+        const input = String(value || '').trim(); let token;
+        try { token = input.includes('stream_invite=') ? new URL(input, location.origin).searchParams.get('stream_invite') || '' : input; } catch (_) { token = ''; }
+        ensureUi(); closeDialog(); invitationResult = { pending:true, token }; navigate('invitation-result', '', true);
+        const attempt = ++invitationAttempt, selected = account();
+        await open(); onOpen?.();
+        const active = () => attempt === invitationAttempt && ui.view === 'invitation-result' && isOpen();
+        try {
+            if (!token) throw Error('STREAM_INVITE_INVALID');
+            const response = await request('/invitations/' + encodeURIComponent(token), 'POST', { decision: 'accept' }, { accountId:selected });
+            if (!active()) return false;
+            if (selected !== account()) throw Error('STREAM_INVITE_CONTEXT_CHANGED');
+            invitationResult = null; navigate('watch', response.stationId, false, 'discover'); await sync(); return true;
+        } catch (cause) {
+            if (!active()) return false;
+            invitationResult = { token, code:selected !== account() ? 'STREAM_INVITE_CONTEXT_CHANGED' : cause.message };
+            await render(); return false;
+        }
     }
     async function notification(item, action) {
         await ready; const invite = item.data;
@@ -1626,12 +1659,12 @@
             global.NotificationCenter?.close(true);
             const next = { ...(history.state || {}) }; delete next.notificationCenter; history.replaceState(next, '', location.href);
         }
-        if (action === 'open') { await open(); await inspectInvitation(invite.token); return; }
+        if (action === 'open' || action === 'accept') { await inspectInvitation(invite.token); return; }
         const response = await request('/invitations/' + encodeURIComponent(invite.token), 'POST', { decision: action === 'accept' ? 'accept' : 'reject' });
         if (response.accepted) { await open(); navigate('watch', response.stationId); } await sync();
     }
     async function openInvitation(token, { onOpen } = {}) {
-        try { await open(); onOpen?.(); await inspectInvitation(token); return true; } catch (cause) { error(cause); return false; }
+        try { return await inspectInvitation(token, { onOpen }); } catch (cause) { error(cause); return false; }
     }
     function canImportRecord(message) {
         if (['markdown','text','rich'].includes(message.type)) return Boolean(String(message.markdown || message.text || message.content || '').trim());
@@ -1765,12 +1798,12 @@
             const fullscreen = document.querySelector('.sc-media-fullscreen');
             if (fullscreen) { for (const player of players.values()) if (player.element === fullscreen) player.exitFullscreen(); restore(); return; }
             if (!isOpen()) return;
-            const parent = { import: 'edit', edit: ui.returnList || 'discover', access: 'control', blacklist: ui.returnList || 'discover', watch: ui.returnList || 'discover', control: ui.returnList || 'discover', creator: 'discover', invitation: 'discover' }[ui.view];
+            const parent = { import: 'edit', edit: ui.returnList || 'discover', access: 'control', blacklist: ui.returnList || 'discover', watch: ui.returnList || 'discover', control: ui.returnList || 'discover', creator: 'discover', invitation: 'discover', 'invitation-result': 'invitation' }[ui.view];
             if (parent) { navigate(parent, ['edit', 'watch', 'control'].includes(parent) ? ui.stationId : ''); restore(); }
             else minimize(true);
         });
         document.addEventListener('keydown', event => { if (event.key !== 'Escape' || document.querySelector('.sc-markdown-dialog')) return; if (dialog) { event.preventDefault(); event.stopImmediatePropagation(); closeDialog(); } else if (document.querySelector('.sc-media-fullscreen')) { event.preventDefault(); event.stopImmediatePropagation(); for (const player of players.values()) player.exitFullscreen(); } else if (isOpen()) { event.preventDefault(); minimize(); } }, true);
-        ready.then(async () => { const url = entryUrl; if (url.searchParams.has('stream')) { await open(); navigate('watch', url.searchParams.get('stream'), false, 'discover'); } if (url.searchParams.has('stream_invite')) { await open(); await inspectInvitation(url.searchParams.get('stream_invite')); } }).catch(error);
+        ready.then(async () => { const url = entryUrl; if (url.searchParams.has('stream_invite')) await inspectInvitation(url.searchParams.get('stream_invite')); else if (url.searchParams.has('stream')) { await open(); navigate('watch', url.searchParams.get('stream'), false, 'discover'); } }).catch(error);
         return ready;
     }
     global.StreamingConsole = { init, open, minimize, close: closeConsole, isOpen, ownsHistory: () => isOpen() || Boolean(dialog), notification, compose, sendMarkdown, openInvitation, canImportRecord, importRecord, request, inspectInvitation, whenReady: () => ready, clearViewerCache:()=>peerMedia?.clearCache() };

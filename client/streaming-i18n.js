@@ -3,6 +3,10 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['邀请已失效','Invitation is no longer valid'],['暂时无法使用此邀请','This invitation cannot be used right now'],
+        ['正在核对邀请…','Checking the invitation…'],['正在核对邀请，请稍候…','Checking the invitation. Please wait…'],
+        ['邀请核对未完成，请检查连接后重试或索取新邀请','The invitation could not be checked. Check the connection and retry, or request a new invitation'],
+        ['账号已切换，请重新核对邀请','The account changed. Check the invitation again'],
         ['节目来源','Program source'],['正在读取节目来源…','Reading program source…'],
         ['节目来源读取失败，请关闭后重试','Could not read the program source. Close this dialog and retry'],
         ['来源隧道','Source tunnel'],['前往该隧道锚点查看','View the source tunnel record'],['前往网盘查看','View in drive'],
