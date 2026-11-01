@@ -1,9 +1,9 @@
 # 初始 Overview 覆盖验收
 
-> **当前实现源码锚点 Commit**：`10ebe1000b9bd57097f90e51337a251ba17734f3`  
+> **当前实现源码锚点 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
 > **历史覆盖起点 Commit**：`192ecbcb9ea27a9754f8622041165f9712a8fbf4`  
 > **第一个实际代码版本 Commit**：`0224de3d07f2160055eef58dd1907235aed3aef4`  
-> **文档更新时间**：`2026-10-17`
+> **文档更新时间**：`2026-11-01`
 
 ## 1. 本文件解决什么问题
 
@@ -59,28 +59,29 @@
 
 `b422e438fe50f78fdacd84ac1dff34a30a3d43ba`
 
-第一轮增量维护整理至 `059099607...`；第二轮整理至 `b1788ca4...`；第三轮增量整理至：
+第一轮整理至 `059099607...`，第二轮至 `b1788ca4...`，第三轮至 `10ebe100...`；第四轮已整理至：
 
-`10ebe1000b9bd57097f90e51337a251ba17734f3`
+`99283320188a43a4234986f2eaa9d9d9374e2bd3`
 
 提交时间：
 
-`2026-10-16T19:18:08Z`
+`2026-10-19T15:50:25Z`
 
 提交：
 
-`Merge branch 'dev/doc-overview' into dev/2610-s2`（代码与文档共存的合并快照；按非 Overview 路径核对当前事实）
+`Update promps-hint.txt`（当前分支 HEAD 的提交标题；本轮业务代码更新先于这项资料提交）
 
-本轮以三段连续 Git compare 核对 `b1788ca4...` → `eadf20b2...` → `866a9fe7...` → `10ebe100...`，绕开 GitHub 单次比较最多返回 300 个变更文件的限制；始终排除 `docs/overview/**` 自身。第三轮非 Overview 变化包括：
+第三轮用分段 Git compare 规避 300 文件上限；第四轮只在当前分支比较 `10ebe100...` → `992833201...`，过滤 `docs/overview/**` 后核实 **69 个新增提交、78 个非 Overview 变更文件**（包含源码、测试、Devlog、Prompt/规划资料）。第四轮业务变更主要包括：
 
-- 新增独立媒体提取与收藏子系统，`media-library.sqlite`、FFmpeg 截图/Clip/压缩版本、正式网盘收藏及恢复；
-- 隧道签名成员凭据与短码轮换、磁链持久登记、文件范围授权、后台侧栏与设备/磁链拆页；
-- Telegram 多目标转发/取消与状态节流、音轨修正版预览、下载自动缓存控制、网盘上传命名及登录深链恢复；
-- PWA 首页 CSS 外置、网页工坊两种预览入口、相关测试和 261013—261017 开发日志。
+- 历史成员受限旧码证明、扫码签名 j1 凭据、设备失授权后的显式重新加入与权限隔离；
+- 独立媒体库的安全删除、末帧回退、密集工作片段复用、会话文件夹分流收藏；
+- 网盘预览最小化、分区真实显示名、渐进上传源端心跳/失联判定；
+- SNS/YouTube 手写格式、限流来源诊断、**服务端文件直接转存网盘**及旧浏览器待办迁移；
+- 传输记录复制文件名、文件选择提示和 1—4 行文本输入等行为调整。
 
 所以：
 
-> 当前 Overview 的代码事实终点已推进到 `10ebe1000b9bd57097f90e51337a251ba17734f3`；初始 `b422e438...` 只作为历史冻结锚点保留。
+> 当前 Overview 的代码事实终点已推进到 `99283320188a43a4234986f2eaa9d9d9374e2bd3`；初始 `b422e438...` 只作为历史冻结锚点保留。
 
 ## 4. 当前页面覆盖表
 
@@ -216,6 +217,7 @@
 
 - `server/sns-downloader.js`
 - `server/youtube-premium.js`
+- `server/download-task-source.js` → `telegram-drive.md`、`download-transcode.md`（来源任务验证与服务端流接入）
 - `server/audio-track-repair.js`
 - `server/video-transcode.js`
 - `server/task-auto-cache.js`
@@ -288,7 +290,7 @@
 
 - `server/vclient-control.js` → `vclient.md`
 
-**验收结果：当前 73 个 `server/**` 文件全部有明确模块归属。**
+**验收结果：当前 74 个 `server/**` 文件全部有明确模块归属。**
 
 ## 7. 工具链覆盖
 
@@ -335,6 +337,7 @@
 
 ## 8. 根入口覆盖
 
+- `AGENTS.md` → 参与项目协作和 Overview 维护的长期约定，参见 `master.md`、`admin-security-deployment.md`；
 - `app.js` → 多模块前端 orchestrator，详见 `architecture.md` 与各功能模块；
 - `server.js` → 多模块服务端 orchestrator，详见 `architecture.md` 与各功能模块；
 - `service-worker.js` → `pwa-ui.md` + `web-workshop.md`；
@@ -395,13 +398,15 @@
 - 260925—260926 平板三栏、H.265 输出后缀、Web ZIP manifest/fullscreen/路径引用联动、Telegram Drive 协同；
 - 9/27—30 SQLite/S3、Chat 字典、上传回滚与 PWA 启动；10/1—12 共享 Content、渐进上传、分区/Mount、回收站、多账号与 Markdown。
 
+2026-10 后续已整理至 261019-2：二维码与旧成员资格、媒体结果删除和收藏目录、网盘源端失联、YouTube 手写格式及服务端转存。测试对应 `tests/features-261017-3/4.test.cjs`、`features-261018-1.test.cjs`、`features-261019-1.test.cjs`、`features-261019-2*.test.cjs` 及 browser fixture。
+
 ## 10. 计划/Idea 的处理
 
 以下存在于 Prompt/Idea，但在当前源码锚点中不能写成当前实现：
 
 - 完整 AWS S3 服务、分布式业务锁与真实公网端到端验收；
 - 旧 JSON 迁移与 public/private 来源调整已有工具，但正式环境需人工确认；
-- `prompts/ideas/streaming-console-QA-261016.md`、`prompts/resources/streaming-console-QA-261016/**` 是串流控制台规划/原型，不是已合入独立串流服务；
+- `prompts/ideas/streaming-console-QA-261016.md`、`prompts/ideas/streaming-console-phase1-guide-261019.md`、`prompts/ideas/streaming-console-phase2-guide-261019.md` 和相应原型属于规划资料，不是已合入的独立串流服务；
 - `prompts/dev-prompt-logs/dev-2610.md` 等 Idea 须逐项与当前代码核实，不能整体判定。
 
 这些材料仍应保留为未来调研入口，但不能混进当前行为章节。
@@ -416,7 +421,7 @@
 - [x] 主要历史阶段有时间线；
 - [x] 当前 26 个 Pages 有归属；
 - [x] 当前 64 个 Client 文件有归属；
-- [x] 当前 73 个 Server 文件有归属；
+- [x] 当前 74 个 Server 文件有归属；
 - [x] 当前工具/VClient 有归属；
 - [x] 未来 Idea 与当前实现分离；
 - [x] Overview 后续增量扫描规则已明确；
@@ -425,4 +430,4 @@
 
 以上条件已经全部满足，**初始 Overview 创建阶段正式关闭**。
 
-当前已完成第三轮增量维护，下一轮源码比较锚点为 `10ebe1000b9bd57097f90e51337a251ba17734f3`，维护规则以 [VERSION.md](./VERSION.md) 为准。
+当前已完成第四轮增量维护，下一轮源码比较锚点为 `99283320188a43a4234986f2eaa9d9d9374e2bd3`，维护规则以 [VERSION.md](./VERSION.md) 为准。
