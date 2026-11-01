@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v108-content-v8-controller-ui-261031-3';
+const CACHE_NAME = 'instant-tunnel-v111-content-v8-lumen-restore-261101';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -19,6 +19,8 @@ const APP_SHELL = [
     '/client/index.css',
     '/client/themes-legacy.css',
     '/client/themes.css',
+    '/client/themes-blamen.css',
+    '/client/themes-lusns.css',
     '/client/theme-preference.js',
     '/client/disk-client.js',
     '/client/disk-operation-order.js',

@@ -343,6 +343,10 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) :is(
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(
   .file-cache-retry,.chat-jump-btn,.file-preview-nav
 ) {background:var(--ui-soft);color:var(--ui-accent);border-color:var(--ui-line);}
+/* A faded missing-file bubble needs a restore control with its own contrast. */
+body[data-theme="lumen"] #appShell .file-cache-retry {background:#334164;color:#fff;border-color:#bcc6dc;box-shadow:0 2px 8px #26324d33;}
+body[data-theme="lumen"] #appShell .file-cache-retry span {border-top-color:#fff;border-right-color:#fff;}
+body[data-theme="lumen"] #appShell .file-cache-retry span::before,body[data-theme="lumen"] #appShell .file-cache-retry span::after {border-color:#fff;}
 body:is([data-theme="lumen"],[data-theme="orbit"]) :is(
   .rich-diff-line.added,.resource-tag.protected,.disk-folder-state,
   .web-workshop-save-status[data-state=saved]

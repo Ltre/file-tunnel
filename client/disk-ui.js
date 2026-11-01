@@ -201,6 +201,7 @@ function appendTelegramDriveAddAccount(target, status, { embedded = false } = {}
     if (status.oidcConfigured) {
         const login = document.createElement('button'); login.type = 'button'; login.className = 'btn btn-primary';
         login.textContent = status.oidcMode === 'mock' ? '添加 / 重新验证 Mock 账号' : '添加 / 重新验证 Telegram 账号';
+        login.dataset.signInMode = status.oidcMode;
         login.onclick = () => { if (!embedded) closeTelegramDriveDialog(null); startTelegramDriveLogin(embedded ? target : null); }; target.append(login);
     }
     if (status.oidcMode !== 'mock') appendPasskeyControls(target, null, { addAccount: true, embedded });

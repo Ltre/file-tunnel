@@ -107,6 +107,7 @@ async function run() {
             player.apply({ id: 'minimal', configVersion: 1, serverTime: Date.now(), items: [{ id: 'item', kind: 'image', stay: 10000 }], playback: { itemId: 'item', status: 'playing', position: 0, version: 1 } });
         });
         await page.getByRole('button', { name: '媒体全屏', exact: true }).click();
+        await page.locator('.sc-stage').click({ position: { x: 50, y: 50 } });
         const mute = page.locator('.sc-sound-toggle');
         for (let i = 0; i < 16; i++) {
             await page.evaluate(theme => { document.body.dataset.theme = theme; }, i < 8 ? 'lumen' : 'orbit');

@@ -1,0 +1,52 @@
+'use strict';
+const assert=require('node:assert/strict'),path=require('node:path'),fs=require('node:fs'),os=require('node:os');
+const {chromium}=require(process.argv[2]||path.join(os.homedir(),'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'));
+const {createFixture}=require('./support/streaming-console-fixture.cjs');
+(async()=>{
+ const f=await createFixture();let browser;
+ try{
+  const actor={deviceId:'invite-images-261101',userId:null,logins:[]},secret=actor.deviceId.repeat(3);
+  f.streaming.service.register(actor.deviceId,secret,'海边电台');
+  const station=f.streaming.service.create(actor,{name:'午后海岸 · 慢下来听风',creationId:'invite-images-261101'});
+  f.app.get('/invite-images-261101',(_req,res)=>res.type('html').send(`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/client/index.css"><link rel="stylesheet" href="/client/streaming-console.css"><link rel="stylesheet" href="/client/themes.css"><script src="/client/vendor/web-markdown/marked-18.0.14.umd.js"></script><script src="/client/vendor/web-markdown/purify-3.4.16.min.js"></script><script src="/client/tunnel-markdown.js"></script><script src="/client/streaming-player.js"></script><script src="/client/streaming-console.js"></script></head><body data-theme="lumen"><div id="messages"></div><script>
+  window.sentInvites=[];window.launch=()=>{localStorage.setItem('streaming:${actor.deviceId}:key',${JSON.stringify(secret)});localStorage.setItem('streaming:${actor.deviceId}:ui',JSON.stringify({view:'control',stationId:${JSON.stringify(station.id)},scroll:{},drafts:{}}));TunnelMarkdown.init({});StreamingConsole.init({deviceId:()=>${JSON.stringify(actor.deviceId)},deviceName:()=> '海边电台',devices:()=>[],tunnels:async()=>[{sessionId:'fixture-tunnel',accessGrant:'fixture-proof',shortCode:'ABCDE'}],currentTunnel:()=> 'fixture-tunnel',onMessage:message=>{sentInvites.push(message);TunnelMarkdown.mount(document.getElementById('messages'),message);},toast:()=>{},home:()=>{}});StreamingConsole.open();};
+  </script></body></html>`));
+  browser=await chromium.launch({channel:'chrome',headless:true});const page=await browser.newPage({viewport:{width:1100,height:900}}),errors=[];page.setDefaultTimeout(12000);page.on('pageerror',error=>errors.push(error.message));
+  await page.goto(f.base+'/invite-images-261101');
+  const pictures=await page.evaluate(()=>[0,1,2].map(index=>{const canvas=document.createElement('canvas');canvas.width=640;canvas.height=640;const g=canvas.getContext('2d'),sky=g.createLinearGradient(0,0,0,640);sky.addColorStop(0,['#b7d3dd','#e9c9a3','#91b3c9'][index]);sky.addColorStop(.52,['#e9ded2','#efc9ba','#e5d7cd'][index]);sky.addColorStop(.53,'#4c7785');sky.addColorStop(1,'#a2b7b8');g.fillStyle=sky;g.fillRect(0,0,640,640);g.fillStyle='#fff1';for(let y=355;y<640;y+=16){g.fillRect(0,y,640,2);}g.fillStyle='#fff9';g.beginPath();g.arc(430,140,55,0,Math.PI*2);g.fill();g.fillStyle='#b5a58d';g.beginPath();g.moveTo(0,540);g.quadraticCurveTo(320,440,640,590);g.lineTo(640,640);g.lineTo(0,640);g.fill();return canvas.toDataURL('image/png');}));
+  const headers={'X-Stream-Device':actor.deviceId,'X-Stream-Key':secret,'Content-Type':'image/png'};
+  f.records[0].fileInfo={...f.records[0].fileInfo,data:pictures[1],size:Buffer.from(pictures[1].split(',')[1],'base64').length};
+  const uploaded=await page.request.post(f.base+'/api/streaming/stations/'+station.id+'/cover',{headers,data:Buffer.from(pictures[0].split(',')[1],'base64')});assert.equal(uploaded.status(),200);const {coverId}=await uploaded.json();
+  for(let i=1;i<=2;i++)f.records.push({id:'poster-image-'+i,type:'file',fileInfo:{id:'poster-asset-'+i,name:'海岸照片-'+i+'.png',type:'image/png',size:Buffer.from(pictures[i].split(',')[1],'base64').length,data:pictures[i]}});
+  await f.streaming.service.edit(station.id,actor,{configVersion:1,coverId,loop:true,items:[{id:'poster-current',stay:300,source:{kind:'tunnel',sessionId:'fixture-tunnel',messageId:'image-record',fileId:'image-asset',accessGrant:'fixture-proof'}},...[1,2].map(i=>({id:'poster-program-'+i,stay:300,source:{kind:'tunnel',sessionId:'fixture-tunnel',messageId:'poster-image-'+i,fileId:'poster-asset-'+i,accessGrant:'fixture-proof'}}))]});
+  f.streaming.service.visibility(station.id,actor,{visibility:'public',version:f.streaming.service.station(station.id).playback.version});
+  await page.evaluate(()=>launch());await page.locator('.sc-media>img').waitFor();await page.waitForFunction(()=>document.querySelector('.sc-media>img')?.naturalWidth>0);
+  await page.getByRole('button',{name:'邀请与可见性',exact:true}).click();await page.locator('.sc-thumbnail').check();
+  await page.getByRole('button',{name:'生成通用邀请',exact:true}).click();await page.getByRole('button',{name:'转发到隧道',exact:true}).click();await page.waitForFunction(()=>sentInvites.length===1);
+  await page.evaluate(()=>TunnelMarkdown.preview(sentInvites[0]));await page.locator('.sc-markdown-reader .sc-document[aria-busy="false"]').waitFor();
+  assert.ok(await page.locator('.sc-markdown-reader .sc-document img').count()>0,'an invitation with a captured thumbnail must show an image in its Markdown reader');
+  const result=await page.evaluate(async()=>{const message=sentInvites[0],images=[...document.querySelectorAll('.sc-markdown-reader .sc-document img')];return{message,images:images.map(image=>({src:image.getAttribute('src'),width:image.naturalWidth})),archive:await(await TunnelMarkdown.archive(message)).text()};});
+  assert.ok(result.images.every(image=>image.src&&image.width>0),'invitation image bytes decode');assert.match(result.message.markdown,/!\[/,'the image belongs to the Markdown content, not only an inline card field');assert.equal(result.archive,result.message.markdown);
+  const posterData=result.images[0].src;assert.ok(posterData.startsWith('data:image/jpeg;base64,'),'new invitations use a self-contained poster rather than a private source URL');assert.ok(posterData.length<=150000,'poster has a bounded image footprint');assert.equal('poster' in result.message,false,'the tunnel message carries the poster bytes once');
+  fs.mkdirSync(path.resolve('.npm-cache/invitation-images-261101'),{recursive:true});await page.screenshot({path:path.resolve('.npm-cache/invitation-images-261101/markdown-poster.png')});
+  const poster=Buffer.from(posterData.split(',')[1],'base64');fs.writeFileSync(path.resolve('.npm-cache/invitation-images-261101/invitation-poster.jpg'),poster);
+  assert.ok(result.message.markdown.lastIndexOf('[打开邀请]')>result.message.markdown.indexOf(posterData),'the text invitation link is below its poster');
+  await page.setViewportSize({width:390,height:844});
+  assert.ok(await page.locator('.sc-markdown-reader .sc-document').evaluate(node=>{const image=node.querySelector('img'),clip=node.getBoundingClientRect(),box=image.getBoundingClientRect();return node.scrollWidth<=node.clientWidth&&box.left>=clip.left-1&&box.right<=clip.right+1&&box.height>150;}),'mobile Markdown poster remains readable without horizontal overflow');
+  await page.screenshot({path:path.resolve('.npm-cache/invitation-images-261101/markdown-poster-mobile.png')});await page.setViewportSize({width:1100,height:900});
+  await page.getByRole('button',{name:'关闭',exact:true}).click();
+  const legacy={id:'legacy-thumbnail',purpose:'stream-invitation',markdown:'[旧邀请](/?stream_invite=old)',thumbnail:pictures[1]};
+  await page.evaluate(message=>TunnelMarkdown.preview(message),legacy);await page.locator('.sc-markdown-reader .sc-document[aria-busy="false"]').waitFor();assert.equal(await page.locator('.sc-markdown-reader .sc-document img').count(),1,'legacy invitation thumbnail remains visible in the reader');await page.getByRole('button',{name:'关闭',exact:true}).click();
+  const blocked=await page.evaluate(data=>{const target=document.createElement('div');TunnelMarkdown.render(target,'![untrusted]('+data+')');return target.querySelector('img')?.hasAttribute('src');},pictures[1]);assert.equal(blocked,false,'ordinary Markdown does not acquire a new data-URI permission');
+  await page.locator('.sc-thumbnail').uncheck();const mediaRequests=[];page.on('request',request=>{if(request.url().includes('/ticket')||request.url().includes('/api/streaming/media/'))mediaRequests.push(request.url());});
+  await page.getByRole('button',{name:'生成通用邀请',exact:true}).click();await page.getByRole('button',{name:'转发到隧道',exact:true}).click();await page.waitForFunction(()=>sentInvites.length===2);assert.deepEqual(mediaRequests,[],'unchecked thumbnail does not read playlist media');
+  assert.ok(await page.evaluate(()=>sentInvites[1].markdown.includes('](data:image/')),'cover-and-title poster remains available without a media capture');assert.deepEqual(errors,[]);
+  await page.evaluate(()=>TunnelMarkdown.preview(sentInvites[1]));await page.locator('.sc-markdown-reader .sc-document[aria-busy="false"]').waitFor();
+  await page.screenshot({path:path.resolve('.npm-cache/invitation-images-261101/markdown-cover-only.png')});
+  await page.getByRole('button',{name:'关闭',exact:true}).click();
+  f.streaming.service.station(station.id).name='很长的串流台名称用于检查海报标题断行和截断，不应覆盖节目数量、入口按钮或下方的节目图片 / Long station title';
+  await page.getByRole('button',{name:'返回操控',exact:true}).click();await page.getByRole('button',{name:'邀请与可见性',exact:true}).click();await page.getByRole('button',{name:'生成通用邀请',exact:true}).click();await page.getByRole('button',{name:'转发到隧道',exact:true}).click();await page.waitForFunction(()=>sentInvites.length===3);
+  const longPoster=await page.evaluate(()=>sentInvites[2].markdown.match(/\]\((data:image\/jpeg;base64,[A-Za-z0-9+/=]+)\)/)[1]);fs.writeFileSync(path.resolve('.npm-cache/invitation-images-261101/long-title-poster.jpg'),Buffer.from(longPoster.split(',')[1],'base64'));
+  console.log('PASS invitation poster: actual creation, saved image bytes, tunnel Markdown reader/archive, legacy thumbnail compatibility, bounded capture, unchecked media privacy');
+ }finally{await browser?.close();await f.close();}
+})().catch(error=>{console.error(error);process.exitCode=1;});

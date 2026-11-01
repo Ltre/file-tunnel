@@ -74,13 +74,17 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
     let service;
     function send(input, actor) {
         const current = authorize(input, actor, 'sendText');
-        let body = String(input.body || '').trim(), purpose = null, thumbnail = null;
+        let body = String(input.body || '').trim(), purpose = null, thumbnail = null, poster = null, legacyInviteBody;
         if (input.inviteToken) {
-            const { station } = service.inspectInvite(input.inviteToken, actor);
+            const { station, thumbnail: captured, poster: invitationPoster } = service.inspectInvite(input.inviteToken, actor);
             if (!service.invitations(station.id, actor).some(invite => invite.token === input.inviteToken && !['revoked', 'expired'].includes(invite.status))) deny('STREAM_INVITE_INVALID');
-            body = `串流邀请 · ${station.name.replace(/[\r\n[\]()*_!<>]/g, ' ')}\n\n[打开邀请](/?stream_invite=${encodeURIComponent(input.inviteToken)})`;
+            body = `串流邀请 · ${station.name.replace(/[\r\n[\]()*_!<>]/g, ' ')}`;
+            legacyInviteBody = body + `\n\n[打开邀请](/?stream_invite=${encodeURIComponent(input.inviteToken)})`;
             purpose = 'stream-invitation';
-            thumbnail = service.inspectInvite(input.inviteToken, actor).thumbnail;
+            thumbnail = captured; poster = invitationPoster;
+            const image = poster || thumbnail;
+            if (image) body += `\n\n[![${poster ? '串流台邀请海报' : '邀请缩略图'}](${image})](/?stream_invite=${encodeURIComponent(input.inviteToken)})`;
+            body += `\n\n[打开邀请](/?stream_invite=${encodeURIComponent(input.inviteToken)})`;
         }
         if (!body || body.length > 200000) deny('STREAM_MESSAGE_INVALID');
         if (references(body).length > 100) deny('STREAM_REFERENCE_LIMIT');
@@ -90,7 +94,8 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
         if (!/^[\w-]{8,100}$/.test(messageId)) deny('STREAM_MESSAGE_INVALID');
         const existing = messages(input.sessionId).find(message => message.id === messageId);
         if (existing) {
-            if (existing.sender !== actor.deviceId || existing.markdown !== body) deny('STREAM_CONFLICT');
+            const legacyRetry = purpose === 'stream-invitation' && !poster && existing.purpose === purpose && existing.markdown === legacyInviteBody && existing.thumbnail === thumbnail;
+            if (existing.sender !== actor.deviceId || existing.markdown !== body && !legacyRetry) deny('STREAM_CONFLICT');
             if (input.inviteToken) service.markInviteSent(input.inviteToken, actor);
             return { ok: true, messageId, message: existing, duplicate: true };
         }

@@ -3,6 +3,16 @@
     const refs = body => [...new Set([...String(body).matchAll(/tunnel-blob:([\w-]+)\/([\w.-]+)\/([\w.-]+)/g)].map(match => match[0]))];
     const t = value => global.TunnelI18n?.t(value) || value;
     let options = {};
+    const invitationImage = (value, limit = 150000) => typeof value === 'string' && value.length <= limit && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value) ? value : '';
+    function invitationImages(message) {
+        if (message.purpose !== 'stream-invitation') return [];
+        const embedded = String(message.markdown || '').length <= 200000 ? [...String(message.markdown || '').matchAll(/\]\((data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+)\)/g)].map(match => invitationImage(match[1])).filter(Boolean) : [];
+        return [...new Set([...embedded, invitationImage(message.thumbnail, 90000)])].filter(Boolean).slice(0, 2);
+    }
+    function recordBody(message) {
+        const body = String(message.markdown || ''), legacy = message.purpose === 'stream-invitation' && invitationImage(message.thumbnail, 90000);
+        return legacy && !body.includes(legacy) ? body + '\n\n![' + t('邀请缩略图') + '](' + legacy + ')' : body;
+    }
     function fromHtml(html, sessionId = '') {
         const root = document.createElement('div'); root.innerHTML = html;
         const escape = value => String(value).replace(/([\\`*_[\]<>])/g, '\\$1');
@@ -103,7 +113,7 @@
         const layer = document.createElement('div'); layer.className = 'sc-dialog sc-markdown-dialog sc-markdown-reader';
         const panel = document.createElement('section'), header = document.createElement('header'), title = document.createElement('strong'), content = document.createElement('div'), status = document.createElement('p');
         title.textContent = t('Markdown 预览'); panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); content.className = 'sc-document message-content';
-        let resolved; const controller = new AbortController();
+        let resolved; const controller = new AbortController(), body = recordBody(message), images = invitationImages(message);
         const close = () => { controller.abort(); resolved?.close(); layer.remove(); document.removeEventListener('keydown', escape, true); };
         const escape = event => { if (event.key === 'Escape' && [...document.querySelectorAll('.sc-markdown-dialog')].at(-1) === layer) { event.preventDefault(); event.stopImmediatePropagation(); close(); } };
         const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.textContent = t('关闭'); dismiss.onclick = close;
@@ -119,13 +129,13 @@
             content.hidden = true; content.replaceChildren(); loading.hidden = false; content.setAttribute('aria-busy', 'true'); status.textContent = ''; retry.hidden = true;
             resolved?.close(); resolved = undefined;
             try {
-                if (refs(message.markdown).length) resolved = await resolve(message.markdown);
+                if (refs(body).length) resolved = await resolve(body);
                 if (!layer.isConnected) { resolved?.close(); return; }
-                render(content, message.markdown, resolved?.mapping, { onInvitation: close });
+                render(content, body, resolved?.mapping, { onInvitation: close, images });
                 await waitForImages(content, controller.signal);
             } catch (error) {
                 if (!layer.isConnected) return;
-                if (!content.childNodes.length) render(content, message.markdown, undefined, { onInvitation: close });
+                if (!content.childNodes.length) render(content, body, undefined, { onInvitation: close, images });
                 status.textContent = t('部分引用资源不可读取，可检查来源后重试') + ' [' + error.message + ']'; retry.hidden = false;
             } finally {
                 if (layer.isConnected) { content.hidden = false; loading.hidden = true; content.setAttribute('aria-busy', 'false'); }
@@ -143,7 +153,7 @@
             if (signal.aborted) aborted();
         })));
     }
-    function render(target, body, mapping = new Map(), { onInvitation } = {}) {
+    function render(target, body, mapping = new Map(), { onInvitation, images = [] } = {}) {
         target.classList?.toggle('sc-markdown-plain', !global.marked || !global.DOMPurify);
         if (!global.marked || !global.DOMPurify) { target.textContent = body; return; }
         let source = String(body); const placeholders = new Map();
@@ -162,9 +172,9 @@
                 if (value) node.setAttribute(attribute, value);
             }
         });
-        const urls = new Set(mapping.values());
+        const urls = new Set(mapping.values()), allowedImages = new Set(images.filter(value => invitationImage(value)));
         target.querySelectorAll('img,audio,video,source').forEach(node => {
-            if (!urls.has(node.getAttribute('src'))) { node.removeAttribute('src'); node.setAttribute('aria-label', t('引用资源未获准或已失效')); node.setAttribute('title', t('引用资源未获准或已失效')); if (node.tagName === 'IMG') node.alt = (node.alt ? node.alt + ' · ' : '') + t('引用资源未获准或已失效'); }
+            if (!urls.has(node.getAttribute('src')) && !(node.tagName === 'IMG' && allowedImages.has(node.getAttribute('src')))) { node.removeAttribute('src'); node.setAttribute('aria-label', t('引用资源未获准或已失效')); node.setAttribute('title', t('引用资源未获准或已失效')); if (node.tagName === 'IMG') node.alt = (node.alt ? node.alt + ' · ' : '') + t('引用资源未获准或已失效'); }
             if (node.matches('audio,video')) node.controls = true;
         });
         target.querySelectorAll('a').forEach(node => {
@@ -196,10 +206,11 @@
         return { mapping, blobs, close() { mapping.forEach(value => URL.revokeObjectURL(value)); } };
     }
     async function archive(message) {
-        if (!refs(message.markdown).length) return new File([message.markdown], 'markdown-' + message.id + '.md', { type: 'text/markdown' });
-        const resolved = await resolve(message.markdown);
+        const content = recordBody(message);
+        if (!refs(content).length) return new File([content], 'markdown-' + message.id + '.md', { type: 'text/markdown' });
+        const resolved = await resolve(content);
         try {
-            let body = message.markdown;
+            let body = content;
             const files = resolved.blobs.map(({ url, blob }, index) => {
                 const name = 'resources/' + String(index + 1) + '-' + (options.referenceName?.(url) || 'resource');
                 body = body.split(url).join(name);
@@ -211,7 +222,8 @@
     }
     function mount(target, message) {
         const wrapper = document.createElement('div'); wrapper.className = 'tunnel-markdown';
-        const preview = document.createElement('div'); preview.className = 'tunnel-markdown-preview message-content'; render(preview, message.markdown);
+        const body = recordBody(message), images = invitationImages(message);
+        const preview = document.createElement('div'); preview.className = 'tunnel-markdown-preview message-content'; render(preview, body, undefined, { images });
         const status = document.createElement('p'); status.className = 'sc-message-status';
         const actions = document.createElement('div'); actions.className = 'sc-actions';
         const expand = document.createElement('button'); expand.type = 'button'; expand.className = 'sc-markdown-expand'; expand.textContent = t('展开');
@@ -221,12 +233,11 @@
         actions.append(expand);
         if (message.purpose === 'stream-invitation') {
             const purpose = document.createElement('strong'); purpose.textContent = t('串流邀请'); wrapper.append(purpose);
-            if (/^data:image\/(?:png|jpeg|webp);base64,/.test(message.thumbnail || '') && message.thumbnail.length <= 90000) { const image = document.createElement('img'); image.className = 'sc-invite-thumbnail'; image.alt = t('邀请缩略图'); image.src = message.thumbnail; wrapper.append(image); }
         }
         wrapper.append(preview, actions, status); target.append(wrapper);
-        if (refs(message.markdown).length) resolve(message.markdown).then(result => {
+        if (refs(body).length) resolve(body).then(result => {
             if (!target.isConnected) { result.close(); return; }
-            render(preview, message.markdown, result.mapping);
+            render(preview, body, result.mapping, { images });
             const observer = new MutationObserver(() => { if (!target.isConnected) { result.close(); observer.disconnect(); } }); observer.observe(document.body, { childList: true, subtree: true });
         }).catch(() => { status.textContent = t('部分引用资源不可读取，可检查来源后重试'); });
     }

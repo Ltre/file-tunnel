@@ -11,7 +11,7 @@ const root = path.resolve(__dirname, '..');
 const sw = fs.readFileSync(path.join(root, 'service-worker.js'), 'utf8');
 const current = sw.match(/const CACHE_NAME = '([^']+)'/)[1];
 const previous = 'instant-tunnel-v100-content-v8-import-261029-4';
-const assets = ['/app.js', '/client/disk-ui.js', '/client/streaming-console.js', '/client/streaming-cache.js', '/client/streaming-peers.js', '/client/streaming-player.js', '/client/streaming-i18n.js', '/client/sns-post-i18n.js', '/client/themes.css', '/client/themes-legacy.css', '/client/theme-preference.js', '/client/index.css', '/client/streaming-console.css', '/client/icons/streaming.png'];
+const assets = ['/app.js', '/client/disk-ui.js', '/client/streaming-console.js', '/client/streaming-cache.js', '/client/streaming-peers.js', '/client/streaming-player.js', '/client/streaming-i18n.js', '/client/sns-post-i18n.js', '/client/themes.css', '/client/themes-legacy.css', '/client/themes-blamen.css', '/client/themes-lusns.css', '/client/theme-preference.js', '/client/index.css', '/client/streaming-console.css', '/client/icons/streaming.png'];
 async function run() {
     let upgraded = false, browser;
     const f = await createFixture({ serviceWorker: () => upgraded ? sw : sw.replace(current, previous) });
@@ -48,7 +48,7 @@ async function run() {
         }, 'orbit');
         const results=[];
         await context.setOffline(true);
-        for (const theme of ['orbit','lumen']) {
+        for (const theme of ['orbit','lumen','blamen','lusns']) {
             await page.evaluate(name => localStorage.setItem('uiTheme',name), theme);
             await page.reload({ waitUntil:'domcontentloaded' });
             await page.waitForFunction(name => document.body.dataset.theme === name && [...document.styleSheets].some(s => s.href?.endsWith('/client/themes.css')), theme);
@@ -57,9 +57,9 @@ async function run() {
                 for (const url of paths) {const r=await fetch(url);resources.push({url,status:r.status,bytes:(await r.arrayBuffer()).byteLength});}
                 const db=await new Promise(resolve=>{const r=indexedDB.open('theme-offline-business-sentinel');r.onsuccess=()=>resolve(r.result);});
                 const sentinel=await new Promise(resolve=>{const r=db.transaction('records').objectStore('records').get('draft');r.onsuccess=()=>resolve(r.result);});db.close();
-                return {theme:document.body.dataset.theme,ink:getComputedStyle(document.body).color,resources,sentinel,caches:await caches.keys(),previewRecovery:typeof releaseStoredFileUrl==='function'&&typeof scheduleFileObjectUrlCleanup==='function'};
+                return {theme:document.body.dataset.theme,ink:getComputedStyle(document.body).color,homeInk:getComputedStyle(document.getElementById('appShell')).color,resources,sentinel,caches:await caches.keys(),previewRecovery:typeof releaseStoredFileUrl==='function'&&typeof scheduleFileObjectUrlCleanup==='function'};
             }, assets);
-            assert.equal(result.theme,theme);assert.equal(result.ink,theme==='orbit'?'rgb(232, 235, 250)':'rgb(37, 41, 67)');
+            assert.equal(result.theme,theme);if(['blamen','lusns'].includes(theme))assert.equal(result.homeInk,'rgb(21, 27, 62)');else assert.equal(result.ink,theme==='orbit'?'rgb(232, 235, 250)':'rgb(37, 41, 67)');
             assert.ok(result.resources.every(r=>r.status===200&&r.bytes>0));assert.equal(result.sentinel,'unchanged');
             assert.equal(result.previewRecovery,true,'offline shell must load the new preview URL lifecycle code');
             assert.ok(result.caches.includes(current));assert.ok(!result.caches.includes(previous));
@@ -67,7 +67,7 @@ async function run() {
             await page.screenshot({path:path.join(output,theme+'-offline.png')});
         }
         fs.writeFileSync(path.join(output,'report.json'),JSON.stringify({workerUpgrade:previous+' -> '+current,results},null,2));
-        console.log('PASS actual Service Worker upgrade and offline Lumen/Orbit reload; theme assets readable, independent IndexedDB sentinel retained');
+        console.log('PASS actual Service Worker upgrade and offline Lumen/Orbit/Blamen/Lusns reload; theme assets readable, independent IndexedDB sentinel retained');
     } finally {await browser?.close();await f.close();}
 }
 run().catch(error=>{console.error(error);process.exitCode=1;});

@@ -100,6 +100,8 @@
     <link rel="stylesheet" href="/client/account-ui.css">
     <link rel="stylesheet" href="/client/disk-directory-picker.css">
     <link rel="stylesheet" href="/client/tunnel-landing.css">
+    <link rel="stylesheet" href="/client/themes-blamen.css">
+    <link rel="stylesheet" href="/client/themes-lusns.css">
     <link rel="stylesheet" href="/client/themes.css">
     <script defer src="/client/theme-preference.js"></script>
 </head>
@@ -108,7 +110,7 @@
         // Apply only the saved visual preference before the loading layer can paint.
         try {
             const startupTheme = localStorage.getItem('uiTheme');
-            if (startupTheme === 'lumen' || startupTheme === 'orbit') document.body.dataset.theme = startupTheme;
+            if (['lumen','orbit','blamen','lusns'].includes(startupTheme)) document.body.dataset.theme = startupTheme;
         } catch (_) {}
     </script>
     <div id="tunnelStartupLoading" role="status" aria-live="polite">
@@ -162,6 +164,8 @@
         <button class="theme-quick-option" type="button" role="menuitem" data-theme="classic">Classic</button>
         <button class="theme-quick-option" type="button" role="menuitem" data-theme="atelier">Atelier</button>
         <button class="theme-quick-option" type="button" role="menuitem" data-theme="social">Social</button>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="blamen">Blamen</button>
+        <button class="theme-quick-option" type="button" role="menuitem" data-theme="lusns">Lusns</button>
     </div>
 
     <aside class="lan-p2p-guide" id="lanP2pGuide" role="dialog" aria-labelledby="lanP2pGuideTitle" hidden>
@@ -236,6 +240,8 @@
                         <button class="theme-option" type="button" data-theme="classic">Classic</button>
                         <button class="theme-option" type="button" data-theme="atelier">Atelier</button>
                         <button class="theme-option" type="button" data-theme="social">Social</button>
+                        <button class="theme-option" type="button" data-theme="blamen">Blamen</button>
+                        <button class="theme-option" type="button" data-theme="lusns">Lusns</button>
                     </div>
                 </section>
                 <section class="tunnel-settings-section language-settings">

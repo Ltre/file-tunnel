@@ -226,7 +226,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             : inside(grant.path || '', selection.path) || grant.kind === 'directory' && inside(selection.path, grant.path || ''));
         if (protectedByCollaboration) throw new Error('COLLABORATION_DISABLE_BEFORE_DELETE');
     };
-    // A move can remove content from an exposed directory just like deletion.
+    // A move changes exposed paths even when its destination stays in the scope.
     // Only the browser owner can acknowledge this impact; API apps and mounted
     // collaborators keep their existing write restrictions.
     const assertMoveProtection = (req, target, drive, selection, destinationPath, checkOnly = false) => {
@@ -236,7 +236,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const next=selection.kind==='file'?parent:[parent,source.split('/').at(-1)].filter(Boolean).join('/');
         if(source===next)return false;
         const inside=(path,root)=>!root||path===root||path.startsWith(root+'/');
-        const affected=root=>selection.kind==='directory'&&inside(root,source)||inside(source,root)&&!inside(next,root);
+        const affected=root=>selection.kind==='directory'&&inside(root,source)||inside(source,root);
         const includesFile=id=>selection.kind==='file'?id===selection.id:inside(drive.get(target.userId,id)?.folderPath||'',source);
         const exposed=staticResources.list(target).some(item=>!item.revokedAt&&(!item.expiresAt||item.expiresAt>Date.now())&&
             (item.directories.some(affected)||item.files.some(includesFile)));

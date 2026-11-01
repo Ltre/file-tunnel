@@ -9,7 +9,7 @@ const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const app = read('app.js');
 const html = read('pages/index.html');
 const themeSource = app.slice(app.indexOf('function applyTheme('), app.indexOf('function isTunnelOwner('));
-const expected = ['lumen', 'orbit', 'classic', 'atelier', 'social'];
+const expected = ['lumen', 'orbit', 'classic', 'atelier', 'social', 'blamen', 'lusns'];
 
 function fixture({ stored = null, remove = [] } = {}) {
     const writes = [], logs = [], handlers = {};
@@ -32,7 +32,7 @@ function fixture({ stored = null, remove = [] } = {}) {
         localStorage: { getItem: () => stored, setItem(key, value) { writes.push([key, value]); } },
         historyLog: (...args) => logs.push(args)
     });
-    const source = themeSource.replace(/Object\.freeze\(\['lumen', 'orbit', 'classic', 'atelier', 'social'\]\)/,
+    const source = themeSource.replace(/Object\.freeze\(\['lumen',[^\]]*\]\)/,
         `Object.freeze(${JSON.stringify(names)})`);
     vm.runInContext(source + ';this.api={apply:applyTheme,cycle:cycleTheme,init:initThemeSwitcher};', context);
     return { ...context.api, body, buttons, writes, logs, unrelatedState };
@@ -54,7 +54,7 @@ test('保留已有主题偏好，循环越过末项后按 Lumen、Orbit、Classi
         assert.equal(f.body.dataset.theme, stored);
         assert.equal(f.buttons.filter(button => button.classes.has('active')).length, 2);
     }
-    const f = fixture({ stored: 'social' }); f.init();
+    const f = fixture({ stored: 'lusns' }); f.init();
     const actual = Array.from({ length: expected.length + 1 }, () => f.cycle('control-center'));
     assert.deepEqual(actual, [...expected, 'lumen']);
     assert.equal(f.logs.length, expected.length + 1);
@@ -71,6 +71,8 @@ test('失效主题回退；移除全部旧主题登记后仍可恢复旧偏好�
     assert.equal(removed.body.dataset.theme, 'lumen');
     assert.deepEqual(removed.writes, [['uiTheme', 'lumen']]);
     assert.equal(removed.cycle(), 'orbit');
+    assert.equal(removed.cycle(), 'blamen');
+    assert.equal(removed.cycle(), 'lusns');
     assert.equal(removed.cycle(), 'lumen');
     assert.equal(removed.apply('classic'), 'lumen');
 });

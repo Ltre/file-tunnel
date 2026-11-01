@@ -26,6 +26,7 @@
         ['正在保存本机文件引用…','Saving local file references…'],
         ['正在更新已选文件列表…','Updating the selected file list…'],
         ['后台播放','Background playback'],['后台播放已关闭','Background playback is disabled'],['在播','On air'],['以观众视角查看','View as audience'],
+        ['正在生成邀请海报…','Creating the invitation poster…'],['一起观看','Watch together'],['打开下方链接进入串流台','Open the link below to watch this station'],['{0}个节目','{0} programs'],
         ['播放持续没有进展，已重试，请点击恢复播放','Playback is still stalled after retries. Select Resume playback'],
         ['小窗播','Mini player'],['串流台小窗','Station mini player'],['恢复串流台','Restore station'],['关闭小窗','Close mini player'],
         ['目标隧道','Target tunnel'],

@@ -1439,10 +1439,20 @@
         if (s.local && s.ownerId) visibility.append(button('放弃归属', async () => { if (confirm(t('放弃台归属，保留普通观看许可和订阅？'))) { await request('/stations/' + stationId + '/ownership', 'POST', { action: 'release' }); navigate('local'); } }));
         main.append(visibility); const inviteForm = document.createElement('section'); inviteForm.className = 'sc-card';
         inviteForm.innerHTML = `<h2>${t('生成与发送邀请')}</h2><label>${t('有效期（小时，留空为不过期）')}<input class="sc-hours" type="number" min="0.017" step="1" value="24"></label><label><input type="checkbox" class="sc-thumbnail">${t('附带当前媒体缩略图（可用时）')}</label><div class="sc-device-choices"></div><div class="sc-actions"></div>`;
-        const input = () => ({ hours: inviteForm.querySelector('.sc-hours').value === '' ? null : Number(inviteForm.querySelector('.sc-hours').value), thumbnail: inviteForm.querySelector('.sc-thumbnail').checked ? thumbnail(stationId) : null });
+        const inviteStatus = document.createElement('p'); inviteStatus.setAttribute('role', 'status'); inviteForm.append(inviteStatus);
+        const input = async () => {
+            const actor = account(), hours = inviteForm.querySelector('.sc-hours').value === '' ? null : Number(inviteForm.querySelector('.sc-hours').value);
+            inviteStatus.textContent = t('正在生成邀请海报…');
+            try {
+                const poster = await invitationPoster(s, inviteForm.querySelector('.sc-thumbnail').checked, actor);
+                if (version !== renderVersion || actor !== account() || ui.stationId !== stationId) return null;
+                return { hours, poster };
+            } finally { inviteStatus.textContent = ''; }
+        };
         let generalRequestId = uid();
-        inviteForm.querySelector('.sc-actions').append(button('生成通用邀请', async () => { const result = await request('/stations/' + stationId + '/invitations', 'POST', { ...input(), requestId: generalRequestId }); generalRequestId = uid(); await showInvite(result); }), button('发送定向邀请', async () => {
-            const actor = account(), settings = input(), body = document.createElement('div'), status = document.createElement('p');
+        inviteForm.querySelector('.sc-actions').append(button('生成通用邀请', async () => { const actor = account(), settings = await input(); if (!settings) return; const result = await request('/stations/' + stationId + '/invitations', 'POST', { ...settings, requestId: generalRequestId }, { accountId: actor }); generalRequestId = uid(); if (version === renderVersion && actor === account()) await showInvite(result); }), button('发送定向邀请', async () => {
+            const actor = account(), settings = await input(); if (!settings) return;
+            const body = document.createElement('div'), status = document.createElement('p');
             status.setAttribute('role', 'status'); status.textContent = t('正在读取可邀请设备…'); body.append(status); showDialog('选择邀请设备', body);
             const opened = dialog;
             let result;
@@ -1521,10 +1531,86 @@
         if (!count) { const empty = document.createElement('p'); empty.textContent = t('本台暂无黑名单条目'); main.append(empty); }
         main.append(button('返回列表', returnToList));
     }
-    function thumbnail(stationId) {
-        const element = [...players.entries()].find(([key]) => key.startsWith(stationId + ':'))?.[1]?.element.querySelector('video,img');
-        if (!element) return null;
-        try { const canvas = document.createElement('canvas'); canvas.width = 160; canvas.height = 90; canvas.getContext('2d').drawImage(element, 0, 0, 160, 90); return canvas.toDataURL('image/jpeg', .6); } catch (_) { return null; }
+    async function invitationPoster(station, includeMedia, actor) {
+        const controller = new AbortController(), signal = controller.signal, cleanups = [], pictures = [];
+        const abort = () => controller.abort(), timer = setTimeout(abort, 6000), device = config.deviceId();
+        global.addEventListener('global-account-changed', abort);
+        const headers = { 'X-Stream-Device': device, 'X-Stream-Key': localStorage.getItem(key('key')), ...(actor ? { 'X-Disk-Account': actor } : {}) };
+        let bytes = 0, cover, capturedItemId;
+        function boundedUrl(work) {
+            return new Promise((resolve, reject) => {
+                const stopped = () => reject(Error('STREAM_PREVIEW_CANCELLED'));
+                signal.addEventListener('abort', stopped, { once: true }); if (signal.aborted) stopped();
+                Promise.resolve(work).then(url => {
+                    signal.removeEventListener('abort', stopped);
+                    if (signal.aborted) { if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url); return; }
+                    resolve(url);
+                }, cause => { signal.removeEventListener('abort', stopped); reject(cause); });
+            });
+        }
+        async function imageFrom(url, limit = 2 * 1024 * 1024) {
+            const response = await fetch(url, { headers, signal, cache: 'no-store' });
+            if (!response.ok || !/^image\/(?!svg\+xml)/i.test(response.headers.get('Content-Type') || '') || Number(response.headers.get('Content-Length')) > limit) { response.body?.cancel().catch(() => {}); throw Error('STREAM_IMAGE_UNAVAILABLE'); }
+            const reader = response.body.getReader(), chunks = []; let length = 0;
+            try { while (true) { const part = await reader.read(); if (part.done) break; length += part.value.length; bytes += part.value.length; if (length > limit || bytes > 6 * 1024 * 1024) throw Error('STREAM_REFERENCE_LIMIT'); chunks.push(part.value); } }
+            finally { reader.cancel().catch(() => {}); }
+            const objectUrl = URL.createObjectURL(new Blob(chunks, { type: response.headers.get('Content-Type') })), image = document.createElement('img');
+            cleanups.push(() => { image.src = ''; URL.revokeObjectURL(objectUrl); });
+            return new Promise((resolve, reject) => {
+                const finish = cause => { image.onload = image.onerror = null; signal.removeEventListener('abort', failed); cause ? reject(cause) : resolve(image); };
+                const failed = () => finish(Error('STREAM_IMAGE_UNAVAILABLE'));
+                image.onload = () => finish(image.naturalWidth * image.naturalHeight > 16 * 1024 * 1024 ? Error('STREAM_REFERENCE_LIMIT') : null); image.onerror = failed; signal.addEventListener('abort', failed, { once: true });
+                if (signal.aborted) failed(); else image.src = objectUrl;
+            });
+        }
+        try {
+            if (includeMedia) {
+                const player = players.get(station.id + ':' + actor), current = player?.element.querySelector('.sc-media>video,.sc-media>img');
+                if (current && (current.tagName === 'VIDEO' ? current.readyState >= 2 && current.videoWidth : current.complete && current.naturalWidth)) try {
+                    const capture = document.createElement('canvas'); capture.width = 480; capture.height = 270;
+                    const pen = capture.getContext('2d'), width = current.videoWidth || current.naturalWidth, height = current.videoHeight || current.naturalHeight, scale = Math.max(480 / width, 270 / height);
+                    pen.drawImage(current, (480 - width * scale) / 2, (270 - height * scale) / 2, width * scale, height * scale); pen.getImageData(0, 0, 1, 1);
+                    pictures.push(capture); capturedItemId = player.currentItemId?.(); cleanups.push(() => { capture.width = capture.height = 1; });
+                } catch (_) { /* Cross-origin or changing media cannot be copied into an invitation. */ }
+            }
+            if (station.coverId) try { cover = await imageFrom('/api/streaming/stations/' + encodeURIComponent(station.id) + '/covers/' + station.coverId + '?device=' + encodeURIComponent(device) + '&account=' + encodeURIComponent(actor)); } catch (_) {}
+            if (includeMedia && !signal.aborted) {
+                for (const item of station.items.filter(item => item.kind === 'image' && item.id !== capturedItemId && item.size > 0 && item.size <= 2 * 1024 * 1024).slice(0, 2 - pictures.length)) {
+                    if (signal.aborted) break;
+                    try {
+                        const access = await request('/stations/' + station.id + '/ticket', 'POST', { itemId: item.id }, { signal, accountId: actor });
+                        const url = await boundedUrl(playbackUrl(access, signal, item, station, actor)); if (typeof url !== 'string') continue;
+                        if (url.startsWith('blob:')) cleanups.push(() => URL.revokeObjectURL(url));
+                        pictures.push(await imageFrom(url));
+                    } catch (_) { /* An unavailable illustration does not prevent an invitation. */ }
+                }
+            }
+            const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 624; const context = canvas.getContext('2d');
+            const rounded = (x, y, width, height, radius) => { context.beginPath(); context.moveTo(x + radius, y); context.arcTo(x + width, y, x + width, y + height, radius); context.arcTo(x + width, y + height, x, y + height, radius); context.arcTo(x, y + height, x, y, radius); context.arcTo(x, y, x + width, y, radius); context.closePath(); };
+            const art = (image, x, y, width, height, radius) => {
+                context.save(); rounded(x, y, width, height, radius); context.clip();
+                const w = image.videoWidth || image.naturalWidth || image.width, h = image.videoHeight || image.naturalHeight || image.height, scale = Math.max(width / w, height / h);
+                context.drawImage(image, x + (width - w * scale) / 2, y + (height - h * scale) / 2, w * scale, h * scale); context.restore();
+            };
+            const background = context.createLinearGradient(0, 0, 1000, 624); background.addColorStop(0, '#f8f7f3'); background.addColorStop(1, '#eef0f8'); context.fillStyle = background; context.fillRect(0, 0, 1000, 624);
+            context.fillStyle = '#6a7083'; context.font = '600 17px system-ui,sans-serif'; context.fillText(t('串流邀请'), 44, 52);
+            context.fillStyle = '#484e64'; context.font = '500 16px system-ui,sans-serif'; context.textAlign = 'right'; context.fillText(t('串流台') + ' / ' + station.number, 954, 52); context.textAlign = 'left';
+            context.save(); context.shadowColor = '#20335124'; context.shadowBlur = 34; context.shadowOffsetY = 16; rounded(44, 95, 408, 448, 24); context.fillStyle = '#fff'; context.fill(); context.restore();
+            const hero = cover || pictures[0];
+            if (hero) { try { art(hero, 44, 95, 408, 448, 24); } catch (_) {} }
+            else { const fill = context.createLinearGradient(44, 95, 452, 543); fill.addColorStop(0, '#e0e5f3'); fill.addColorStop(1, '#a8b9cb'); rounded(44, 95, 408, 448, 24); context.fillStyle = fill; context.fill(); context.fillStyle = '#fff'; context.font = '600 112px system-ui,sans-serif'; context.textAlign = 'center'; context.fillText(station.number, 248, 350); context.textAlign = 'left'; }
+            context.fillStyle = '#776b60'; context.font = '500 17px system-ui,sans-serif'; context.fillText(t('一起观看'), 497, 128);
+            context.fillStyle = '#222b3c'; context.font = '650 43px system-ui,sans-serif';
+            const lines = []; let line = ''; for (const character of String(station.name)) { if (context.measureText(line + character).width > 450 && line) { lines.push(line); line = ''; } line += character; } if (line) lines.push(line);
+            const visible = lines.slice(0, 2); if (lines.length > 2) { while (context.measureText(visible[1] + '…').width > 450) visible[1] = visible[1].slice(0, -1); visible[1] += '…'; } visible.forEach((line, index) => context.fillText(line, 493, 194 + index * 58));
+            context.fillStyle = '#737a89'; context.font = '400 19px system-ui,sans-serif'; context.fillText(t('{0}个节目').replace('{0}', station.items.length), 497, 288);
+            rounded(493, 328, 228, 58, 29); context.fillStyle = '#263346'; context.fill(); context.fillStyle = '#fff'; context.font = '600 20px system-ui,sans-serif'; context.fillText(t('打开邀请'), 523, 365); context.font = '400 25px system-ui,sans-serif'; context.fillText('↗', 674, 366);
+            for (let index = 0; index < pictures.length; index++) try { art(pictures[index], 493 + index * 231, 425, 217, 118, 12); } catch (_) {}
+            context.fillStyle = '#9198a5'; context.fillRect(44, 577, 910, 1); context.fillStyle = '#7b8291'; context.font = '400 16px system-ui,sans-serif'; context.fillText(t('打开下方链接进入串流台'), 44, 606);
+            let poster; for (const quality of [.82, .68, .52, .36]) { poster = canvas.toDataURL('image/jpeg', quality); if (poster.length <= 150000) break; }
+            if (poster.length > 150000) { const smaller = document.createElement('canvas'); smaller.width = 700; smaller.height = 437; smaller.getContext('2d').drawImage(canvas, 0, 0, 700, 437); poster = smaller.toDataURL('image/jpeg', .65); }
+            return poster.length <= 150000 ? poster : null;
+        } finally { clearTimeout(timer); global.removeEventListener('global-account-changed', abort); cleanups.forEach(close => close()); }
     }
     function invitationPage() {
         title('通过邀请进入'); const input = document.createElement('textarea'); input.placeholder = t('粘贴邀请链接或邀请码'); input.setAttribute('aria-label', t('邀请链接或邀请码')); main.append(input, button('核对邀请', () => inspectInvitation(input.value)));

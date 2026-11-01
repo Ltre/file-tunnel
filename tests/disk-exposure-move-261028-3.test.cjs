@@ -43,13 +43,39 @@ for(const kind of ['file','directory'])for(const exposure of ['collaboration','s
     for(let i=0;i<50;i++){const job=await call('/operations/'+moved.data.operation_id,'GET');if(job.data.status==='completed')break;assert.notEqual(job.data.status,'failed',JSON.stringify(job));await new Promise(r=>setTimeout(r,10));}
     assert.equal(drive.get('alice',file.id).folderPath,kind==='file'?'移动目标':'移动目标/子目录');
 });
-test('moving within a collaboration directory does not require an impact acknowledgement',async t=>{
-    const f=await createFixture();t.after(()=>f.close());const drive=f.api.spaces.get('');drive.createDirectory('alice','公开/子目录',30);
-    const file=drive.putMetadataObject(f.auth.user('alice'),'公开/子目录','留在范围.txt','text/plain',{},30);
+for(const kind of ['file','directory'])for(const exposure of ['collaboration','static'])test(exposure+' '+kind+' moves between directories in the same exposed scope require acknowledgement',async t=>{
+    const f=await createFixture();t.after(()=>f.close());const drive=f.api.spaces.get('');
+    drive.createDirectory('alice','公开/甲',30);drive.createDirectory('alice','公开/乙',30);
+    const file=drive.putMetadataObject(f.auth.user('alice'),'公开/甲','仍在范围.txt','text/plain',{},30);
+    if(exposure==='static')require('../server/disk-static-resources').createDiskStaticResources({dataDir:f.dataDir}).create({userId:'alice',diskSpace:''},drive,{preset:'permanent',items:[{kind:'directory',path:'公开'}]});
     const login=await fetch(f.base+'/fixture-login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'id=alice'}),cookie=login.headers.getSetCookie().map(v=>v.split(';')[0]).join('; ');
-    const call=async(route,body)=>fetch(f.base+'/api/telegram/drive'+route,{method:route.includes('invitations')?'POST':'PATCH',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const call=async(route,method,body)=>{const r=await fetch(f.base+'/api/telegram/drive'+route,{method,headers:{Cookie:cookie,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});return {status:r.status,data:await r.json()};};
+    if(exposure==='collaboration')assert.equal((await call('/collaborations/invitations','POST',{kind:'directory',path:'公开'})).status,201);
+    const item=kind==='file'?{kind:'file',id:file.id}:{kind:'directory',path:'公开/甲'};
+    const preflight=await call('/moves/preflight','POST',{destinationPath:'公开/乙',items:[item]});
+    assert.equal(preflight.status,200);assert.equal(preflight.data.requiresConfirmation,true,'moving within the same exposed scope still changes the referenced path');
+    const route=kind==='file'?'/files/'+file.id:'/directories',body={...(kind==='file'?{folderPath:'公开/乙'}:{path:'公开/甲',destinationPath:'公开/乙'}),requestId:'same-scope-'+kind+'-'+exposure};
+    assert.equal((await call(route,'PATCH',body)).data.error,'EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED');
+    assert.equal((await call(route,'PATCH',{...body,confirm_exposed_move:'true'})).data.error,'EXPOSED_CONTENT_MOVE_CONFIRMATION_REQUIRED');
+    assert.equal((await call('/operations','GET')).data.operations.filter(job=>job.requestId===body.requestId).length,0,'unconfirmed moves do not start transfer history');
+    assert.ok(drive.getDirectory('alice','公开/甲'));assert.equal(drive.get('alice',file.id).folderPath,'公开/甲');
+    const confirmed={...body,confirm_exposed_move:true},moved=await call(route,'PATCH',confirmed);assert.equal(moved.status,202,JSON.stringify(moved));
+    for(let i=0;i<50;i++){const job=await call('/operations/'+moved.data.operation_id,'GET');if(job.data.status==='completed')break;assert.notEqual(job.data.status,'failed',JSON.stringify(job));await new Promise(r=>setTimeout(r,10));}
+    assert.equal(drive.get('alice',file.id).folderPath,kind==='file'?'公开/乙':'公开/乙/甲');
+    assert.deepEqual(await call(route,'PATCH',confirmed),moved,'an identical acknowledged request replays the successful operation');
+});
+
+test('keeping owner content at its existing path needs no exposure acknowledgement',async t=>{
+    const f=await createFixture();t.after(()=>f.close());const drive=f.api.spaces.get('');drive.createDirectory('alice','公开/甲',30);
+    const file=drive.putMetadataObject(f.auth.user('alice'),'公开/甲','原位置.txt','text/plain',{},30);
+    require('../server/disk-static-resources').createDiskStaticResources({dataDir:f.dataDir}).create({userId:'alice',diskSpace:''},drive,{preset:'permanent',items:[{kind:'directory',path:'公开'}]});
+    const login=await fetch(f.base+'/fixture-login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'id=alice'}),cookie=login.headers.getSetCookie().map(v=>v.split(';')[0]).join('; ');
+    const call=async(route,body)=>{const r=await fetch(f.base+'/api/telegram/drive'+route,{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify(body)});return {status:r.status,data:await r.json()};};
     assert.equal((await call('/collaborations/invitations',{kind:'directory',path:'公开'})).status,201);
-    const moved=await call('/files/'+file.id,{folderPath:'公开'});assert.equal(moved.status,202,await moved.text());
+    for(const item of [{kind:'file',id:file.id},{kind:'directory',path:'公开/甲'}]){
+        const checked=await call('/moves/preflight',{destinationPath:item.kind==='file'?'公开/甲':'公开',items:[item]});
+        assert.equal(checked.status,200);assert.equal(checked.data.requiresConfirmation,false);
+    }
 });
 
 test('move acknowledgement cannot grant ownership or bypass protected rename',async t=>{

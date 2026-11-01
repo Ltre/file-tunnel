@@ -1,0 +1,79 @@
+/* Independent blamen homepage palette. Component geometry and typography come only
+ * from the existing base styles. Do not alias either theme to another skin. */
+body[data-theme="blamen"] {
+  --home-page:linear-gradient(126deg,transparent 0 7%,#dddddd99 18%,transparent 30%,#d9d9d99c 43%,transparent 57%,#e7e7e783 70%,transparent 83%),repeating-linear-gradient(126deg,#f1f1f1 0,#ededed 50px,#e8e8e8 98px,#f0f0f0 155px,#f1f1f1 220px);
+  --home-panel:#f7fbff;--home-soft:#edf4fc;--home-line:#dce8f4;--home-ink:#151b3e;--home-muted:#7884a3;--home-accent:#3c29cf;--home-tint:#e5f0ff;
+  --home-heading:linear-gradient(110deg,#e1e5f2,#eceff8);--home-heading-ink:#252943;
+  --home-panel-heading:linear-gradient(to bottom,#d5d9e6 0%,#d5d9e6 65%,#e9edf4 84%,#fff 100%);
+  --home-topbar:linear-gradient(112deg,#e1e5f2 76%,#dce1ef);
+  --home-action:#e1e5f2;--home-action-ink:#252943;--home-send:#6a728a;
+  --home-shadow:0 5px 16px #9db9de26,0 2px 5px #a4bad21a;--home-menu:0 14px 32px #728bb44a;
+  background:var(--home-page);
+}
+/* Aliases are scoped to homepage surfaces; other applications retain their own
+ * palette. Only the explicitly requested external buttons use --home-action. */
+body[data-theme="blamen"] :is(#appShell,#tunnelTopbar,#themeQuickMenu,#tunnelSettingsLayer,#resourceBrowserLayer,#transferRecordDetailsLayer,#richViewer,#notificationCenter,#tunnelRemarkDialog,.control-center-overlay,.modal-overlay:has(#cancelGarbageCleanup),.modal-overlay:has(.profile-fields),.send-mode-overlay[data-home-dialog="backup"],.record-remark-editor-layer,.message-record-action-menu-layer) {
+  --panel-bg:var(--home-panel);--panel-border:var(--home-line);--panel-shadow:var(--home-shadow);--header-bg:var(--home-heading);--surface-soft:var(--home-soft);
+  --text-main:var(--home-ink);--text-muted:var(--home-muted);--accent:var(--home-accent);--accent-2:#089eae;
+  color:var(--home-ink);caret-color:var(--home-accent);
+}
+body[data-theme="blamen"] #appShell .panel {background:var(--home-panel);border-color:var(--home-line);box-shadow:var(--home-shadow)}
+body[data-theme="blamen"] #appShell .panel-content {background:var(--home-panel);border-color:var(--home-line)}
+body[data-theme="blamen"] #appShell .panel-header {background:var(--home-panel-heading);color:var(--home-heading-ink);border-color:#fff;box-shadow:none}
+body[data-theme="blamen"] #tunnelTopbar {background:var(--home-topbar);color:#252943;border-color:#dfe4f0;box-shadow:inset 0 -1px 0 #dfe4f0,0 2px 14px #3f448408}
+body[data-theme="blamen"] #tunnelTopbar .tunnel-topbar-action {background:#fff;color:#252943;border-color:#e1e5f2;box-shadow:none}
+body[data-theme="blamen"] #appShell :is(.session-info,.short-code-switch,.device-item,.contact-item,.contacts-panel,.editor-toolbar) {background:var(--home-soft);color:var(--home-ink);border-color:var(--home-line)}
+body[data-theme="blamen"] #appShell .session-info {color:#233055}
+body[data-theme="blamen"] #appShell :is(.short-code-switch-button,.short-code-display) {background:transparent;color:var(--home-ink);border-color:transparent;box-shadow:none}
+body[data-theme="blamen"] #connectionHeaderMenuBtn {background:transparent;color:var(--home-heading-ink);border-color:transparent;box-shadow:none}
+body[data-theme="blamen"] #appShell :is(.device-item .status,.contact-status.online) {color:#28a745}
+body[data-theme="blamen"] #appShell .online-indicator {background:#22c996}
+body[data-theme="blamen"] #chatMessages {background:linear-gradient(135deg,#f4f9ff,#eef5ff)}
+body[data-theme="blamen"] #appShell :is(.message-bubble,.rich-preview,.tunnel-markdown,.file-message) {background:#fff;color:var(--home-ink);border-color:#e0eaf7;box-shadow:0 4px 11px #91abc630}
+body[data-theme="blamen"] #appShell .message.own .message-bubble {background:var(--home-tint);color:#1454d4;border-color:var(--home-tint)}
+body[data-theme="blamen"] #appShell :is(.message-header,.file-size,.collection-meta,.record-remark-preview,.contacts-panel-header) {color:var(--home-muted)}
+body[data-theme="blamen"] #appShell .file-name {color:var(--home-ink)}
+body[data-theme="blamen"] #appShell :is(a,.message-bubble a) {color:#1454d4}
+body[data-theme="blamen"] #appShell :is(.input-area,.editor-actions) {background:var(--home-panel);border-color:var(--home-line)}
+body[data-theme="blamen"] :is(#textInput,#editor) {background:#fff;color:var(--home-ink);border-color:#dbe6f0;box-shadow:none}
+body[data-theme="blamen"] #dropZone {background:#f8fbff;color:var(--home-ink);border-color:#c5bef4}
+body[data-theme="blamen"] #dropZone:is(:hover,.dragover) {background:var(--home-tint);border-color:var(--home-accent)}
+body[data-theme="blamen"] :is(#sendTextBtn,#sendRichBtn) {background:var(--home-send);color:#fff;border-color:transparent;box-shadow:0 5px 12px #5034e130}
+body[data-theme="blamen"] #appShell :is(.btn-secondary,.toolbar-btn,.media-control-btn,.message-record-menu-trigger) {background:#f0f3fb;color:#35415f;border-color:var(--home-line);box-shadow:none}
+body[data-theme="blamen"] :is(.short-code-switch-menu,.connection-header-menu,.message-record-action-menu,.theme-quick-menu) {background:#fdfdff;color:var(--home-ink);border-color:var(--home-line);box-shadow:var(--home-menu)}
+body[data-theme="blamen"] :is(.short-code-switch-item,.connection-header-menu button,.message-record-action-menu .history-action,.theme-quick-option) {background:transparent;color:var(--home-ink);border-color:var(--home-line)}
+body[data-theme="blamen"] :is(.short-code-switch-item:hover,.short-code-switch-item.is-current,.theme-quick-option:hover) {background:#eaf2ff;color:#3323af}
+body[data-theme="blamen"] :is(.tunnel-settings-panel,.resource-browser-modal,.transfer-record-details-panel,.rich-viewer,.notification-center,.control-center,.modal:has(#cancelGarbageCleanup),.modal:has(.profile-fields)) {background:var(--home-panel);color:var(--home-ink);border-color:var(--home-line);box-shadow:var(--home-menu)}
+body[data-theme="blamen"] :is(.tunnel-settings-header,.resource-browser-header,.transfer-record-details-header,.rich-viewer-header,.notification-center>header) {background:var(--home-heading);color:var(--home-heading-ink);border-color:#d5d9e6;box-shadow:none}
+body[data-theme="blamen"] :is(.tunnel-settings-header h2,.resource-browser-header h3,.transfer-record-details-header h2,.transfer-record-details-kicker,.rich-viewer-header h3,.notification-center>header strong) {color:inherit}
+body[data-theme="blamen"] :is(.tunnel-settings-body,.resource-browser-controls,.resource-browser-list,.resource-browser-mounts,.rich-viewer-content,.transfer-record-details-body) {background:var(--home-panel);color:var(--home-ink);border-color:var(--home-line)}
+body[data-theme="blamen"] :is(.resource-browser-item,.transfer-record-detail-file,.profile-field,.transfer-record-details-summary,.notification-card,.control-center-tile,.control-center-drag-label) {background:var(--home-soft);color:var(--home-ink);border-color:var(--home-line)}
+body[data-theme="blamen"] :is(.tunnel-settings-panel,.resource-browser-modal,.transfer-record-details-panel,.rich-viewer,.notification-center,.control-center) :is(button,select,input:not([type=checkbox]):not([type=range])):not(.session-switch-item) {background:#f6f8fd;color:var(--home-ink);border-color:#d4dbea;box-shadow:none}
+body[data-theme="blamen"] :is(.tunnel-settings-panel .btn-primary,#confirmGarbageCleanup,.theme-option.active,.theme-quick-option.active) {background:var(--home-action);color:var(--home-action-ink);border-color:#c3c9e0;box-shadow:0 3px 10px #5347e81a}
+body[data-theme="blamen"] .mobile-workspace-nav {background:var(--home-panel);color:var(--home-ink);border-color:var(--home-line);box-shadow:inset 0 1px 0 var(--home-line)}
+body[data-theme="blamen"] .mobile-workspace-button {background:transparent;color:var(--home-muted);box-shadow:none}
+body[data-theme="blamen"] .mobile-workspace-button.active {background:radial-gradient(ellipse at center,#e5e5ff 0%,#eff3ff 45%,#f7fbff 85%);color:var(--home-accent);box-shadow:none}
+body[data-theme="blamen"] .control-center :is(select,option) {color:var(--home-ink)}
+body[data-theme="blamen"] #tunnelStartupLoading {background:var(--home-page);color:var(--home-ink)}
+body[data-theme="blamen"] #tunnelStartupLoading>section {background:var(--home-panel);border-color:var(--home-line);box-shadow:var(--home-menu)}
+body[data-theme="blamen"] #tunnelStartupLoading :is(p,small,details) {color:var(--home-muted)}
+body[data-theme="blamen"] #tunnelStartupLoading progress {accent-color:var(--home-accent)}
+body[data-theme="blamen"] #tunnelStartupLoading button {background:var(--home-action);color:var(--home-action-ink);border-color:var(--home-line)}
+/* External exceptions: no blanket recoloring of a drive, account or station. */
+body[data-theme="blamen"] :is(#telegramDriveCreateBtn,#telegramDriveDialog:has(.disk-collaboration-list) #telegramDriveDialogActions>button,.account-overlay [data-sign-in-mode="mock"],#streamingConsole .sc-nav>[data-sc-view="discover"],#streamingConsole .sc-nav>.sc-primary,#streamingConsole .sc-row-actions>.sc-primary,#streamingConsole .sc-editor-actions>.sc-primary,#streamingConsole .sc-import-actions>.sc-primary,#streamingConsole .sc-editor-heading>button:last-child) {background:var(--home-action);color:var(--home-action-ink);border-color:#bfc7e1;box-shadow:0 3px 10px #5347e81a}
+@media(max-width:767px) {
+  body[data-theme="blamen"] #appShell :is(.left-panel,.right-panel) .panel-header {background:var(--home-topbar);color:#252943;border-color:transparent;box-shadow:inset 0 -1px 0 #dfe4f0,0 2px 14px #3f448408}
+  body[data-theme="blamen"] #connectionHeaderMenuBtn {color:#252943}
+}
+
+body[data-theme="blamen"] .send-mode-overlay[data-home-dialog="backup"]>.send-mode-dialog {background:var(--home-panel);color:var(--home-ink);border-color:var(--home-line);box-shadow:var(--home-menu)}
+body[data-theme="blamen"] .send-mode-overlay[data-home-dialog="backup"] button {background:var(--home-soft);color:var(--home-ink);border-color:var(--home-line)}
+body[data-theme="blamen"] .send-mode-overlay[data-home-dialog="backup"] .btn-primary {background:var(--home-action);color:var(--home-action-ink);border-color:var(--home-line)}
+
+body[data-theme="blamen"] .control-center .session-switcher-modal {background:#fff}
+body[data-theme="blamen"] .control-center .session-switch-item {background:#fff;color:var(--home-accent)}
+
+/* Missing-file records are already faded; the restore control needs a solid fill. */
+body[data-theme="blamen"] #appShell .file-cache-retry {background:#334164;color:#fff;border-color:#bcc6dc;box-shadow:0 2px 8px #26324d33}
+body[data-theme="blamen"] #appShell .file-cache-retry span {border-top-color:#fff;border-right-color:#fff}
+body[data-theme="blamen"] #appShell .file-cache-retry span::before,body[data-theme="blamen"] #appShell .file-cache-retry span::after {border-color:#fff}

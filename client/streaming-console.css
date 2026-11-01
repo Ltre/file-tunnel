@@ -59,6 +59,15 @@
 .sc-media-fullscreen .sc-local-controls input[type=range]{width:100%;max-width:none;min-width:0;accent-color:#bd9bea}
 .sc-media-fullscreen .sc-play-status{flex:none;max-height:20%;overflow:auto;margin:4px 0 0;padding:3px 0;min-height:0;color:#eee;line-height:1.4;overflow-wrap:anywhere}
 .sc-media-fullscreen .sc-seek{flex:none;margin:4px 0 0}
+/* Fullscreen controls overlay the stage instead of reducing its usable height. */
+.sc-player.sc-media-fullscreen{padding:0}
+.sc-player.sc-media-fullscreen>.sc-stage{position:absolute;inset:0;width:100%;height:100%;aspect-ratio:auto;border-radius:0}
+.sc-player.sc-media-fullscreen .sc-media>video,.sc-player.sc-media-fullscreen .sc-media>img{height:100%;max-height:100%}
+.sc-player.sc-media-fullscreen>.sc-local-controls{position:absolute;left:12px;right:12px;bottom:12px;z-index:2;padding:8px;margin:0;background:#111c;border-radius:8px}
+.sc-player.sc-media-fullscreen>.sc-seek{position:absolute;left:20px;right:20px;bottom:112px;z-index:2;background:#111c;color:#fff;padding:6px 10px;border-radius:6px}
+.sc-player.sc-media-fullscreen>.sc-play-status{position:absolute;left:12px;right:12px;top:8px;z-index:2;background:#1119;padding:4px 8px}
+.sc-player.sc-media-fullscreen>.sc-background-toggle{position:absolute;right:20px;bottom:82px;z-index:2;background:#111c;padding:4px 8px}
+.sc-player.sc-media-fullscreen:not(.sc-fullscreen-controls-visible)>:is(.sc-local-controls,.sc-seek,.sc-play-status,.sc-background-toggle){visibility:hidden;pointer-events:none}
 .sc-viewer-page .sc-program-wait{font-weight:400;font-size:12px;line-height:1.4;margin-top:3px;opacity:.7}
 .sc-cover{display:block;object-fit:cover;aspect-ratio:1;border-radius:10px;background:#9084a51c;min-width:0}
 .sc-list-cover{width:120px;height:120px;align-self:center}.sc-station-row{grid-template-columns:120px minmax(100px,1.2fr) 50px minmax(120px,1.5fr) 65px 70px minmax(80px,1fr) 220px;gap:12px}

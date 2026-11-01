@@ -5959,6 +5959,7 @@ async function importTransferHistoryBackup(file, parsedBackup = null) {
 function showHistoryBackupDialog() {
     const overlay = document.createElement('div');
     overlay.className = 'send-mode-overlay';
+    overlay.dataset.homeDialog = 'backup';
     overlay.innerHTML = `<div class="send-mode-dialog" role="dialog" aria-modal="true"><h3>传输记录备份</h3><p>元信息备份体积小，完整备份会包含本机现有的全部文件数据。</p><div class="send-mode-actions"><button class="btn btn-secondary" data-action="metadata">导出元信息</button><button class="btn btn-primary" data-action="full">导出完整备份</button><button class="btn btn-secondary" data-action="import">导入备份</button></div></div>`;
     overlay.addEventListener('click', event => {
         const button = event.target.closest('[data-action]');
@@ -17834,7 +17835,7 @@ function applyTheme(theme) {
 
 // Shared by every theme entry point. Keep the first two entries in design order;
 // removing a legacy entry must not leave an unusable stored preference behind.
-const UI_THEME_IDS = Object.freeze(['lumen', 'orbit', 'classic', 'atelier', 'social']);
+const UI_THEME_IDS = Object.freeze(['lumen', 'orbit', 'classic', 'atelier', 'social', 'blamen', 'lusns']);
 const UI_DEFAULT_THEME = 'classic';
 
 function resolveTheme(theme) {

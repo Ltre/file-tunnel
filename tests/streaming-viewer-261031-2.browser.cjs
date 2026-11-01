@@ -39,6 +39,7 @@ const {createFixture}=require('./support/streaming-console-fixture.cjs');
   await page.setViewportSize({width:390,height:844});await page.locator('.sc-background-toggle input').uncheck();assert.equal(await page.evaluate(()=>localStorage.getItem('streaming-background-playback')),'off');
   await page.locator('[data-sc-minimize]').click();await page.waitForFunction(()=>document.querySelector('.sc-play-status')?.textContent.includes('后台播放已关闭'));await page.evaluate(()=>StreamingConsole.open());
   await page.locator('.sc-background-toggle input').check();await page.locator('.sc-window-only').click();
+  await page.locator('.sc-stage').tap();
   assert.equal(await page.locator('.sc-background-toggle').isVisible(),true);assert.ok(await page.locator('.sc-stage').evaluate(node=>node.getBoundingClientRect().height>innerHeight*.65),'fullscreen stage must use the fullscreen area rather than the ordinary viewer height limit');await page.locator('.sc-exit-fullscreen').click();
   await page.screenshot({path:path.resolve('.npm-cache/viewer-261031-2/viewer-mobile.png')});
   await page.evaluate(()=>{globalThis.retainedPlayer=document.querySelector('.sc-player');globalThis.retainedBackground=document.querySelector('.sc-background-toggle input');});
@@ -49,6 +50,7 @@ const {createFixture}=require('./support/streaming-console-fixture.cjs');
    assert.ok(await page.locator('.sc-background-toggle').evaluate(node=>node.parentElement.matches('.sc-local-controls')),'controller background toggle stays in the control bar at '+width);
    await page.locator('.sc-background-toggle input').uncheck();assert.equal(await page.evaluate(()=>localStorage.getItem('streaming-background-playback')),'off');await page.locator('.sc-background-toggle input').check();
    await page.locator('.sc-window-only').click();
+   await page.locator('.sc-stage').tap();
    assert.ok(await page.locator('.sc-background-toggle').evaluate(node=>{const a=node.getBoundingClientRect(),b=node.parentElement.getBoundingClientRect();return parseFloat(getComputedStyle(node).fontSize)>=11&&a.width>40&&a.left>=b.left-1&&a.right<=b.right+1&&a.bottom<=b.bottom+1;}),'controller fullscreen checkbox remains readable within its control bar');
    await page.locator('.sc-exit-fullscreen').click();
   }

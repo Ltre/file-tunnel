@@ -398,13 +398,14 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             if (target) delete s.blocked[target];
             const invite = { id: id(), requestId: input.requestId || null, token: crypto.randomBytes(24).toString('base64url'), deviceId: target,
                 epoch: s.epoch, createdAt: now(), expiresAt: lifetime === null ? null : now() + lifetime * 3600000,
-                revoked: false, thumbnail: typeof input.thumbnail === 'string' && input.thumbnail.length <= 90000 && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(input.thumbnail) ? input.thumbnail : null };
+                revoked: false, thumbnail: typeof input.thumbnail === 'string' && input.thumbnail.length <= 90000 && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(input.thumbnail) ? input.thumbnail : null,
+                poster: typeof input.poster === 'string' && input.poster.length <= 150000 && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(input.poster) ? input.poster : null };
             s.invites.push(invite); return { ...copy(invite), stationId, status: inviteStatus(invite) };
         });
     }
     function invitations(stationId, actor) {
         const s = station(stationId); authority(s, actor);
-        return s.invites.map(invite => ({ ...copy(invite), stationId, status: inviteStatus(invite) }));
+        return s.invites.map(({ poster, ...invite }) => ({ ...copy(invite), stationId, status: inviteStatus(invite) }));
     }
     function findInvite(token) {
         for (const s of Object.values(db.stations)) {
@@ -421,7 +422,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
     }
     function inspectInvite(token, actor) {
         const { s, invite } = findInvite(token); checkInvite(s, invite, actor);
-        return { station: summary(s, actor), deviceId: invite.deviceId, expiresAt: invite.expiresAt, thumbnail: invite.thumbnail };
+        return { station: summary(s, actor), deviceId: invite.deviceId, expiresAt: invite.expiresAt, thumbnail: invite.thumbnail, poster: invite.poster || null };
     }
     function accept(token, actor, decision = 'accept') {
         const { s, invite } = findInvite(token); checkInvite(s, invite, actor);

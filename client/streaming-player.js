@@ -52,7 +52,30 @@
         const slider = document.createElement('input'); slider.type = 'range'; slider.min = 0; slider.max = 1; slider.step = .01; slider.value = 1; slider.setAttribute('aria-label', t('本机音量'));
         slider.oninput = () => { volume = Number(slider.value); applyAudioPolicy(); update(); }; volumeLabel.append(slider); controls.append(volumeLabel);
         // Resume is also the user gesture for browsers that block audible autoplay.
-        let fullscreen = false, landscape = false;
+        let fullscreen = false, landscape = false, controlsTimer, controlsPressed = false;
+        function showFullscreenControls() {
+            if (!fullscreen) return;
+            host.classList.toggle('sc-fullscreen-controls-visible', true);
+            clearTimeout(controlsTimer);
+            controlsTimer = setTimeout(() => {
+                if (controlsPressed || dragging) { showFullscreenControls(); return; }
+                host.classList.remove('sc-fullscreen-controls-visible');
+            }, 3000);
+        }
+        const fullscreenKey = event => {
+            if (event.key === 'Escape') { exitFullscreen(); return; }
+            showFullscreenControls();
+        };
+        host.addEventListener('pointermove', event => { if (event.pointerType !== 'touch') showFullscreenControls(); });
+        host.addEventListener('click', event => { if (event.target?.closest('.sc-stage')) showFullscreenControls(); });
+        host.addEventListener('pointerdown', event => {
+            if (!fullscreen || !event.target?.closest('.sc-local-controls,.sc-seek')) return;
+            controlsPressed = true; showFullscreenControls();
+        });
+        for (const name of ['pointerup', 'pointercancel']) host.addEventListener(name, () => {
+            if (!controlsPressed) return;
+            controlsPressed = false; showFullscreenControls();
+        });
         function resizeFullscreen() {
             if (!fullscreen) return;
             const viewport = global.visualViewport;
@@ -67,9 +90,12 @@
         }
         function exitFullscreen() {
             fullscreen = false;
+            clearTimeout(controlsTimer); controlsPressed = false;
+            host.classList.remove('sc-fullscreen-controls-visible');
             host.classList.remove('sc-media-fullscreen'); host.classList.remove('sc-fullscreen-rotated');
             global.removeEventListener('resize', resizeFullscreen);
             global.visualViewport?.removeEventListener('resize', resizeFullscreen);
+            global.removeEventListener('keydown', fullscreenKey);
         }
         const enterFullscreen = button('媒体全屏', () => {
             if (fullscreen) { exitFullscreen(); return; }
@@ -78,6 +104,7 @@
             host.classList.toggle('sc-media-fullscreen', true);
             global.addEventListener('resize', resizeFullscreen);
             global.visualViewport?.addEventListener('resize', resizeFullscreen);
+            global.addEventListener('keydown', fullscreenKey);
             resizeFullscreen();
         }); enterFullscreen.className = 'sc-window-only';
         const rotateFullscreen = button('切换横屏', () => { landscape = !landscape; resizeFullscreen(); }); rotateFullscreen.className = 'sc-rotate-fullscreen'; rotateFullscreen.textContent = '↻';
