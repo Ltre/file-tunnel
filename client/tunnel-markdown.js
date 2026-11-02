@@ -3,6 +3,7 @@
     const refs = body => [...new Set([...String(body).matchAll(/tunnel-blob:([\w-]+)\/([\w.-]+)\/([\w.-]+)/g)].map(match => match[0]))];
     const t = value => global.TunnelI18n?.t(value) || value;
     let options = {};
+    const inlineReferences = new WeakMap();
     const invitationImage = (value, limit = 150000) => typeof value === 'string' && value.length <= limit && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value) ? value : '';
     function invitationImages(message) {
         if (message.purpose !== 'stream-invitation') return [];
@@ -126,16 +127,30 @@
         header.append(title, dismiss); panel.append(header, loading, content, status, retry, actions); layer.append(panel); document.body.append(layer); document.addEventListener('keydown', escape, true);
         layer.addEventListener('click', event => { if (event.target === layer) close(); });
         async function load() {
-            content.hidden = true; content.replaceChildren(); loading.hidden = false; content.setAttribute('aria-busy', 'true'); status.textContent = ''; retry.hidden = true;
+            content.hidden = false; loading.hidden = true; content.setAttribute('aria-busy', 'true'); status.textContent = ''; retry.hidden = true;
             resolved?.close(); resolved = undefined;
             try {
-                if (refs(body).length) resolved = await resolve(body);
+                // Borrow only bytes already displayed by this exact, connected
+                // record. No persistent cache or new source authorization.
+                const candidate = inlineReferences.get(message);
+                const inline = candidate?.body === body && candidate.target.isConnected ? candidate : undefined;
+                const hasReferences = refs(body).length > 0;
+                resolved = inline?.result?.retain();
+                render(content, body, resolved?.mapping, { onInvitation: close, images, pending: hasReferences && !resolved });
+                loading.hidden = !hasReferences || Boolean(resolved);
+                if (hasReferences && !resolved) {
+                    if (inline) {
+                        const shared = await inline.promise;
+                        resolved = inline.target.isConnected ? shared.retain() : await resolve(body);
+                    } else resolved = await resolve(body);
+                    if (!layer.isConnected) { resolved?.close(); return; }
+                    render(content, body, resolved.mapping, { onInvitation: close, images });
+                }
                 if (!layer.isConnected) { resolved?.close(); return; }
-                render(content, body, resolved?.mapping, { onInvitation: close, images });
                 await waitForImages(content, controller.signal);
             } catch (error) {
                 if (!layer.isConnected) return;
-                if (!content.childNodes.length) render(content, body, undefined, { onInvitation: close, images });
+                if (!resolved) render(content, body, undefined, { onInvitation: close, images });
                 status.textContent = t('部分引用资源不可读取，可检查来源后重试') + ' [' + error.message + ']'; retry.hidden = false;
             } finally {
                 if (layer.isConnected) { content.hidden = false; loading.hidden = true; content.setAttribute('aria-busy', 'false'); }
@@ -153,7 +168,7 @@
             if (signal.aborted) aborted();
         })));
     }
-    function render(target, body, mapping = new Map(), { onInvitation, images = [] } = {}) {
+    function render(target, body, mapping = new Map(), { onInvitation, images = [], pending = false } = {}) {
         target.classList?.toggle('sc-markdown-plain', !global.marked || !global.DOMPurify);
         if (!global.marked || !global.DOMPurify) { target.textContent = body; return; }
         let source = String(body); const placeholders = new Map();
@@ -174,7 +189,7 @@
         });
         const urls = new Set(mapping.values()), allowedImages = new Set(images.filter(value => invitationImage(value)));
         target.querySelectorAll('img,audio,video,source').forEach(node => {
-            if (!urls.has(node.getAttribute('src')) && !(node.tagName === 'IMG' && allowedImages.has(node.getAttribute('src')))) { node.removeAttribute('src'); node.setAttribute('aria-label', t('引用资源未获准或已失效')); node.setAttribute('title', t('引用资源未获准或已失效')); if (node.tagName === 'IMG') node.alt = (node.alt ? node.alt + ' · ' : '') + t('引用资源未获准或已失效'); }
+            if (!urls.has(node.getAttribute('src')) && !(node.tagName === 'IMG' && allowedImages.has(node.getAttribute('src')))) { node.removeAttribute('src'); if (pending) node.setAttribute('aria-busy', 'true'); else { node.setAttribute('aria-label', t('引用资源未获准或已失效')); node.setAttribute('title', t('引用资源未获准或已失效')); if (node.tagName === 'IMG') node.alt = (node.alt ? node.alt + ' · ' : '') + t('引用资源未获准或已失效'); } }
             if (node.matches('audio,video')) node.controls = true;
         });
         target.querySelectorAll('a').forEach(node => {
@@ -203,7 +218,17 @@
                 const objectUrl = URL.createObjectURL(blob); mapping.set(url, objectUrl); blobs.push({ url, blob });
             }
         } catch (error) { mapping.forEach(value => URL.revokeObjectURL(value)); throw error; }
-        return { mapping, blobs, close() { mapping.forEach(value => URL.revokeObjectURL(value)); } };
+        let readers = 0;
+        function retain() {
+            readers++;
+            let closed = false;
+            return { mapping, blobs, retain, close() {
+                if (closed) return;
+                closed = true;
+                if (--readers === 0) mapping.forEach(value => URL.revokeObjectURL(value));
+            } };
+        }
+        return retain();
     }
     async function archive(message) {
         const content = recordBody(message);
@@ -235,11 +260,25 @@
             const purpose = document.createElement('strong'); purpose.textContent = t('串流邀请'); wrapper.append(purpose);
         }
         wrapper.append(preview, actions, status); target.append(wrapper);
-        if (refs(body).length) resolve(body).then(result => {
-            if (!target.isConnected) { result.close(); return; }
-            render(preview, body, result.mapping, { images });
-            const observer = new MutationObserver(() => { if (!target.isConnected) { result.close(); observer.disconnect(); } }); observer.observe(document.body, { childList: true, subtree: true });
-        }).catch(() => { status.textContent = t('部分引用资源不可读取，可检查来源后重试'); });
+        if (refs(body).length) {
+            const entry = { body, target: wrapper, promise: resolve(body) };
+            inlineReferences.set(message, entry);
+            entry.promise.then(result => {
+                if (!wrapper.isConnected) {
+                    if (inlineReferences.get(message) === entry) inlineReferences.delete(message);
+                    result.close(); return;
+                }
+                entry.result = result;
+                render(preview, body, result.mapping, { images });
+                const observer = new MutationObserver(() => { if (!wrapper.isConnected) {
+                    if (inlineReferences.get(message) === entry) inlineReferences.delete(message);
+                    result.close(); observer.disconnect();
+                } }); observer.observe(document.body, { childList: true, subtree: true });
+            }).catch(() => {
+                if (inlineReferences.get(message) === entry) inlineReferences.delete(message);
+                status.textContent = t('部分引用资源不可读取，可检查来源后重试');
+            });
+        }
     }
     function menuActions(message) {
         const actions = [];
