@@ -274,7 +274,10 @@ async function readWebPost(value, { cookieFileForUrl = () => '', request = readP
         const response = await request(url, { maxBytes: 2 * 1024 * 1024, cookie: cookieHeader(cookieFileForUrl(url), url) });
         if (response.redirect) { url = sourceUrl(response.redirect); continue; }
         if (response.type && !/^(?:text\/html|application\/xhtml\+xml)$/.test(response.type)) throw Error('SNS_POST_PAGE_INVALID');
-        return { ...extractPostMetadata(response.data.toString('utf8'), url), url };
+        const html = response.data.toString('utf8');
+        const metadata = extractPostMetadata(html, url);
+        const photos = extractTwitterPageImages(html, value);
+        return { ...metadata, ...(photos.length ? { images: photos, structuredImages: true } : {}), url };
     }
     throw Error('SNS_POST_REDIRECT_LIMIT');
 }
@@ -283,6 +286,39 @@ function twitterPostId(value) {
     const url = new URL(sourceUrl(value));
     if (!/^(?:(?:www|mobile|m)\.)?(?:twitter|x)\.com$/i.test(url.hostname)) return '';
     return url.pathname.match(/^\/(?:[^/]+\/status|i\/web\/status|statuses)\/(\d{1,24})(?:\/|$)/)?.[1] || '';
+}
+
+function twitterPhotoUrls(photos) {
+    const images = [...new Set(photos.map(item => safeHttpUrl(item?.media_url_https || item?.url)).filter(value => {
+        if (!value) return false;
+        const image = new URL(value);
+        return value.length <= 4096 && image.protocol === 'https:' && image.hostname === 'pbs.twimg.com' && image.pathname.startsWith('/media/');
+    }))];
+    if (images.length > MAX_IMAGES) throw Error('SNS_POST_IMAGE_LIMIT');
+    return images;
+}
+
+function extractTwitterPageImages(html, pageUrl) {
+    const id = twitterPostId(pageUrl);
+    if (!id) return [];
+    let images = [];
+    // X's HTML can contain the focal TweetResultByRestId response as an escaped
+    // JSON result.value in its hydration script, even when syndication is down.
+    // Parse only data: never execute the script or collect images from replies,
+    // quoted posts, avatars, or video previews elsewhere in the page.
+    for (const script of String(html).matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)) {
+        for (const match of script[1].matchAll(/\bvalue\s*:\s*("(?:[^"\\]|\\[\s\S])*")/g)) {
+            let result;
+            try { result = JSON.parse(JSON.parse(match[1]))?.data?.tweet_result_by_rest_id; }
+            catch (_) { continue; }
+            const post = result?.result;
+            if (String(result?.rest_id || '') !== id || String(post?.rest_id || '') !== id || post?.__typename !== 'Tweet') continue;
+            const photos = Array.isArray(post.media_entities2) ? post.media_entities2.filter(item => item?.type === 'photo') : [];
+            const found = twitterPhotoUrls(photos);
+            if (found.length > images.length) images = found;
+        }
+    }
+    return images;
 }
 
 async function readTwitterPost(value, { request = readPublicUrl } = {}) {
@@ -301,12 +337,7 @@ async function readTwitterPost(value, { request = readPublicUrl } = {}) {
     if (!post || typeof post !== 'object' || String(post.id_str || '') !== id) throw Error('SNS_POST_CONTENT_UNAVAILABLE');
     const photos = (Array.isArray(post.mediaDetails) ? post.mediaDetails.filter(item => item?.type === 'photo') : [])
         .concat(Array.isArray(post.photos) ? post.photos : []);
-    const images = [...new Set(photos.map(item => safeHttpUrl(item?.media_url_https || item?.url)).filter(value => {
-        if (!value) return false;
-        const image = new URL(value);
-        return value.length <= 4096 && image.protocol === 'https:' && image.hostname === 'pbs.twimg.com' && image.pathname.startsWith('/media/');
-    }))];
-    if (images.length > MAX_IMAGES) throw Error('SNS_POST_IMAGE_LIMIT');
+    const images = twitterPhotoUrls(photos);
     const text = typeof post.text === 'string' ? post.text.trim().slice(0, 100000) : '';
     return { title: text.slice(0, 1000), body: text,
         author: typeof post.user?.name === 'string' ? post.user.name.slice(0, 1000) : '',
@@ -319,7 +350,9 @@ async function readSnsPostContent(value, options = {}) {
     let webpage = page.status === 'fulfilled' ? page.value : {};
     if (/(?:log\s*in|sign\s*in|security check|just a moment|access denied|登录|安全验证|验证码)/i.test(webpage.title || '') && !webpage.structuredBody) webpage = {};
     const twitter = embedded.status === 'fulfilled' ? embedded.value : null;
-    if (twitter?.body || twitter?.images.length) return { ...webpage, ...twitter, images: twitter.images.length ? twitter.images : webpage.images || [] };
+    if (twitter?.body || twitter?.images.length) return { ...webpage, ...twitter,
+        images: webpage.structuredImages && webpage.images.length > twitter.images.length ? webpage.images
+            : twitter.images.length ? twitter.images : webpage.images || [] };
     if (page.status === 'fulfilled') return webpage;
     throw page.reason;
 }

@@ -8984,6 +8984,7 @@ function emitSessionSnapshot(socket, sessionId, session, targetDeviceId, context
     const supportsRevision = Number(context.historyProtocolVersion) >= 2;
     if (!supportsRevision) {
         socket.emit('session-history', {
+            sessionId,
             messages: historyMessages,
             deletedMessageIds: session.deletedMessageIds || [],
             reason: context.reason || 'snapshot'
@@ -9010,6 +9011,7 @@ function emitSessionSnapshot(socket, sessionId, session, targetDeviceId, context
         clientMessageCount === historyMessages.length
     );
     socket.emit('session-history', {
+        sessionId,
         messages: unchanged ? [] : historyMessages,
         deletedMessageIds: unchanged ? [] : (session.deletedMessageIds || []),
         authoritative: supportsRevision,
@@ -9034,8 +9036,10 @@ function emitToReadableSessionDevices(session, event, payload, excludeDeviceId =
     if (!session?.devices) return;
     session.devices.forEach((device, deviceId) => {
         if (deviceId === excludeDeviceId || !canUseTunnelCapability(session, deviceId, 'read')) return;
-        const target = deviceSockets.get(deviceId);
-        if (target) target.emit(event, payload);
+        // A device can have another tab in a different tunnel. Route through this
+        // membership's socket, not the most recently connected device socket.
+        const target = io.sockets.sockets.get(device.socketId);
+        if (target?.connected && target.data?.deviceId === deviceId) target.emit(event, payload);
     });
 }
 
@@ -9049,6 +9053,7 @@ function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast'
         if (!session) return;
         const historyMessages = session.history.map(entry => entry.message);
         emitToReadableSessionDevices(session, 'session-history', {
+            sessionId,
             messages: historyMessages,
             deletedMessageIds: session.deletedMessageIds || [],
             authoritative: true,
@@ -9485,7 +9490,7 @@ io.on('connection', (socket) => {
                     const publicAccess=parseStoredTunnelAccess(knownTunnel?.permissions_json),publicSession=knownSession||{devices:new Map(),editorAssets:new Map(),fileAssets:new Map(),history:[],historySize:0,deletedMessageIds:loadPersistedDeletionTombstones(sessionId),shortCode:knownTunnel?.short_code||'',remark:knownTunnel?.remark||'',ownerDeviceId:knownTunnel?.owner_device_id||'',permissions:publicAccess.permissions,admins:publicAccess.admins,createdAt:Number(knownTunnel?.created_at)||Date.now(),lastActivity:Date.now()};
                     if(!knownSession)sessions.set(sessionId,publicSession);
                     currentSession=sessionId;currentDevice=deviceId;socket.data.magnetAssetId=publicMagnet.assetId;socket.data.magnetId=data.magnetId;
-                    publicSession.devices.set(deviceId,{deviceId,deviceName:'磁链下载器',socketId:socket.id,clientType:'magnet',joinedAt:Date.now(),lastSeenAt:Date.now()});bindSocketToDevice(socket,deviceId);socket.emit('session-history',{messages:[],deletedMessageIds:[]});return;
+                    publicSession.devices.set(deviceId,{deviceId,deviceName:'磁链下载器',socketId:socket.id,clientType:'magnet',joinedAt:Date.now(),lastSeenAt:Date.now()});bindSocketToDevice(socket,deviceId);socket.emit('session-history',{sessionId,messages:[],deletedMessageIds:[]});return;
                 }
                 if(!knownTunnel&&!knownSession&&data.createTunnel!==true)return emitSocketError('tunnel-access-required','请选择有效短码或主动创建新隧道');
                 const code=knownTunnel?.short_code||knownSession?.shortCode;
@@ -9682,7 +9687,7 @@ io.on('connection', (socket) => {
                     historyMessageCount: data.historyMessageCount
                 });
             } else {
-                socket.emit('session-history', { messages: [], deletedMessageIds: [], authoritative: true });
+                socket.emit('session-history', { sessionId, messages: [], deletedMessageIds: [], authoritative: true });
             }
             if (session.media?.camera) {
                 socket.emit('camera-broadcast-start', {
@@ -10462,6 +10467,7 @@ io.on('connection', (socket) => {
             const canonicalMessages = session.history.map(entry => entry.message);
             resumePendingSnsMetadataScans(sessionId, canonicalMessages);
             emitToReadableSessionDevices(session, 'session-history', {
+                sessionId,
                 messages: canonicalMessages,
                 deletedMessageIds: session.deletedMessageIds || [],
                 authoritative: true

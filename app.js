@@ -6923,6 +6923,7 @@ async function handleMessage(data) {
 }
 
 function enqueueSessionHistory(data) {
+    if (data?.sessionId && data.sessionId !== state.sessionId) return;
     sessionHistoryQueue.pending = data;
     if (sessionHistoryQueue.running) return;
     sessionHistoryQueue.running = true;
@@ -6949,6 +6950,7 @@ function enqueueHistoryAssetRecovery(messages) {
             sessionHistoryQueue.recoveryPending = null;
             for (let index = 0; index < pending.length; index++) {
                 const message = pending[index];
+                if (message?.sessionId && message.sessionId !== state.sessionId) continue;
                 if (message?.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
                     await requestMissingFileAssetCache(message, 'snapshot-background');
                 } else if (message?.type === 'collection') {
@@ -6972,14 +6974,25 @@ async function handleSessionHistory(data) {
         return;
     }
 
+    const sessionId = state.sessionId;
+    if (!sessionId || (data.sessionId && data.sessionId !== sessionId)) {
+        historyLog('snapshot-skipped', { reason: 'different-session', sessionId: data.sessionId });
+        return;
+    }
+    const isCurrentSession = () => state.sessionId === sessionId;
+    const belongsToSession = message => !message?.sessionId || message.sessionId === sessionId;
     const deletedMessageIds = Array.isArray(data.deletedMessageIds)
         ? data.deletedMessageIds.filter(id => typeof id === 'string')
         : [];
     for (const messageId of deletedMessageIds) {
-        await deleteHistoryMessageLocal(messageId);
+        const existing = await getFromStore('messages', messageId);
+        if (!isCurrentSession()) return;
+        if (belongsToSession(existing)) await deleteHistoryMessageLocal(messageId);
+        if (!isCurrentSession()) return;
     }
 
-    const messages = [...data.messages].sort(compareHistoryMessages);
+    const messages = data.messages.filter(belongsToSession).sort(compareHistoryMessages);
+    const acceptedMessages = [];
     let restored = 0;
     let duplicates = 0;
     let failed = 0;
@@ -6989,6 +7002,7 @@ async function handleSessionHistory(data) {
     });
 
     for (const message of messages) {
+        if (!isCurrentSession()) return;
         if (!message || typeof message.id !== 'string') {
             failed++;
             historyLog('snapshot-message-skipped', {
@@ -7000,6 +7014,11 @@ async function handleSessionHistory(data) {
 
         try {
             const existing = await getFromStore('messages', message.id);
+            if (!isCurrentSession()) return;
+            // Legacy snapshots lack sessionId. Never borrow a record from a
+            // different IndexedDB scope just because its message ID matches.
+            if (!belongsToSession(existing)) continue;
+            acceptedMessages.push({ ...message, sessionId });
             if (existing) {
                 duplicates++;
                 historyLog('snapshot-message-skipped', {
@@ -7027,6 +7046,7 @@ async function handleSessionHistory(data) {
 
             if (message.type === 'file' && message.fileInfo?.isSmall && message.fileInfo.data) {
                 await storeInlineFileData(message, 'snapshot');
+                if (!isCurrentSession()) return;
                 historyLog('snapshot-inline-file-stored', {
                     message: summarizeHistoryMessage(message)
                 });
@@ -7034,8 +7054,9 @@ async function handleSessionHistory(data) {
 
             await saveToStore('messages', {
                 ...message,
-                sessionId: state.sessionId
+                sessionId
             });
+            if (!isCurrentSession()) return;
             historyLog('snapshot-message-stored', {
                 message: summarizeHistoryMessage(message)
             });
@@ -7055,6 +7076,7 @@ async function handleSessionHistory(data) {
         }
     }
 
+    if (!isCurrentSession()) return;
     reorderRenderedMessages();
 
     const result = {
@@ -7067,27 +7089,29 @@ async function handleSessionHistory(data) {
 
     if (data.authoritative) {
         const localMessages = await getCurrentSessionMessages();
-        if (messages.length === 0 && deletedMessageIds.length === 0 && localMessages.length > 0) {
+        if (!isCurrentSession()) return;
+        if (acceptedMessages.length === 0 && deletedMessageIds.length === 0 && localMessages.length > 0) {
             historyLog('history-canonical-empty-ignored', {
                 localMessageCount: localMessages.length
             });
-            await reconcileLocalHistory(messages, deletedMessageIds);
+            await reconcileLocalHistory(acceptedMessages, deletedMessageIds);
         } else {
-            await pruneLocalHistoryToCanonicalSnapshot(messages, deletedMessageIds);
+            await pruneLocalHistoryToCanonicalSnapshot(acceptedMessages, deletedMessageIds);
         }
     } else {
-        await reconcileLocalHistory(messages, deletedMessageIds);
+        await reconcileLocalHistory(acceptedMessages, deletedMessageIds);
     }
 
+    if (!isCurrentSession()) return;
     if (state.socket) {
         state.socket.emit('session-history-ack', {
-            sessionId: state.sessionId,
+            sessionId,
             deviceId: state.deviceId,
             ...result
         });
         historyLog('snapshot-ack-emitted', result);
     }
-    enqueueHistoryAssetRecovery(messages);
+    enqueueHistoryAssetRecovery(acceptedMessages);
 }
 
 async function getCurrentSessionMessages() {
