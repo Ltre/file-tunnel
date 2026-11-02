@@ -3,6 +3,9 @@
  * 用于会话管理和信令中转
  */
 
+// Install diagnostics before proxy re-exec and application initialization.
+const processDiagnostics = require('./server/process-diagnostics').installProcessDiagnostics();
+
 // ==================== 出站网络代理引导 ====================
 // Node 的全局 fetch 只有在「进程启动时」设置了 NODE_USE_ENV_PROXY=1 才会读取
 // HTTP_PROXY / HTTPS_PROXY 环境变量（运行期修改 process.env 无效）。
@@ -29,6 +32,7 @@ function resolveTelegramProxyUrl() {
 if (!process.env.NODE_USE_ENV_PROXY && !process.env.DR2T_PROXY_REEXEC) {
     const telegramProxy = resolveTelegramProxyUrl();
     if (telegramProxy) {
+        processDiagnostics.setPhase('proxy-parent');
         process.env.NODE_USE_ENV_PROXY = '1';
         process.env.DR2T_PROXY_REEXEC = '1';
         if (!process.env.HTTPS_PROXY && !process.env.https_proxy) process.env.HTTPS_PROXY = telegramProxy;
@@ -41,9 +45,17 @@ if (!process.env.NODE_USE_ENV_PROXY && !process.env.DR2T_PROXY_REEXEC) {
             windowsHide: false
         });
         for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-            process.on(signal, () => { try { child.kill(signal); } catch (_) {} });
+            process.on(signal, () => {
+                processDiagnostics.markShutdown(signal);
+                try { child.kill(signal); } catch (_) {}
+            });
         }
+        child.on('error', error => {
+            processDiagnostics.proxyChildError(child, error);
+            throw error;
+        });
         child.on('exit', (code, signal) => {
+            processDiagnostics.proxyChildExit(child, code, signal);
             process.exit(code ?? (signal ? 1 : 0));
         });
         // 父进程保持存活，等待子进程退出，以正确传递信号与退出码。
@@ -11273,6 +11285,7 @@ async function startServer() {
         };
         const handleListening = () => {
             webServer.off('error', handleStartupError);
+            processDiagnostics.setPhase('ready');
             logStartup();
             resolve();
         };
@@ -11285,15 +11298,7 @@ async function startServer() {
     });
 }
 
-// Observe exits without replacing Node's fatal-error handling or keeping it alive.
-let shutdownSignal = '';
-process.on('uncaughtExceptionMonitor', (error, origin) => {
-    console.error(`[server-fatal] pid=${process.pid} origin=${origin}`, error);
-});
-process.on('exit', code => {
-    console.error(`[server-exit] pid=${process.pid} code=${code} signal=${shutdownSignal || 'none'} uptime=${Math.floor(process.uptime())}s`);
-});
-
+processDiagnostics.setPhase('starting');
 startServer().catch(err => {
     if (err?.code === 'EADDRINUSE') {
         console.error(`[启动失败] 端口 ${WEB_PORT} 已被其他进程占用，本次 npm start 没有启动成功。`);
@@ -11310,7 +11315,7 @@ let shutdownStarted = false;
 async function shutdown(signal) {
     if (shutdownStarted) return;
     shutdownStarted = true;
-    shutdownSignal = signal;
+    processDiagnostics.markShutdown(signal);
     console.log(`[server-shutdown] pid=${process.pid} signal=${signal} uptime=${Math.floor(process.uptime())}s`);
     telegramForwardJobs.close();
     streamingConsole.close();

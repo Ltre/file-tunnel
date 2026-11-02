@@ -96,23 +96,31 @@ test('abrupt process exit preserves committed WAL data and does not publish an u
 });
 
 const serverSource = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
-const diagnostics = serverSource.slice(serverSource.indexOf('// Observe exits without replacing'), serverSource.indexOf('startServer().catch'));
+const diagnosticModule = require.resolve('../server/process-diagnostics');
+const diagnostics = 'const processDiagnostics = require(' + JSON.stringify(diagnosticModule) + ').installProcessDiagnostics();';
+function runDiagnosticChild(t, program) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'infra-process-261101-4-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    return spawnSync(process.execPath, ['-e', program], {
+        encoding: 'utf8', timeout: 5000, env: { ...process.env, TUNNEL_DATA_DIR: dataDir }
+    });
+}
 
 for (const [name, action, code, expected] of [
     ['normal empty event loop', '', 0, /code=0 signal=none/],
     ['explicit nonzero exit', 'process.exit(7);', 7, /code=7 signal=none/],
     ['uncaught exception', "throw Error('fixture-fatal');", 1, /origin=uncaughtException/],
     ['unhandled rejection', "Promise.reject(Error('fixture-rejection'));", 1, /origin=unhandledRejection/]
-]) test(`process exit diagnostics retain Node's default termination behavior: ${name}`, () => {
-    assert.ok(diagnostics.includes("process.on('exit'"));
-    const child = spawnSync(process.execPath, ['-e', diagnostics + '\n' + action], { encoding: 'utf8', timeout: 5000 });
+]) test(`process exit diagnostics retain Node's default termination behavior: ${name}`, t => {
+    assert.ok(serverSource.includes("require('./server/process-diagnostics').installProcessDiagnostics()"));
+    const child = runDiagnosticChild(t, diagnostics + '\n' + action);
     assert.equal(child.error, undefined);
     assert.equal(child.status, code);
     assert.match(child.stderr, /\[server-exit\] pid=\d+/);
     assert.match(child.stderr, expected);
 });
 
-test('a requested shutdown is logged before asynchronous cleanup and retains its signal in the exit record', () => {
+test('a requested shutdown is logged before asynchronous cleanup and retains its signal in the exit record', t => {
     const shutdown = serverSource.slice(serverSource.indexOf('let shutdownStarted = false;'));
     const stubs = `
         const telegramForwardJobs = { close() {} }, streamingConsole = { close() {} };
@@ -120,7 +128,7 @@ test('a requested shutdown is logged before asynchronous cleanup and retains its
         const diskAPI = { close() {} }, diskOperations = { flush() {} }, webServer = { listening: false };
         function flushInfraAuditQueue() {}
     `;
-    const child = spawnSync(process.execPath, ['-e', diagnostics + stubs + shutdown + "\nprocess.emit('SIGINT');"], { encoding: 'utf8', timeout: 5000 });
+    const child = runDiagnosticChild(t, diagnostics + stubs + shutdown + "\nprocess.emit('SIGINT');");
     assert.equal(child.error, undefined);
     assert.equal(child.status, 0);
     assert.match(child.stdout, /\[server-shutdown\] pid=\d+ signal=SIGINT/);

@@ -664,11 +664,12 @@ function registerFileAssetHandlers(socket, context) {
                 return;
             }
             const key = relayKey(sessionId, deviceId, to, asset.id, relayTransferToken(transfer?.transferId, relayAttemptId));
-            relays.set(key, {
+            const relay = {
                 sessionId, from: deviceId, to, asset, transfer, attemptId: relayAttemptId, receivedSize: 0,
                 requestId: relayRequestId,
                 expectedSize: transfer ? transfer.rangeEnd - transfer.rangeStart : asset.size
-            });
+            };
+            relays.set(key, relay);
             const targetResponse = await emitWithAckResult(target, 'file-asset-relay-start', {
                 asset, from: deviceId, transfer, attemptId: relayAttemptId, requestId: relayRequestId
             });
@@ -678,13 +679,32 @@ function registerFileAssetHandlers(socket, context) {
                     // This is an idempotent success: the receiver already owns the complete file.
                     // Do not print an exception and do not send any relay chunks. Tell the provider
                     // to finish the request as satisfied so its assignment/load is released normally.
-                    relays.delete(key);
+                    if (relays.get(key) === relay) relays.delete(key);
                     ackOk(ack, { skipped: true, reason: rejectionReason });
                     historyLog('file-asset-relay-skipped', {
                         sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp,
                         assetId: asset.id, transfer, attemptId: relayAttemptId, requestId: relayRequestId,
                         reason: rejectionReason
                     });
+                    return;
+                }
+                if ([
+                    'receiver-not-requested',
+                    'receiver-stale-request',
+                    'receiver-p2p-active',
+                    'receiver-full-transfer-active',
+                    'receiver-multi-source-active',
+                    'receiver-transfer-active'
+                ].includes(rejectionReason)) {
+                    // Lifecycle refusals still fail the provider ACK. Remove only this
+                    // attempt so a late refused start cannot erase a newer active relay.
+                    if (relays.get(key) === relay) relays.delete(key);
+                    historyLog('file-asset-relay-receiver-rejected', {
+                        sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp,
+                        assetId: asset.id, transfer, attemptId: relayAttemptId, requestId: relayRequestId,
+                        reason: rejectionReason
+                    });
+                    ackFail(ack, rejectionReason);
                     return;
                 }
                 throw new Error(rejectionReason);
