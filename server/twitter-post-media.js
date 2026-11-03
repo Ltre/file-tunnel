@@ -11,6 +11,29 @@ function mediaUrl(value, host) {
 function photos(values) {
     return [...new Set(values.map(item=>mediaUrl(item.media_url_https||item.url,'pbs.twimg.com')).filter(value=>value && new URL(value).pathname.startsWith('/media/')))];
 }
+function authorInfo(user = {}) {
+    const name = user.core?.name || user.legacy?.name || user.name;
+    const rawHandle = String(user.core?.screen_name || user.legacy?.screen_name || user.screen_name || '').replace(/^@/, '');
+    const handle = /^[a-zA-Z0-9_]{1,15}$/.test(rawHandle) ? rawHandle : '';
+    const rawAvatar = user.avatar?.image_url || user.legacy?.profile_image_url_https || user.profile_image_url_https;
+    const avatar = mediaUrl(rawAvatar, 'pbs.twimg.com') || mediaUrl(rawAvatar, 'abs.twimg.com');
+    const safeAvatar = avatar && (/^\/profile_images\//.test(new URL(avatar).pathname) && new URL(avatar).hostname === 'pbs.twimg.com' ||
+        /^\/sticky\/default_profile_images\//.test(new URL(avatar).pathname) && new URL(avatar).hostname === 'abs.twimg.com') ? avatar : '';
+    return { author: typeof name === 'string' ? name.slice(0, 1000) : '', authorHandle: handle,
+        authorUrl: handle ? 'https://x.com/' + handle : '', authorAvatar: safeAvatar };
+}
+
+function authorFromMetadata(metadata = {}) {
+    let handle = '';
+    try {
+        const url = new URL(metadata.uploader_url || metadata.channel_url);
+        if (url.protocol === 'https:' && /^(?:(?:www|mobile|m)\.)?(?:x|twitter)\.com$/i.test(url.hostname)) handle = url.pathname.match(/^\/([a-zA-Z0-9_]{1,15})\/?$/)?.[1] || '';
+    } catch (_) {}
+    // Some extractors expose a numeric account ID as uploader_id, not a handle.
+    if (!handle && /[a-zA-Z_@]/.test(metadata.uploader_id || '')) handle = metadata.uploader_id;
+    return authorInfo({ name: metadata.uploader || metadata.channel || metadata.creator, screen_name: handle,
+        profile_image_url_https: metadata.uploader_avatar || metadata.uploader_thumbnail });
+}
 function videoId(value) {
     return String(value||'').replace(/^\d+_/, '');
 }
@@ -46,7 +69,8 @@ function fromPost(raw,id,verified=false) {
     if(new Set(videos.map((item,index)=>videoId(item.id_str||item.id||item.media_key)||'video-'+index)).size>40)throw Error('SNS_POST_MEDIA_LIMIT');
     const body=String(post.note_tweet?.note_tweet_results?.result?.text||post.details?.full_text||legacy.full_text||post.text||'').trim().slice(0,100000);
     return {images:photos(pictures),videoMetas:videos.map(videoMeta).filter(Boolean),videoIds:videos.map((item,index)=>videoId(item.id_str||item.id||item.media_key)||'video-'+index),
-        inventoryKnown:collections.length>0,requiresLogin:false,body,structuredBody:Boolean(body)};
+        inventoryKnown:collections.length>0,requiresLogin:false,body,structuredBody:Boolean(body),
+        ...authorInfo(post.core?.user_results?.result || post.user || {})};
 }
 function playableEntries(metadata) {
     return (Array.isArray(metadata?.entries)?metadata.entries:[metadata]).filter(Boolean).filter(entry=>
@@ -90,7 +114,9 @@ function mergeParts(parts) {
     }
     if(pictures.size>20)throw Error('SNS_POST_IMAGE_LIMIT');
     const text=usable.find(part=>part.structuredBody)||usable.find(part=>part.body)||usable[0]||{};
-    return {...text,images:[...pictures.values()],videoMetas:mergeMetas(...usable.map(part=>part.videoMetas)),videoIds:[...new Set(usable.flatMap(part=>part.videoIds||[]))],
+    const author=usable.find(part=>part.authorHandle&&part.authorAvatar)||usable.find(part=>part.authorHandle)||usable.find(part=>part.authorAvatar);
+    return {...text,...(author?{author:author.author||text.author||'',authorHandle:author.authorHandle||'',authorUrl:author.authorUrl||'',authorAvatar:author.authorAvatar||''}:{}),
+        images:[...pictures.values()],videoMetas:mergeMetas(...usable.map(part=>part.videoMetas)),videoIds:[...new Set(usable.flatMap(part=>part.videoIds||[]))],
         inventoryKnown:known.length>0,structuredImages:known.length>0,requiresLogin:!known.length && usable.some(part=>part.requiresLogin)};
 }
 function fromJson(payload,id) {
@@ -118,4 +144,4 @@ function fromHtml(html,id) {
     }
     return found.length?mergeParts(found):null;
 }
-module.exports={fromPost,fromJson,fromHtml,mergeParts,playableEntries,mergeMetas,missingVideos,directVideoUrl,downloadWithFallback};
+module.exports={fromPost,fromJson,fromHtml,mergeParts,playableEntries,mergeMetas,missingVideos,directVideoUrl,downloadWithFallback,authorInfo,authorFromMetadata};

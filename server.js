@@ -4052,11 +4052,27 @@ function getAdminTunnelAccess(sessionId) {
     const stored = infraStore?.getTunnel(sessionId), live = sessions.get(sessionId);
     if (!stored && !live) return null;
     const session = live || { ...parseStoredTunnelAccess(stored.permissions_json), ownerDeviceId: stored.owner_device_id || '', lastActivity: Number(stored.last_activity) || 0, devices: new Map() };
-    return { session, payload: { ...getSessionPermissionPayload(session), knownDevices: Array.from(session.devices.values()).map(device => ({ deviceId: device.deviceId, deviceName: device.deviceName })) } };
+    const members = new Map((infraStore?.listTunnelMembers(sessionId) || []).map(member => [member.device_id, {
+        deviceId: member.device_id, deviceName: member.device_name || '', lastSeen: Number(member.last_seen) || 0, online: false
+    }]));
+    for (const device of session.devices.values()) {
+        const socket = io.sockets.sockets.get(device.socketId);
+        members.set(device.deviceId, { ...members.get(device.deviceId), deviceId: device.deviceId, deviceName: device.deviceName || members.get(device.deviceId)?.deviceName || '',
+            online: Boolean(socket?.connected && socket.data?.deviceId === device.deviceId) });
+    }
+    const role = deviceId => deviceId === session.ownerDeviceId ? 'owner' : session.managementDevices?.[deviceId] ? 'administrator' : session.admins?.[deviceId] ? 'designated-administrator' : '';
+    const priority = value => value === 'owner' ? 2 : value ? 1 : 0;
+    const knownDevices = [...members.values()].map(device => ({ ...device, role: role(device.deviceId) })).sort((a, b) => priority(b.role) - priority(a.role) || Number(b.online) - Number(a.online) || (b.lastSeen || 0) - (a.lastSeen || 0) || a.deviceId.localeCompare(b.deviceId));
+    return { session, payload: { ...getSessionPermissionPayload(session), knownDevices } };
 }
 
 require('./server/tunnel-permissions').mountTunnelPermissionRoutes(app, {
-    requireAuth: adminAuth.requireAuth, validSessionId: isValidSessionId,
+    requireAuth: adminAuth.requireAuth, validSessionId: isValidSessionId, validDeviceId: isValidDeviceId,
+    deviceAccess: require('./server/tunnel-permissions').createAdminDeviceAccess({
+        get: getAdminTunnelAccess, normalize: normalizeTunnelPermissions, canUse: canUseTunnelCapability,
+        findDevice: deviceId => infraStore?.getDevice(deviceId) || [...sessions.values()].map(session => session.devices.get(deviceId)).find(Boolean),
+        save: (sessionId, session, data) => saveTunnelDevicePermissions(sessionId, session, data, 'back-office')
+    }),
     get: sessionId => getAdminTunnelAccess(sessionId)?.payload,
     save: (sessionId, data) => saveTunnelDevicePermissions(sessionId, getAdminTunnelAccess(sessionId).session, data, 'back-office')
 });

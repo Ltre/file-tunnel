@@ -12,15 +12,20 @@ before(async()=>{
     app.get('/api/sessions',(_req,res)=>res.json({sessions,totalDevices:0}));
     app.get('/api/sessions/:id/access',(_req,res)=>res.json(access));
     app.put('/api/sessions/:id/access',(req,res)=>{saved=req.body;access={...access,managementDevices:Object.values(req.body.managementDevices),devicePermissionRecords:Object.values(req.body.devicePermissions)};res.json({ok:true,...access});});
+    const selectedAccess=()=>{const manager=access.managementDevices.find(record=>record.deviceId===device),custom=access.devicePermissionRecords.find(record=>record.deviceId===device);return{deviceId:device,deviceName:'Test device',mode:manager?'administrator':custom?'custom':'default',permissions:custom?.permissions||access.permissions,defaultPermissions:access.permissions,version:'fixture-v1'};};
+    app.get('/api/sessions/:id/access/devices/:did',(_req,res)=>res.json(selectedAccess()));
+    app.put('/api/sessions/:id/access/devices/:did',(req,res)=>{saved=req.body;access.managementDevices=saved.mode==='administrator'?[{deviceId:device}]:[];access.devicePermissionRecords=saved.mode==='custom'?[{deviceId:device,permissions:saved.permissions}]:[];res.json(selectedAccess());});
     app.get('/socket.io/socket.io.js',(_req,res)=>res.type('js').send('window.io=()=>({on(){}});'));
     app.get('/api/system-backup/state',(_req,res)=>res.json({config:{full:null,core:null},jobs,active:''}));
     const appSource=fs.readFileSync(path.join(root,'app.js'),'utf8'),index=fs.readFileSync(path.join(root,'pages/index.html'),'utf8');
     const section=index.slice(index.indexOf('    <div class="tunnel-settings-layer"'),index.indexOf('    <div class="container" id="appShell"'));
     const definitions=appSource.slice(appSource.indexOf('const DEFAULT_TUNNEL_PERMISSIONS ='),appSource.indexOf('let musicPlayerPersistTimer'));
     const functions=appSource.slice(appSource.indexOf('function isTunnelOwner('),appSource.indexOf('function applyTunnelPermissionUi('));
+    const permissionHandler=appSource.slice(appSource.indexOf("    state.socket.on('session-permissions',"),appSource.indexOf("    state.socket.on('permission-denied',"));
     app.get('/front-settings',(req,res)=>res.type('html').send('<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="/client/index.css"><link rel="stylesheet" href="/client/themes.css">'+section+`<script>
         const state={sessionId:'session',deviceId:'ordinary',sessionOwnerDeviceId:${JSON.stringify(req.query.pending ? '' : 'owner')},sessionIsAdmin:false,sessionPermissions:null,sessionAdminDevices:new Map(),devices:new Map()};
         ${definitions}${functions}
+        state.socket={on(_name,callback){window.receivePermissionPayload=callback;}};function applyTunnelPermissionUi(){renderTunnelPermissionSettings();}${permissionHandler}
         document.getElementById('tunnelSettingsLayer').hidden=false;renderTunnelPermissionSettings();</script>`));
     app.use(express.static(root));server=await require('./support/listen-http.cjs').listenHttp(app);base='http://127.0.0.1:'+server.address().port;
     browser=await chromium.launch({channel:'chrome',headless:true});
@@ -50,14 +55,13 @@ test('creator details stay on the back-office tunnel list and legacy tunnels exp
     assert.match(message,/早期创建.*首个进入.*自动成为创建者/);
 });
 test('back-office page saves ordinary grants separately and administrator role disables the restriction grid',async t=>{
-    const page=await pageFor(t,'/pages/admin-tunnel-permissions.html');await page.getByRole('button',{name:'添加设备',exact:true}).waitFor();
-    await page.getByRole('combobox',{name:'选择在线设备'}).selectOption(device);await page.getByRole('button',{name:'添加设备',exact:true}).click();
+    const page=await pageFor(t,'/pages/admin-tunnel-permissions.html');await page.locator('.tunnel-access-device').click();
     await page.locator('[data-capability=sendText]').uncheck();await page.locator('[data-capability=sendMarkdown]').check();
-    await page.getByRole('button',{name:'保存设备权限',exact:true}).click();await page.waitForFunction(()=>document.querySelector('[role=status]')?.textContent.includes('隧道 ID'));
-    assert.equal(saved.devicePermissions[device].permissions.sendText,false);assert.equal(saved.devicePermissions[device].permissions.sendMarkdown,true);assert.deepEqual(saved.managementDevices,{});
+    await page.getByRole('button',{name:'保存设备权限',exact:true}).click();await page.getByText('设备权限已保存',{exact:true}).waitFor();
+    assert.equal(saved.permissions.sendText,false);assert.equal(saved.permissions.sendMarkdown,true);assert.equal(saved.mode,'custom');
     const role=page.getByRole('checkbox',{name:'设为隧道管理员（全部权限及分配权限）',exact:true});await role.check();
     assert.equal(await page.locator('[data-capability]').count(),10);assert.equal(await page.locator('[data-capability]:disabled:checked').count(),10);
-    await page.getByRole('button',{name:'保存设备权限',exact:true}).click();await page.waitForTimeout(100);assert.ok(saved.managementDevices[device]);assert.deepEqual(saved.devicePermissions,{});
+    await page.getByRole('button',{name:'保存设备权限',exact:true}).click();await page.waitForTimeout(100);assert.equal(saved.mode,'administrator');
 });
 test('front-office keeps the original designated-administrator form and adds only the two permission items',async t=>{
     const page=await pageFor(t,'/front-settings');
@@ -66,7 +70,7 @@ test('front-office keeps the original designated-administrator form and adds onl
     assert.equal(await page.locator('.tunnel-access-picker').count(),0);assert.equal(await page.locator('#tunnelPermissionGrid [data-permission]').count(),10);
     assert.equal(await page.locator('#tunnelPermissionGrid [data-permission=sendMarkdown]').count(),1);assert.equal(await page.locator('#tunnelPermissionGrid [data-permission=sendWebZip]').count(),1);
 });
-test('permission settings are greyed before the server confirms the creator and only the creator can enable them',async t=>{
+test('permission settings stay greyed before identity confirmation and the confirmed creator retains editing access',async t=>{
     const page=await pageFor(t,'/front-settings?pending=1');
     assert.equal(await page.locator('#tunnelPermissionGrid [data-permission]:disabled').count(),10,'first paint must not enable any permission checkbox');
     assert.equal(await page.locator('#saveTunnelPermissionsBtn').isVisible(),false);
@@ -75,6 +79,14 @@ test('permission settings are greyed before the server confirms the creator and 
     await page.evaluate(()=>{state.sessionOwnerDeviceId=state.deviceId;renderTunnelPermissionSettings();});
     assert.equal(await page.locator('#tunnelPermissionGrid [data-permission]:enabled').count(),10);
     assert.equal(await page.locator('#saveTunnelPermissionsBtn').isVisible(),true);
+});
+test('a confirmed management device can edit defaults and select online administrators; revocation greys both groups immediately',async t=>{
+    const page=await pageFor(t,'/front-settings?pending=1');assert.equal(await page.locator('#tunnelPermissionGrid [data-permission]:disabled').count(),10);
+    await page.evaluate(()=>{state.devices.set('peer',{deviceId:'peer',deviceName:'Online peer'});receivePermissionPayload({ownerDeviceId:'creator',isAdmin:true,canManagePermissions:true,permissions:{},adminDevices:[]});});
+    assert.equal(await page.locator('#tunnelPermissionGrid [data-permission]:enabled').count(),10);assert.equal(await page.locator('#tunnelAdminDeviceSelect').isEnabled(),true);assert.equal(await page.locator('#tunnelAdminManualId').isEnabled(),true);assert.equal(await page.locator('#addTunnelAdminBtn').isEnabled(),true);assert.equal(await page.locator('#tunnelAdminDeviceSelect option[value=peer]').count(),1);
+    assert.equal(await page.locator('#saveTunnelPermissionsBtn').isVisible(),true);assert.equal(await page.locator('#saveTunnelAdminsBtn').isVisible(),true);
+    await page.evaluate(()=>receivePermissionPayload({ownerDeviceId:'creator',isAdmin:true,canManagePermissions:false,permissions:{},adminDevices:[]}));
+    assert.equal(await page.locator('#tunnelPermissionGrid [data-permission]:disabled').count(),10);assert.equal(await page.locator('#tunnelAdminDeviceSelect').isDisabled(),true);
 });
 test('backup history starts at the newest two, grows by twenty, preserves expansion on refresh and collapses',async t=>{
     const page=await pageFor(t,'/pages/system-backup.html');await page.waitForFunction(()=>document.querySelectorAll('[data-job-id]').length===2);

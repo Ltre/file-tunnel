@@ -1,8 +1,12 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>隧道权限与隧道管理设备</title>
-<link rel="stylesheet" href="/client/admin-layout.css"><link rel="stylesheet" href="/client/tunnel-access-editor.css">
+<link rel="stylesheet" href="/client/tunnel-access-editor.css">
 <script defer src="/client/i18n-catalog.js"></script><script defer src="/client/i18n.js"></script><script defer src="/client/tunnel-access-editor.js"></script><script defer src="/client/admin-tunnel-permissions.js"></script>
-<style>body{font-family:system-ui,sans-serif;background:#f5f6fa;color:#243047}.tunnel-access-page{max-width:1100px;margin:24px auto;padding:20px;background:#fff;border-radius:12px}.tunnel-access-page input,.tunnel-access-page select,.tunnel-access-page button{font:inherit;border:1px solid #ccd2e0;border-radius:6px;padding:8px;background:#fff;color:inherit}.tunnel-access-page>h1{font-size:24px}.tunnel-access-picker{margin-bottom:20px}#tunnelAccessStatus{white-space:pre-wrap;overflow-wrap:anywhere}</style></head>
-<body data-admin-page="tunnel-permissions"><main class="tunnel-access-page"><h1>隧道权限与隧道管理设备</h1><p>管理员设备拥有全部隧道权限，并可为其它设备分配权限；普通设备的独立配置优先于隧道默认权限。</p>
-<div class="tunnel-access-picker"><select id="accessTunnelSelect" aria-label="选择隧道"></select><input id="accessTunnelId" placeholder="或输入隧道 ID" aria-label="隧道 ID"><button type="button" id="loadTunnelAccessBtn">加载隧道权限</button></div>
-<p id="tunnelAccessStatus" role="status"></p><div id="tunnelAccessEditor"></div></main></body></html>
+</head>
+<body data-admin-page="tunnel-permissions"><main class="tunnel-access-page"><h1>隧道权限与隧道管理设备<button type="button" id="tunnelAccessHelpBtn" class="tunnel-access-help-trigger" aria-label="查看权限说明" aria-expanded="false" aria-controls="tunnelAccessHelp">i</button></h1>
+<p id="tunnelAccessHelp" class="tunnel-access-help" hidden>管理员设备拥有全部隧道权限，并可为其它设备分配权限；普通设备的独立配置优先于隧道默认权限。</p>
+<div class="tunnel-access-picker"><label for="accessTunnelSelect">选择隧道</label><select id="accessTunnelSelect" aria-label="选择隧道"></select><input id="accessTunnelId" placeholder="或输入隧道 ID" aria-label="隧道 ID"></div>
+<p id="tunnelAccessStatus" role="status"></p>
+<div id="tunnelAccessMissing" class="tunnel-access-notice" role="status" hidden>当前选中隧道不存在，请重新指定</div>
+<div id="accessDevicePicker" class="tunnel-access-devices" aria-label="选择设备" hidden><label for="accessDeviceId">选择设备</label><div class="tunnel-access-device-options"><textarea id="accessDeviceId" rows="3" wrap="soft" spellcheck="false" placeholder="或粘贴设备 ID" aria-label="设备 ID"></textarea><div id="accessDeviceList" class="tunnel-access-device-list"></div></div></div>
+<p id="deviceAccessStatus" role="status"></p><div id="tunnelAccessEditor"></div></main></body></html>

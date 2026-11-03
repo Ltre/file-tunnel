@@ -206,3 +206,6 @@
 .sc-import-busy-card>[data-import-file]{max-width:100%;overflow-wrap:anywhere;font-size:13px;line-height:1.5;opacity:.75}
 
 .tunnel-markdown-image[hidden]{display:none!important}.tunnel-markdown-image-placeholder{display:inline-flex;align-items:center;justify-content:center;min-height:36px;max-width:100%;padding:6px 12px;margin:4px 0;border-radius:4px;background:var(--input-bg,transparent);color:var(--text-color,inherit);font-size:.9em;white-space:normal}
+.sns-post-author{display:flex;align-items:center;gap:8px;min-width:0}
+.sns-post-author a{min-width:0;overflow-wrap:anywhere}.sns-post-author a>span{opacity:.8}
+.sns-post-author>img.sns-post-avatar{display:block;flex:none;width:28px;height:28px;max-width:28px;max-height:28px;border-radius:50%;object-fit:cover}

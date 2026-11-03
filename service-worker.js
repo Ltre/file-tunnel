@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v117-content-v8-sns-logs-permissions-261103-1';
+const CACHE_NAME = 'instant-tunnel-v119-content-v8-sns-author-admin-selection-261103-2';
 const APP_SHELL = [
     '/',
     '/index.html',

@@ -744,5 +744,24 @@
         const key = source.replace(/\s+/g, '');
         catalog[key] = { 'zh-Hans': source, 'zh-Hant': traditional, en, ...(catalog[key] || {}) };
     }
+    for (const [source, traditional, en] of [
+        ['当前选中隧道不存在，请重新指定','目前選取的隧道不存在，請重新指定','The selected tunnel does not exist. Select another tunnel.'],
+        ['当前选中设备不存在，请重新指定','目前選取的裝置不存在，請重新指定','The selected device does not exist. Select another device.'],
+        ['正在验证设备并读取权限...','正在驗證裝置並讀取權限...','Validating the device and loading permissions...'],
+        ['请选择设备以查看隧道权限','請選取裝置以查看隧道權限','Select a device to view its tunnel permissions'],
+        ['权限尚未保存','權限尚未儲存','Permission changes have not been saved'],
+        ['选择设备','選取裝置','Select a device'],
+        ['创建者','建立者','Creator'],
+        ['管理员','管理員','Administrator'],
+        ['隧道创建者和管理设备可添加或移除指定设备管理员，并配置其独立权限。','隧道建立者和管理裝置可新增或移除指定裝置管理員，並設定其獨立權限。','Tunnel creators and management devices can add or remove designated device administrators and configure their individual permissions.'],
+        ['仅隧道创建者或具备管理权限的设备可配置管理员。','僅隧道建立者或具備管理權限的裝置可設定管理員。','Only the tunnel creator or a device with management permission can configure administrators.'],
+        ['你是隧道管理员，可修改权限','你是隧道管理員，可修改權限','You are a tunnel administrator and can edit permissions'],
+        ['仅创建者或具备管理权限的设备可修改','僅建立者或具備管理權限的裝置可修改','Only the creator or a device with management permission can edit this'] ,
+        ['查看权限说明','查看權限說明','About device permissions'],
+        ['管理员设备拥有全部隧道权限，并可为其它设备分配权限；普通设备的独立配置优先于隧道默认权限。','管理員裝置擁有全部隧道權限，並可為其它裝置分配權限；一般裝置的獨立設定優先於隧道預設權限。','Administrator devices have all tunnel permissions and can assign permissions to other devices. Individual settings for ordinary devices take precedence over the tunnel defaults.']
+    ]) {
+        const key = source.replace(/\s+/g, '');
+        catalog[key] = { 'zh-Hans': source, 'zh-Hant': traditional, en, ...(catalog[key] || {}) };
+    }
     window.Drop2TunnelI18nCatalog = catalog;
 })();

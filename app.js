@@ -119,6 +119,7 @@ const state = {
     sessionAdminDevices: new Map(),
     sessionSelfAdminPermissions: null,
     sessionIsAdmin: false,
+    sessionCanManagePermissions: false,
     pendingSharedFileCount: 0,
     pendingSharedFileError: false,
     pendingRecordId: '',
@@ -2026,6 +2027,7 @@ function initSocket() {
         state.sessionOwnerDeviceId = String(data?.ownerDeviceId || '');
         state.sessionPermissions = { ...DEFAULT_TUNNEL_PERMISSIONS, ...(data?.permissions || {}) };
         state.sessionIsAdmin = data?.isAdmin === true;
+        state.sessionCanManagePermissions = data?.canManagePermissions === true;
         state.sessionSelfAdminPermissions = data?.selfAdminPermissions
             ? { ...DEFAULT_TUNNEL_PERMISSIONS, ...data.selfAdminPermissions }
             : null;
@@ -17997,7 +17999,7 @@ function isTunnelOwner() {
 }
 
 function canManageTunnelSettings() {
-    return Boolean(state.sessionOwnerDeviceId && state.sessionOwnerDeviceId === state.deviceId);
+    return Boolean(state.sessionOwnerDeviceId && (state.sessionOwnerDeviceId === state.deviceId || state.sessionCanManagePermissions === true));
 }
 
 function hasTunnelPermission(capability) {
@@ -18071,8 +18073,8 @@ function renderTunnelAdminSettings() {
     add.disabled = !editable;
     save.hidden = !editable;
     hint.textContent = editable
-        ? '只有隧道创建者可添加或移除管理员；管理员使用这里分配的独立权限。'
-        : (state.sessionIsAdmin ? '你是此隧道管理员，正在使用独立权限。' : '仅隧道创建者可配置管理员。');
+        ? '隧道创建者和管理设备可添加或移除指定设备管理员，并配置其独立权限。'
+        : (state.sessionIsAdmin ? '你是此隧道管理员，正在使用独立权限。' : '仅隧道创建者或具备管理权限的设备可配置管理员。');
 
     container.replaceChildren();
     if (!admins.length) {
@@ -18141,7 +18143,7 @@ function renderTunnelPermissionSettings() {
         option.append(input, document.createTextNode(label));
         grid.appendChild(option);
     });
-    hint.textContent = canManageTunnelSettings() ? '你是隧道创建者' : (state.sessionIsAdmin ? '你是指定设备管理员' : '仅创建者可修改');
+    hint.textContent = canManageTunnelSettings() ? (state.sessionOwnerDeviceId === state.deviceId ? '你是隧道创建者' : '你是隧道管理员，可修改权限') : (state.sessionIsAdmin ? '你是指定设备管理员' : '仅创建者或具备管理权限的设备可修改');
     save.hidden = !canManageTunnelSettings();
     renderTunnelAdminSettings();
 }

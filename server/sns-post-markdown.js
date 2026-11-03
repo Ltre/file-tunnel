@@ -423,7 +423,7 @@ function createSnsPostImagePublisher({ assetDir, record, registerAsset, fileInfo
         const target = path.join(assetDir, assetId), temporary = target + '.' + crypto.randomBytes(8).toString('hex') + '.tmp';
         try { fs.writeFileSync(temporary, image.data); fs.renameSync(temporary, target); }
         finally { try { fs.unlinkSync(temporary); } catch (_) {} }
-        const asset = { id: assetId, path: target, name: 'sns-post-' + (index + 1) + '.' + ext, type: image.type,
+        const asset = { id: assetId, path: target, name: (index === 'author-avatar' ? 'sns-author-avatar' : 'sns-post-' + (index + 1)) + '.' + ext, type: image.type,
             size: image.data.length, sessionId, createdAt: Date.now(), source: 'sns-post-image', sourceUrl: image.url,
             sourceMessageId: source.messageId, snsMediaItemId: source.id, mediaKind: 'image' };
         // These image assets have no yt-dlp acquisition task. The existing SNS
@@ -471,6 +471,7 @@ async function inspectSnsPost(source, { runMetadata, cookieFileForUrl, request, 
     const body = description || webpage.body || '';
     // A login/anti-bot page's generic title must not become a successful empty post.
     if (!body && !webpage.images?.length && parsed.status === 'rejected') throw Error('SNS_POST_CONTENT_UNAVAILABLE');
+    const author = isTwitter ? twitterMedia.authorFromMetadata(metadata) : null;
     return {
         title: String(metadata.title || metadata.fulltitle || webpage.title || source.title || '').slice(0, 1000),
         body,
@@ -481,21 +482,32 @@ async function inspectSnsPost(source, { runMetadata, cookieFileForUrl, request, 
         partial: !description && !webpage.structuredBody,
         mediaMetas: isTwitter ? recoveredEntries : entries.length ? entries : [metadata],
         mediaParsed: isTwitter ? recoveredEntries.length > 0 : parsed.status === 'fulfilled',
-        ...(isTwitter ? { mediaComplete: true } : {})
+        ...(isTwitter ? { mediaComplete: true, author: webpage.author || author.author,
+            authorHandle: webpage.authorHandle || author.authorHandle, authorUrl: webpage.authorUrl || author.authorUrl,
+            authorAvatar: webpage.authorAvatar || author.authorAvatar } : {})
     };
 }
 
 const markdownText = value => String(value || '').replace(/\r\n?/g, '\n').replace(/([\\`*_[\]<>#])/g, '\\$1');
-function buildPostMarkdown({ source, metadata, media, notes = [] }) {
+const htmlText = value => String(value || '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
+function tunnelMediaReference({ sessionId, messageId, file }) {
+    if (![sessionId, messageId, file?.id].every(value => /^[\w.-]+$/.test(String(value || '')))) throw Error('SNS_POST_REFERENCE_INVALID');
+    return 'tunnel-blob:' + sessionId + '/' + messageId + '/' + file.id;
+}
+function buildPostMarkdown({ source, metadata, media, avatar, notes = [] }) {
     const lines = [], title = String(metadata.title || source.title || source.sourceUrl || '').trim();
     if (title) lines.push('# ' + markdownText(title).replace(/\n/g, ' '), '');
-    if (metadata.author) lines.push(markdownText(metadata.author), '');
+    const author = twitterPostId(source.sourceUrl) ? twitterMedia.authorInfo({ name: metadata.author, screen_name: metadata.authorHandle }) : null;
+    if (author?.authorHandle) {
+        const picture = avatar && String(avatar.file?.type || '').startsWith('image/') ? '<img class="sns-post-avatar" src="' + tunnelMediaReference(avatar) + '" width="28" height="28" alt="' + htmlText(author.author || '@' + author.authorHandle) + '">' : '';
+        lines.push('<p class="sns-post-author">' + picture + '<a href="' + author.authorUrl + '">' + htmlText(author.author) +
+            (author.author ? ' ' : '') + '<span>@' + author.authorHandle + '</span></a></p>', '');
+    } else if (metadata.author) lines.push(markdownText(metadata.author), '');
     if (metadata.publishedAt) lines.push(markdownText(metadata.publishedAt), '');
     if (metadata.body) lines.push(markdownText(metadata.body), '');
     lines.push('[' + markdownText(source.sourceUrl) + '](' + encodeURI(sourceUrl(source.sourceUrl)).replace(/\(/g, '%28').replace(/\)/g, '%29') + ')', '');
     for (const { sessionId, messageId, file } of media) {
-        if (![sessionId, messageId, file?.id].every(value => /^[\w.-]+$/.test(String(value || '')))) throw Error('SNS_POST_REFERENCE_INVALID');
-        const ref = 'tunnel-blob:' + sessionId + '/' + messageId + '/' + file.id;
+        const ref = tunnelMediaReference({ sessionId, messageId, file });
         if (String(file.type || '').startsWith('image/')) lines.push('![' + markdownText(file.name) + '](' + ref + ')', '');
         else if (/^(?:video|audio)\//.test(String(file.type || ''))) {
             const tag = String(file.type).startsWith('audio/') ? 'audio' : 'video';
@@ -519,7 +531,8 @@ function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}
         sourceUrl(source.sourceUrl);
         const key = [sessionId, messageId, sourceId].join(':');
         const found = existing(sessionId, messageId, sourceId);
-        const refresh = Boolean(found && twitterPostId(source.sourceUrl) && found.snsAcquisition?.mediaComplete !== true);
+        const complete = message => message?.snsAcquisition?.mediaComplete === true && message?.snsAcquisition?.authorVersion === 1;
+        const refresh = Boolean(found && twitterPostId(source.sourceUrl) && !complete(found));
         if (found && !refresh) return { id: found.id, started: false, promise: Promise.resolve(found) };
         if (jobs.has(key)) return jobs.get(key);
         if (jobs.size >= 16) throw Error('SNS_POST_BUSY');
@@ -553,14 +566,24 @@ function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}
             }
             if (metadata.partial) notes.push('平台仅返回了摘要；本文不保证包含原帖全部内容，请结合原帖链接核对。');
             if (metadata.note) notes.push(metadata.note);
-            const markdown = buildPostMarkdown({ source, metadata, media, notes });
+            let avatar;
+            if (twitterPostId(source.sourceUrl) && metadata.authorHandle && metadata.authorAvatar) {
+                const safe = twitterMedia.authorInfo({ screen_name: metadata.authorHandle, profile_image_url_https: metadata.authorAvatar });
+                if (safe.authorAvatar) {
+                    const generated = await image(sessionId, source, safe.authorAvatar, 'author-avatar', deviceId);
+                    authorize(sessionId, deviceId);
+                    if (!generated?.fileInfo?.id) throw Error('SNS_POST_MEDIA_UNAVAILABLE');
+                    avatar = { sessionId, messageId: generated.id, file: generated.fileInfo };
+                }
+            }
+            const markdown = buildPostMarkdown({ source, metadata, media, avatar, notes });
             authorize(sessionId, deviceId);
             if (!record(sessionId, messageId)) throw Error('SNS_POST_SOURCE_MISSING');
             const previous = existing(sessionId, messageId, sourceId);
-            if (previous && (!refresh || previous.snsAcquisition?.mediaComplete === true)) return previous;
-            const message = { id, type: 'markdown', markdown, timestamp: Date.now(), ...sender(), sessionId,
+            if (previous && (!refresh || complete(previous))) return previous;
+            const message = { id, type: 'markdown', markdown, timestamp: refresh ? found.timestamp || Date.now() : Date.now(), ...sender(), sessionId,
                 snsAcquisition: { source: 'sns-post-markdown', sourceMessageId: messageId, sourceId, sourceUrl: source.sourceUrl,
-                    ...(twitterPostId(source.sourceUrl) ? { mediaComplete: true } : {}) } };
+                    ...(twitterPostId(source.sourceUrl) ? { mediaComplete: true, authorVersion: 1 } : {}) } };
             if (refresh && updatePublished) {
                 if (await updatePublished(sessionId, message, deviceId) === false) throw Error('SNS_POST_SOURCE_MISSING');
             }

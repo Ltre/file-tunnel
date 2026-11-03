@@ -491,6 +491,10 @@ class InfraStore {
         `);
     }
 
+    listTunnelMembers(sessionId) {
+        return this.query('SELECT device_id, device_name, device_type, first_seen, last_seen FROM tunnel_members WHERE session_id = ? ORDER BY last_seen DESC, device_id', [sessionId]);
+    }
+
     recordTunnelMember(sessionId, member = {}, now = Date.now()) {
         const deviceId = String(member.deviceId || member.device_id || '').trim();
         if (!sessionId || !deviceId) return { inserted: false, reason: 'invalid-member' };
