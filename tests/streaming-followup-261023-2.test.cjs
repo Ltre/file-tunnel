@@ -80,11 +80,12 @@ test('cancelling protected batch deletion refreshes completed items and retains 
     assert.equal(writes.length, 2); assert.ok(writes.every(call => call.options.accountId === 'alice'));
 });
 
-test('forwarding Markdown uses the existing text capability and does not bypass denial', () => {
+test('forwarding Markdown uses its independent capability and does not bypass denial', () => {
     const source = read('server.js'), start = source.indexOf("    socket.on('forward-message'"), end = source.indexOf("    socket.on(", start + 20);
     for (const allowed of [false, true]) {
         let handler, result, capability, published = 0;
-        vm.runInNewContext(source.slice(start, end), {
+        const capabilityStart=source.indexOf('function tunnelMessageCapabilities('),capabilityEnd=source.indexOf('function getTunnelAdminRecord(',capabilityStart);
+        vm.runInNewContext(source.slice(capabilityStart,capabilityEnd)+source.slice(start, end), {
             socket: { id: 'socket', on: (_event, fn) => { handler = fn; } }, sanitizeString: value => value, isValidSessionId: () => true,
             infraStore: { getTunnel: () => ({}), findShortCodeForSession: () => 'ABCDE' }, currentDevice: 'device', currentSession: 'source',
             sessions: new Map([['source', { devices: new Map([['device', {}]]) }]]), MAX_MESSAGE_SIZE: 200000,
@@ -92,6 +93,6 @@ test('forwarding Markdown uses the existing text capability and does not bypass 
             addToSessionHistory: () => ({ stored: true }), getSessionAuditFileAssets: () => [], emitToReadableSessionDevices: () => { published++; }, scheduleSessionHistoryBroadcast() {}, clientIp: 'fixture', console
         });
         handler({ targetSessionId: 'target', message: { sender: 'device', type: 'markdown', markdown: 'body' } }, value => { result = value; });
-        assert.equal(capability, 'sendText'); assert.equal(result.ok, allowed); assert.equal(published, allowed ? 1 : 0);
+        assert.equal(capability, 'sendMarkdown'); assert.equal(result.ok, allowed); assert.equal(published, allowed ? 1 : 0);
     }
 });

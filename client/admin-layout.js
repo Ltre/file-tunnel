@@ -2,6 +2,8 @@
 (function () {
     const items = [
         ['概览', '/admin/home', '⌂', '隧道总览'],
+        ['', '/admin/tunnels', '☷', '隧道列表'],
+        ['', '/admin/tunnel-permissions', '⚿', '隧道权限与隧道管理设备'],
         ['', '/admin/devices', '◎', '所有访问设备'],
         ['', '/admin/magnets', '🧲', '已分享磁链'],
         ['媒体工具', '/sns-dl', '↓', 'SNS 媒体下载'],

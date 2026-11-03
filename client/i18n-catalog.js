@@ -3,6 +3,7 @@
 
     const languages = ['zh-Hant', 'en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th', 'fa', 'km', 'my'];
     const rows = [
+        ['图片载入中...','圖片載入中...','Loading image...','画像を読み込み中...','Chargement de l’image...','Загрузка изображения...','Cargando imagen...','Caricamento immagine...','이미지 불러오는 중...','Memuatkan imej...','Memuat gambar...','Đang tải ảnh...','กำลังโหลดรูปภาพ...','در حال بارگیری تصویر...','កំពុងផ្ទុករូបភាព...','ပုံကို တင်နေသည်...'],
         ['暂未能获取文件，请稍后重试还原','暫時無法取得檔案，請稍後重試還原','Could not retrieve the file. Try restoring it again later','ファイルを取得できませんでした。後で復元を再試行してください','Impossible de récupérer le fichier. Réessayez la restauration plus tard','Не удалось получить файл. Повторите восстановление позже','No se pudo obtener el archivo. Intenta restaurarlo más tarde','Impossibile recuperare il file. Riprova il ripristino più tardi','파일을 가져오지 못했습니다. 나중에 다시 복원해 주세요','Fail belum dapat diperoleh. Cuba pulihkan semula kemudian','File belum dapat diambil. Coba pulihkan lagi nanti','Chưa thể lấy tệp. Hãy thử khôi phục lại sau','ยังเรียกไฟล์ไม่ได้ โปรดลองกู้คืนอีกครั้งภายหลัง','دریافت فایل ممکن نشد. بازیابی را بعداً دوباره امتحان کنید','មិនអាចទាញយកឯកសារបានទេ។ សូមសាកល្បងស្ដារឡើងវិញនៅពេលក្រោយ','ဖိုင်ကို မရယူနိုင်သေးပါ။ နောက်မှ ပြန်လည်ရယူရန် ထပ်စမ်းပါ'],
         ['正在转存到网盘','正在轉存到網盤','Saving to drive','ドライブに保存中','Enregistrement sur le disque','Сохранение на диск','Guardando en la unidad','Salvataggio sul disco','드라이브에 저장 중','Menyimpan ke pemacu','Menyimpan ke penyimpanan','Đang lưu vào ổ đĩa','กำลังบันทึกลงไดรฟ์','در حال ذخیره در درایو','កំពុងរក្សាទុកក្នុងថាស','ဒရိုက်တွင် သိမ်းဆည်းနေသည်'],
         ['抓取任务转存','抓取工作轉存','Save downloaded task','取得タスクを保存','Enregistrer le téléchargement','Сохранение загрузки','Guardar descarga','Salva download','다운로드 작업 저장','Simpan tugas muat turun','Simpan tugas unduhan','Lưu tác vụ tải xuống','บันทึกงานดาวน์โหลด','ذخیرهٔ کار دانلود','រក្សាទុកកិច្ចការទាញយក','ဒေါင်းလုဒ်လုပ်ငန်း သိမ်းဆည်းရန်'],
@@ -342,6 +343,406 @@
     for (const row of rows) {
         const key = String(row[0]).replace(/\s+/g, '');
         catalog[key] = Object.fromEntries(languages.map((language, index) => [language, row[index + 1]]));
+    }
+    // Additive feature translations use the existing English fallback for other locales.
+    for (const [source, traditional, en] of [
+        [
+            "系统日志管理",
+            "系統日誌管理",
+            "System logs"
+        ],
+        [
+            "查看错误日志",
+            "查看錯誤日誌",
+            "View error logs"
+        ],
+        [
+            "查看普通操作日志",
+            "查看一般操作日誌",
+            "View operation logs"
+        ],
+        [
+            "请选择有效的起止时间",
+            "請選擇有效的起訖時間",
+            "Choose a valid start and end time"
+        ],
+        [
+            "时间范围",
+            "時間範圍",
+            "Time range"
+        ],
+        [
+            "关键词检索",
+            "關鍵字檢索",
+            "Search keywords"
+        ],
+        [
+            "15分钟内",
+            "15分鐘內",
+            "Last 15 minutes"
+        ],
+        [
+            "1小时内",
+            "1小時內",
+            "Last hour"
+        ],
+        [
+            "3小时内",
+            "3小時內",
+            "Last 3 hours"
+        ],
+        [
+            "1天内",
+            "1天內",
+            "Last day"
+        ],
+        [
+            "3天内",
+            "3天內",
+            "Last 3 days"
+        ],
+        [
+            "1周内",
+            "1週內",
+            "Last week"
+        ],
+        [
+            "2周内",
+            "2週內",
+            "Last 2 weeks"
+        ],
+        [
+            "1个月内",
+            "1個月內",
+            "Last month"
+        ],
+        [
+            "3个月内",
+            "3個月內",
+            "Last 3 months"
+        ],
+        [
+            "半年内",
+            "半年內",
+            "Last 6 months"
+        ],
+        [
+            "一年内",
+            "一年內",
+            "Last year"
+        ],
+        [
+            "自定义时间范围",
+            "自訂時間範圍",
+            "Custom time range"
+        ],
+        [
+            "起始时间",
+            "起始時間",
+            "Start time"
+        ],
+        [
+            "结束时间",
+            "結束時間",
+            "End time"
+        ],
+        [
+            "筛选日志",
+            "篩選日誌",
+            "Filter logs"
+        ],
+        [
+            "导出检索结果",
+            "匯出檢索結果",
+            "Export search results"
+        ],
+        [
+            "删除检索范围",
+            "刪除檢索範圍",
+            "Delete search results"
+        ],
+        [
+            "删除首尾范围",
+            "刪除首尾範圍",
+            "Delete endpoint range"
+        ],
+        [
+            "日志只保存在当前浏览器，最多缓存10万条或64 MiB；满后暂停记录，清理后继续。",
+            "日誌僅儲存於目前瀏覽器，最多快取10萬筆或64 MiB；額滿後暫停記錄，清理後繼續。",
+            "Logs stay in this browser, up to 100,000 entries or 64 MiB. Recording pauses when full and resumes after cleanup."
+        ],
+        [
+            "正在读取日志...",
+            "正在讀取日誌...",
+            "Reading logs..."
+        ],
+        [
+            "请先选择首尾日志",
+            "請先選擇首尾日誌",
+            "Select the first and last log entries"
+        ],
+        [
+            "设为首条",
+            "設為首筆",
+            "Set first entry"
+        ],
+        [
+            "设为尾条",
+            "設為末筆",
+            "Set last entry"
+        ],
+        [
+            "没有匹配的日志",
+            "沒有符合條件的日誌",
+            "No matching logs"
+        ],
+        [
+            "当前页 {0} 条",
+            "本頁 {0} 筆",
+            "{0} entries on this page"
+        ],
+        [
+            "首尾：{0} / {1}",
+            "首尾：{0} / {1}",
+            "Endpoints: {0} / {1}"
+        ],
+        [
+            "日志缓存已满，请清理后继续记录",
+            "日誌快取已滿，請清理後繼續記錄",
+            "Log storage is full. Delete logs to resume recording"
+        ],
+        [
+            "日志缓存不可用",
+            "日誌快取無法使用",
+            "Log storage is unavailable"
+        ],
+        [
+            "全部删除",
+            "全部刪除",
+            "Delete all"
+        ],
+        [
+            "确定删除匹配范围内的 {0} 条日志？此操作不可撤销。",
+            "確定刪除符合範圍內的 {0} 筆日誌？此操作無法復原。",
+            "Delete {0} matching log entries? This cannot be undone."
+        ],
+        [
+            "已删除 {0} 条日志",
+            "已刪除 {0} 筆日誌",
+            "Deleted {0} log entries"
+        ],
+        [
+            "日志已导出",
+            "日誌已匯出",
+            "Logs exported"
+        ],
+        [
+            "隧道权限与隧道管理设备",
+            "隧道權限與隧道管理裝置",
+            "Tunnel permissions and management devices"
+        ],
+        [
+            "正在读取隧道权限...",
+            "正在讀取隧道權限...",
+            "Loading tunnel permissions..."
+        ],
+        [
+            "隧道 ID",
+            "隧道 ID",
+            "Tunnel ID"
+        ],
+        [
+            "创建者设备",
+            "建立者裝置",
+            "Creator device"
+        ],
+        [
+            "权限读取失败",
+            "權限讀取失敗",
+            "Could not read permissions"
+        ],
+        [
+            "请选择隧道或输入隧道 ID",
+            "請選擇隧道或輸入隧道 ID",
+            "Select a tunnel or enter a tunnel ID"
+        ],
+        [
+            "加载隧道权限",
+            "載入隧道權限",
+            "Load tunnel permissions"
+        ],
+        [
+            "或输入隧道 ID",
+            "或輸入隧道 ID",
+            "Or enter a tunnel ID"
+        ],
+        [
+            "读取传输记录",
+            "讀取傳輸記錄",
+            "Read transfer history"
+        ],
+        [
+            "发送文本",
+            "傳送文字",
+            "Send text"
+        ],
+        [
+            "发送富文本",
+            "傳送豐富文字",
+            "Send rich text"
+        ],
+        [
+            "发送文件",
+            "傳送檔案",
+            "Send files"
+        ],
+        [
+            "发送Markdown",
+            "傳送Markdown",
+            "Send Markdown"
+        ],
+        [
+            "发送网页ZIP",
+            "傳送網頁ZIP",
+            "Send web ZIP"
+        ],
+        [
+            "删除记录",
+            "刪除記錄",
+            "Delete records"
+        ],
+        [
+            "全局对讲机发声",
+            "全域對講機發話",
+            "Speak over global intercom"
+        ],
+        [
+            "群语音通话",
+            "群組語音通話",
+            "Group voice chat"
+        ],
+        [
+            "添加设备",
+            "新增裝置",
+            "Add device"
+        ],
+        [
+            "保存设备权限",
+            "儲存裝置權限",
+            "Save device permissions"
+        ],
+        [
+            "选择在线设备",
+            "選擇線上裝置",
+            "Select online device"
+        ],
+        [
+            "或粘贴设备 ID",
+            "或貼上裝置 ID",
+            "Or paste a device ID"
+        ],
+        [
+            "权限配置已更新，请重新打开后再编辑",
+            "權限設定已更新，請重新開啟後再編輯",
+            "Permissions changed. Reopen before editing"
+        ],
+        [
+            "尚未单独配置设备权限",
+            "尚未個別設定裝置權限",
+            "No device-specific permissions configured"
+        ],
+        [
+            "设为隧道管理员（全部权限及分配权限）",
+            "設為隧道管理員（全部權限及分配權限）",
+            "Make tunnel administrator (all permissions and permission management)"
+        ],
+        [
+            "恢复默认权限",
+            "還原預設權限",
+            "Restore inherited permissions"
+        ],
+        [
+            "请选择设备或输入有效设备 ID",
+            "請選擇裝置或輸入有效裝置 ID",
+            "Select a device or enter a valid device ID"
+        ],
+        [
+            "创建者始终拥有全部权限",
+            "建立者一律擁有全部權限",
+            "The creator always has all permissions"
+        ],
+        [
+            "正在保存权限...",
+            "正在儲存權限...",
+            "Saving permissions..."
+        ],
+        [
+            "设备权限已保存",
+            "裝置權限已儲存",
+            "Device permissions saved"
+        ],
+        [
+            "设备权限保存失败",
+            "裝置權限儲存失敗",
+            "Could not save device permissions"
+        ],
+        [
+            "管理员设备拥有全部隧道权限，并可为其它设备分配权限；普通设备的独立配置优先于隧道默认权限。",
+            "管理員裝置擁有全部隧道權限，並可為其他裝置分配權限；一般裝置的個別設定優先於隧道預設權限。",
+            "Administrator devices have all tunnel permissions and can assign permissions to other devices. Device-specific settings override tunnel defaults."
+        ],
+        [
+            "活跃状态",
+            "活躍狀態",
+            "Activity"
+        ],
+        [
+            "真实设备在线状态",
+            "真實裝置線上狀態",
+            "Real-device presence"
+        ],
+        [
+            "有真实设备在线",
+            "有真實裝置在線",
+            "Real devices online"
+        ],
+        [
+            "无真实设备在线",
+            "無真實裝置在線",
+            "No real devices online"
+        ],
+        [
+            "有传输记录",
+            "有傳輸記錄",
+            "Has transfer history"
+        ],
+        [
+            "无传输记录",
+            "無傳輸記錄",
+            "No transfer history"
+        ],
+        [
+            "查看创建者说明",
+            "查看建立者說明",
+            "About the creator"
+        ],
+        [
+            "该隧道尚未记录创建设备，属于早期创建的隧道。此后首个进入该隧道的设备将自动成为创建者。",
+            "此隧道尚未記錄建立裝置，屬於早期建立的隧道。此後首個進入此隧道的裝置將自動成為建立者。",
+            "This older tunnel has no recorded creator device. The next device to enter it will automatically become its creator."
+        ],
+        [
+            "原帖发布账号已被 X 停用，当前无法读取该帖子；这不代表当前登录账号被停用",
+            "原文發佈帳號已被 X 停用，目前無法讀取此貼文；這不代表目前登入帳號被停用",
+            "X suspended the original author account, so this post is unavailable. This does not mean your signed-in account was suspended."
+        ]
+    ]) {
+        const key = source.replace(/\s+/g, "");
+        catalog[key] = { "zh-Hans": source, "zh-Hant": traditional, en, ...(catalog[key] || {}) };
+    }
+    for (const [source, traditional, en] of [['隧道列表','隧道清單','Tunnel list'],['返回总览','返回總覽','Back to overview'],['创建设备','建立裝置','Creator device'],['无','無','None'],['符合条件：{0} / {1}','符合條件：{0} / {1}','Matching: {0} / {1}']]) {
+        const key = source.replace(/\s+/g, '');
+        catalog[key] = { 'zh-Hans': source, 'zh-Hant': traditional, en, ...(catalog[key] || {}) };
     }
     window.Drop2TunnelI18nCatalog = catalog;
 })();

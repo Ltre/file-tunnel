@@ -1,6 +1,7 @@
 (() => {
     'use strict';
     const $ = id => document.getElementById(id), apiRoot = '/api/system-backup';
+    let visibleHistoryCount = 2;
     let state = null, mode = '', path = '', loading = false, selectionVersion = 0, polling = null, actionCount = 0;
     const t = (source, ...values) => (window.TunnelI18n?.t(source) || source).replace(/\{(\d+)\}/g, (_all, index) => String(values[Number(index)] ?? ''));
     const labels = { snapshotting: '正在创建快照', uploading: '正在保存到网盘', cancelling: '正在取消', cancelled: '已取消', failed: '失败，可重试', interrupted: '进程中断，可重试', completed: '备份完成', discarded: '已释放本机快照' };
@@ -18,13 +19,19 @@
     function render() {
         for (const name of ['full', 'core']) { $('sb-target-' + name).textContent = targetText(state.config[name]); document.querySelector(`[data-start="${name}"]`).disabled = !state.config[name] || Boolean(state.active); }
         const jobs = $('sb-jobs');
+        const visible = [...state.jobs].sort((a,b) => Number(b.createdAt) - Number(a.createdAt)).slice(0,visibleHistoryCount);
+        const visibleIds = new Set(visible.map(job => job.id));
+        for (const card of jobs.querySelectorAll('[data-job-id]')) if (!visibleIds.has(card.dataset.jobId)) card.remove();
+        $('sb-expand-history').hidden = state.jobs.length <= visibleHistoryCount;
+        $('sb-collapse-history').hidden = visibleHistoryCount <= 2;
         if (!state.jobs.length) { if (!jobs.children.length) jobs.append(text('p', t('尚无备份任务。'), 'sb-muted')); return; }
         jobs.querySelector('p.sb-muted')?.remove();
-        for (const job of state.jobs) {
+        for (const [position, job] of visible.entries()) {
             let card = jobs.querySelector(`[data-job-id="${job.id}"]`);
             if (!card) { card = text('article', '', 'sb-job'); card.dataset.jobId = job.id;
                 for (const name of ['heading', 'target', 'count', 'current', 'detail', 'error']) { const row = text('div', '', name === 'heading' ? 'sb-job-title' : name === 'error' ? 'sb-job-details sb-error' : 'sb-job-details'); row.dataset.row = name; card.append(row); }
-                card.append(document.createElement('progress'), text('div', '', 'sb-actions')); jobs.prepend(card); }
+                card.append(document.createElement('progress'), text('div', '', 'sb-actions')); jobs.append(card); }
+            if (jobs.children[position] !== card) jobs.insertBefore(card,jobs.children[position] || null);
             const row = name => card.querySelector(`[data-row="${name}"]`);
             row('heading').replaceChildren(text('span', `${t(job.mode === 'full' ? '全量' : '核心')} · /${job.folder}`), text('span', t(job.status==='completed'&&job.skipped?.length?'备份完成（有跳过项）':labels[job.status] || job.status), 'sb-status'));
             row('target').textContent = targetText(job.target);
@@ -67,6 +74,8 @@
     $('sb-close').onclick = $('sb-cancel').onclick = () => { selectionVersion++; $('sb-config').close(); };
     $('sb-form').onsubmit = async event => { event.preventDefault(); $('sb-save').disabled = true; try { await api('/config/' + mode, { method: 'PUT', body: JSON.stringify({ userId: $('sb-user').value, partitionId: $('sb-partition').value, folderPath: path }) }); $('sb-config').close(); await refresh(); notice(t('备份位置已保存。')); } catch (error) { notice(t('保存位置失败：{0}', error.message)); } finally { $('sb-save').disabled = false; } };
     $('sb-refresh').onclick = refresh;
+    $('sb-expand-history').onclick = () => { visibleHistoryCount += 20; if (state) render(); };
+    $('sb-collapse-history').onclick = () => { visibleHistoryCount = 2; if (state) render(); };
     for (const button of document.querySelectorAll('[data-config],[data-start]')) button.disabled = true;
     refresh(); polling = setInterval(() => { if (!document.hidden) refresh(); }, 2500);
     window.addEventListener('pagehide', () => { clearInterval(polling); polling = null; });

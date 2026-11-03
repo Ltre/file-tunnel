@@ -92,7 +92,7 @@ function forwardingFixture(t,{mode='collection',failAfter=Infinity}={}) {
         historyLog(){},summarizeHistoryMessage:value=>value,persistHistoryAudit(){},getSessionAuditFileAssets:()=>new Map(),
         emitToReadableSessionDevices:(_s,name,data)=>events.push({name,data}),scheduleSessionHistoryBroadcast(){}
     };
-    vm.runInNewContext(section(server,'function createHistoryMessage(', 'function preserveNewestTelegramFileIds(')+section(server,'function addToSessionHistory(', 'function getSessionDeviceList(')+
+    vm.runInNewContext(section(server,'function tunnelMessageCapabilities(', 'function getTunnelAdminRecord(')+section(server,'function createHistoryMessage(', 'function preserveNewestTelegramFileIds(')+section(server,'function addToSessionHistory(', 'function getSessionDeviceList(')+
         section(server,"    socket.on('forward-message'", "    socket.on('clipboard-update'"),environment);
     const {registerFileAssetHandlers}=require('../server/file-assets');
     const fileContext=(session,device)=>({sessions:f.sessions,deviceSockets,getSessionId:()=>session,getDeviceId:()=>device,sanitize:value=>String(value),historyLog(){},clientIp:'fixture',isValidId:value=>typeof value==='string'&&value.length>0});

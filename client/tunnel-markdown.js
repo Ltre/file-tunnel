@@ -168,6 +168,32 @@
             if (signal.aborted) aborted();
         })));
     }
+    function prepareImage(image, pending) {
+        const placeholder = document.createElement('span');
+        placeholder.className = 'tunnel-markdown-image-placeholder';
+        placeholder.setAttribute('data-tunnel-asset-placeholder', 'true');
+        placeholder.setAttribute('role', 'status');
+        image.classList.add('tunnel-markdown-image');
+        image.hidden = true;
+        image.before(placeholder);
+        const unavailable = () => {
+            image.hidden = true;
+            placeholder.textContent = t('引用资源未获准或已失效');
+            placeholder.removeAttribute('aria-busy');
+        };
+        if (!image.hasAttribute('src') && !pending) { unavailable(); return; }
+        placeholder.textContent = t('图片载入中...');
+        placeholder.setAttribute('aria-busy', 'true');
+        if (!image.hasAttribute('src')) return;
+        // Hidden lazy images would wait for visibility before ever loading.
+        image.loading = 'eager';
+        image.addEventListener('load', () => { image.hidden = false; placeholder.remove(); }, { once: true });
+        image.addEventListener('error', unavailable, { once: true });
+        if (image.complete) {
+            if (image.naturalWidth) { image.hidden = false; placeholder.remove(); }
+            else unavailable();
+        }
+    }
     function render(target, body, mapping = new Map(), { onInvitation, images = [], pending = false } = {}) {
         target.classList?.toggle('sc-markdown-plain', !global.marked || !global.DOMPurify);
         if (!global.marked || !global.DOMPurify) { target.textContent = body; return; }
@@ -190,6 +216,7 @@
         const urls = new Set(mapping.values()), allowedImages = new Set(images.filter(value => invitationImage(value)));
         target.querySelectorAll('img,audio,video,source').forEach(node => {
             if (!urls.has(node.getAttribute('src')) && !(node.tagName === 'IMG' && allowedImages.has(node.getAttribute('src')))) { node.removeAttribute('src'); if (pending) node.setAttribute('aria-busy', 'true'); else { node.setAttribute('aria-label', t('引用资源未获准或已失效')); node.setAttribute('title', t('引用资源未获准或已失效')); if (node.tagName === 'IMG') node.alt = (node.alt ? node.alt + ' · ' : '') + t('引用资源未获准或已失效'); } }
+            if (node.tagName === 'IMG') prepareImage(node, pending);
             if (node.matches('audio,video')) node.controls = true;
         });
         target.querySelectorAll('a').forEach(node => {
@@ -248,7 +275,7 @@
     function mount(target, message) {
         const wrapper = document.createElement('div'); wrapper.className = 'tunnel-markdown';
         const body = recordBody(message), images = invitationImages(message);
-        const preview = document.createElement('div'); preview.className = 'tunnel-markdown-preview message-content'; render(preview, body, undefined, { images });
+        const preview = document.createElement('div'); preview.className = 'tunnel-markdown-preview message-content'; render(preview, body, undefined, { images, pending: refs(body).length > 0 });
         const status = document.createElement('p'); status.className = 'sc-message-status';
         const actions = document.createElement('div'); actions.className = 'sc-actions';
         const expand = document.createElement('button'); expand.type = 'button'; expand.className = 'sc-markdown-expand'; expand.textContent = t('展开');
@@ -276,6 +303,7 @@
                 } }); observer.observe(document.body, { childList: true, subtree: true });
             }).catch(() => {
                 if (inlineReferences.get(message) === entry) inlineReferences.delete(message);
+                if (wrapper.isConnected) render(preview, body, undefined, { images });
                 status.textContent = t('部分引用资源不可读取，可检查来源后重试');
             });
         }

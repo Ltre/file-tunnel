@@ -47,7 +47,12 @@ if (!process.env.NODE_USE_ENV_PROXY && !process.env.DR2T_PROXY_REEXEC) {
         for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
             process.on(signal, () => {
                 processDiagnostics.markShutdown(signal);
-                try { child.kill(signal); } catch (_) {}
+                // The shared Windows console already signals both processes.
+                // kill('SIGINT') there is an abrupt TerminateProcess, not a
+                // second graceful notification. Let the child's handler finish.
+                if (process.platform !== 'win32' || signal !== 'SIGINT') {
+                    try { child.kill(signal); } catch (_) {}
+                }
             });
         }
         child.on('error', error => {
@@ -1338,6 +1343,8 @@ app.use([
     '/pages/admin.html',
     '/pages/admin-layout.html',
     '/pages/admin-devices.html',
+    '/pages/admin-tunnel-permissions.html',
+    '/pages/admin-tunnels.html',
     '/pages/admin-magnets.html',
     '/pages/tgbot.html',
     '/pages/sns-cookies.html',
@@ -1369,6 +1376,9 @@ app.use(express.static(path.join(__dirname), {
         }
     }
 }));
+
+app.get('/admin/tunnels', adminAuth.requireAuth, (_req, res) => res.sendFile(path.join(__dirname, 'pages', 'admin-tunnels.html')));
+app.get('/admin/tunnel-permissions', adminAuth.requireAuth, (_req, res) => res.sendFile(path.join(__dirname, 'pages', 'admin-tunnel-permissions.html')));
 
 // 从 pages/ 目录提供 HTML 文件（显式路由，避免暴露 admin.html 和 tgbot.html）
 app.get('/admin-auth.html', (req, res) => {
@@ -3452,6 +3462,7 @@ app.get('/api/sessions', adminAuth.requireAuth, (req, res) => {
                 id: sessionId,
                 shortCode: tunnel.short_code || '',
                 remark: tunnel.remark || '',
+                ownerDeviceId: tunnel.owner_device_id || '',
                 isDeleted: Boolean(tunnel.deleted_at),
                 deviceCount: activeDeviceCount,
                 activeDeviceCount,
@@ -3499,13 +3510,20 @@ app.get('/api/sessions', adminAuth.requireAuth, (req, res) => {
                 createdAt: current.createdAt || session.createdAt,
                 lastActivity: Math.max(Number(current.lastActivity) || 0, Number(session.lastActivity) || 0),
                 remark: session.remark || current.remark || '',
+                ownerDeviceId: session.ownerDeviceId || current.ownerDeviceId || '',
                 isActive: Date.now() - session.lastActivity < 5 * 60 * 1000,
                 isOnline: realActiveDeviceCount > 0,
                 cacheNodeOnline
             });
         });
         
-        const sessionList = Array.from(sessionMap.values());
+        const sessionList = Array.from(sessionMap.values()), ownerNames = new Map();
+        for (const session of sessionList) {
+            const owner = session.ownerDeviceId;
+            if (!owner) { session.ownerDeviceName = ''; continue; }
+            if (!ownerNames.has(owner)) ownerNames.set(owner, sessions.get(session.id)?.devices?.get(owner)?.deviceName || infraStore?.getDevice?.(owner)?.device_name || '');
+            session.ownerDeviceName = ownerNames.get(owner);
+        }
 
         // 按最后活动时间排序
         sessionList.sort((a, b) => b.lastActivity - a.lastActivity);
@@ -3834,6 +3852,8 @@ const DEFAULT_TUNNEL_PERMISSIONS = Object.freeze({
     sendText: true,
     sendRich: true,
     sendFile: true,
+    sendMarkdown: true,
+    sendWebZip: true,
     delete: true,
     collaborativeEdit: true,
     globalIntercom: true,
@@ -3842,7 +3862,7 @@ const DEFAULT_TUNNEL_PERMISSIONS = Object.freeze({
 
 function normalizeTunnelPermissions(value = {}) {
     return Object.fromEntries(Object.keys(DEFAULT_TUNNEL_PERMISSIONS)
-        .map(key => [key, value?.[key] !== false]));
+        .map(key => [key, (value?.[key] ?? (key === 'sendMarkdown' ? value?.sendText : key === 'sendWebZip' ? value?.sendFile : undefined)) !== false]));
 }
 
 function normalizeTunnelAdminRecords(value = {}) {
@@ -3870,12 +3890,14 @@ function parseStoredTunnelAccess(value) {
         if (parsed && typeof parsed === 'object' && (parsed.permissions || parsed.admins)) {
             return {
                 permissions: normalizeTunnelPermissions(parsed.permissions || {}),
-                admins: normalizeTunnelAdminRecords(parsed.admins || {})
+                admins: normalizeTunnelAdminRecords(parsed.admins || {}),
+                devicePermissions: normalizeTunnelAdminRecords(parsed.devicePermissions || {}),
+                managementDevices: normalizeTunnelAdminRecords(parsed.managementDevices || {})
             };
         }
-        return { permissions: normalizeTunnelPermissions(parsed), admins: {} };
+        return { permissions: normalizeTunnelPermissions(parsed), admins: {}, devicePermissions: {}, managementDevices: {} };
     } catch {
-        return { permissions: normalizeTunnelPermissions(), admins: {} };
+        return { permissions: normalizeTunnelPermissions(), admins: {}, devicePermissions: {}, managementDevices: {} };
     }
 }
 
@@ -3887,11 +3909,21 @@ function parseStoredTunnelAdmins(value) {
     return parseStoredTunnelAccess(value).admins;
 }
 
-function serializeTunnelAccess(permissions = {}, admins = {}) {
+function serializeTunnelAccess(permissions = {}, admins = {}, devicePermissions = {}, managementDevices = {}) {
     return {
         permissions: normalizeTunnelPermissions(permissions),
-        admins: normalizeTunnelAdminRecords(admins)
+        admins: normalizeTunnelAdminRecords(admins),
+        devicePermissions: normalizeTunnelAdminRecords(devicePermissions),
+        managementDevices: normalizeTunnelAdminRecords(managementDevices)
     };
+}
+
+function tunnelMessageCapabilities(message) {
+    if (message?.type === 'text') return ['sendText'];
+    if (message?.type === 'markdown') return ['sendMarkdown'];
+    if (message?.type === 'rich') return ['sendRich'];
+    const files = message?.type === 'collection' ? message.collection?.files || [] : [message?.fileInfo];
+    return [...new Set(files.map(file => /\.html\.zip$/i.test(String(file?.name || '')) ? 'sendWebZip' : 'sendFile'))];
 }
 
 function getTunnelAdminRecord(session, deviceId) {
@@ -3900,7 +3932,7 @@ function getTunnelAdminRecord(session, deviceId) {
 }
 
 function canManageTunnel(session, deviceId) {
-    return Boolean(session && deviceId && (!session.ownerDeviceId || session.ownerDeviceId === deviceId));
+    return Boolean(session && deviceId && (!session.ownerDeviceId || session.ownerDeviceId === deviceId || session.managementDevices?.[deviceId]));
 }
 
 function canUseTunnelCapability(session, deviceId, capability) {
@@ -3910,9 +3942,11 @@ function canUseTunnelCapability(session, deviceId, capability) {
     if (clientType === 'vclient') return capability === 'read';
     if (clientType === 'server-shell') return true;
     if (!session.ownerDeviceId || session.ownerDeviceId === deviceId) return true;
+    if (session.managementDevices?.[deviceId]) return true;
     const adminRecord = getTunnelAdminRecord(session, deviceId);
-    if (adminRecord) return adminRecord.permissions?.[capability] !== false;
-    return session.permissions?.[capability] !== false;
+    const permissions = session.devicePermissions?.[deviceId]?.permissions || adminRecord?.permissions || session.permissions || {};
+    const legacy = capability === 'sendMarkdown' ? 'sendText' : capability === 'sendWebZip' ? 'sendFile' : capability;
+    return (permissions[capability] ?? permissions[legacy]) !== false;
 }
 
 function canReadForwardedFile(targetSessionId, deviceId, sourceSessionId, fileId) {
@@ -3966,11 +4000,66 @@ function getSessionPermissionPayload(session, deviceId = '') {
             createdAt: record.createdAt || Date.now(),
             updatedAt: record.updatedAt || Date.now()
         })),
+        devicePermissionRecords: Object.values(normalizeTunnelAdminRecords(session?.devicePermissions || {})),
+        managementDevices: Object.values(normalizeTunnelAdminRecords(session?.managementDevices || {})),
+        selfDevicePermissions: deviceId && session?.devicePermissions?.[deviceId] ? normalizeTunnelPermissions(session.devicePermissions[deviceId].permissions) : null,
+        canManagePermissions: canManageTunnel(session, deviceId),
         isOwner: Boolean(session && deviceId && (!session.ownerDeviceId || session.ownerDeviceId === deviceId)),
-        isAdmin: Boolean(deviceId && admins[deviceId]),
-        selfAdminPermissions: deviceId && admins[deviceId] ? normalizeTunnelPermissions(admins[deviceId].permissions) : null
+        isAdmin: Boolean(deviceId && (admins[deviceId] || session?.managementDevices?.[deviceId])),
+        selfAdminPermissions: !deviceId ? null : session?.managementDevices?.[deviceId] ? normalizeTunnelPermissions()
+            : session?.devicePermissions?.[deviceId] ? normalizeTunnelPermissions(session.devicePermissions[deviceId].permissions)
+            : admins[deviceId] ? normalizeTunnelPermissions(admins[deviceId].permissions) : null
     };
 }
+
+function broadcastTunnelPermissions(session) {
+    session.devices?.forEach((device, deviceId) => {
+        const socket = io.sockets.sockets.get(device.socketId);
+        if (socket?.connected && socket.data?.deviceId === deviceId) socket.emit('session-permissions', getSessionPermissionPayload(session, deviceId));
+    });
+}
+
+function canAssignTunnelPermissions(session, deviceId) {
+    return canManageTunnel(session, deviceId) || Boolean(session?.managementDevices?.[deviceId]);
+}
+
+function saveTunnelDevicePermissions(sessionId, session, data, grantedBy = '') {
+    for (const value of [data.managementDevices, data.devicePermissions]) {
+        if (value != null && (typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(id => !isValidDeviceId(id)))) throw Error('invalid-device-permissions');
+    }
+    if (Object.keys(data.managementDevices || {}).length + Object.keys(data.devicePermissions || {}).length > 2000) throw Error('too-many-devices');
+    const management = normalizeTunnelAdminRecords(data.managementDevices || {}), devices = normalizeTunnelAdminRecords(data.devicePermissions || {});
+    delete management[session.ownerDeviceId]; delete devices[session.ownerDeviceId];
+    for (const record of [...Object.values(management), ...Object.values(devices)]) {
+        record.grantedBy = grantedBy; record.updatedAt = Date.now();
+        record.deviceName ||= session.devices?.get(record.deviceId)?.deviceName || '';
+    }
+    const previous = { management: session.managementDevices || {}, devices: session.devicePermissions || {}, time: session.lastActivity };
+    const updatedAt = Date.now();
+    try {
+        infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, updatedAt, session.admins, devices, management);
+        if (infraStore?.flush?.() === false) throw Error('permission-persist-failed');
+    } catch (error) {
+        infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, previous.time, session.admins, previous.devices, previous.management);
+        throw error;
+    }
+    session.managementDevices = management; session.devicePermissions = devices; session.lastActivity = updatedAt;
+    broadcastTunnelPermissions(session);
+    return getSessionPermissionPayload(session, grantedBy);
+}
+
+function getAdminTunnelAccess(sessionId) {
+    const stored = infraStore?.getTunnel(sessionId), live = sessions.get(sessionId);
+    if (!stored && !live) return null;
+    const session = live || { ...parseStoredTunnelAccess(stored.permissions_json), ownerDeviceId: stored.owner_device_id || '', lastActivity: Number(stored.last_activity) || 0, devices: new Map() };
+    return { session, payload: { ...getSessionPermissionPayload(session), knownDevices: Array.from(session.devices.values()).map(device => ({ deviceId: device.deviceId, deviceName: device.deviceName })) } };
+}
+
+require('./server/tunnel-permissions').mountTunnelPermissionRoutes(app, {
+    requireAuth: adminAuth.requireAuth, validSessionId: isValidSessionId,
+    get: sessionId => getAdminTunnelAccess(sessionId)?.payload,
+    save: (sessionId, data) => saveTunnelDevicePermissions(sessionId, getAdminTunnelAccess(sessionId).session, data, 'back-office')
+});
 
 function nearbyDistanceMeters(left, right) {
     if (!Number.isFinite(left?.latitude) || !Number.isFinite(left?.longitude) ||
@@ -5201,6 +5290,13 @@ function classifySnsMedia(sourceUrl, meta = {}) {
 }
 
 function runYtDlpJson(url, options = {}) {
+    if (options.noCookie === undefined && /^https?:\/\/(?:(?:www|mobile|m)\.)?(?:twitter|x)\.com\//i.test(url)) {
+        return runYtDlpJson(url, { ...options, noCookie: true }).catch(error => {
+            // A no-video or network error is not a reason to spend an account Cookie.
+            if (!/login required|log in|sign in|authentication required|private tweet|protected tweet|cookies? (?:are )?required/i.test(error.message) || !fs.existsSync(getSnsCookieFileForUrl(url))) throw error;
+            return runYtDlpJson(url, { ...options, noCookie: false });
+        });
+    }
     return new Promise((resolve, reject) => {
         const dependencyId = getYtDlpDependencyId(url);
         const operation = options.operation || (options.flatPlaylist ? 'metadata-flat-playlist' : 'metadata-json');
@@ -5226,7 +5322,7 @@ function runYtDlpJson(url, options = {}) {
         if (options.youtubeLanguage) args.push('--extractor-args', `youtube:lang=${String(options.youtubeLanguage).trim()}`);
         if (options.playerClient) args.push('--extractor-args', `youtube:player_client=${String(options.playerClient).trim()}`);
         args.push(url);
-        const cookiePath = String(options.cookiePath || getSnsCookieFileForUrl(url) || '');
+        const cookiePath = options.noCookie === true ? '' : String(options.cookiePath || getSnsCookieFileForUrl(url) || '');
         if (cookiePath && fs.existsSync(cookiePath)) {
             try {
                 if (fs.statSync(cookiePath).size > 0) {
@@ -6170,6 +6266,8 @@ function getOrCreateTelegramSession(sessionId, shortCode = '') {
             ownerDeviceId: sanitizeString(storedTunnel?.owner_device_id || '', 80),
             permissions: parseStoredTunnelPermissions(storedTunnel?.permissions_json),
             admins: parseStoredTunnelAdmins(storedTunnel?.permissions_json),
+            devicePermissions: parseStoredTunnelAccess(storedTunnel?.permissions_json).devicePermissions,
+            managementDevices: parseStoredTunnelAccess(storedTunnel?.permissions_json).managementDevices,
             historySize: 0,
             createdAt: Number(storedTunnel?.created_at) || Date.now(),
             lastActivity: Number(storedTunnel?.last_activity) || Date.now()
@@ -8134,6 +8232,8 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
     if (snsMediaTasks.has(taskKey)) return snsMediaTasks.get(taskKey);
 
     const task = (async () => {
+        const directMediaUrl = /^https?:\/\/(?:(?:www|mobile|m)\.)?(?:twitter|x)\.com\//i.test(item.sourceUrl || '')
+            ? require('./server/twitter-post-media').directVideoUrl({ url: item.directMediaUrl }) : '';
         let taskRecord = readSnsTask(taskId) || {
             id: taskId,
             sessionId,
@@ -8242,18 +8342,21 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
                     };
                 } else {
                     updateStage('fetching_video');
-                    const downloadedPath = await runYtDlpDownload(
-                        taskRecord.playlistItem ? item.sourceUrl : (item.mediaUrl || item.sourceUrl),
-                        taskRecord.videoAssetId,
-                        progress => {
-                            updateTask({ status: 'fetching_video', progress: progress.percent, progressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ') });
-                            updateItem({
-                                serverState: 'fetching', serverStage: 'fetching_video', serverProgress: progress.percent,
-                                serverProgressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ')
-                            }, 'sns-media-progress');
-                        },
-                        taskRecord.playlistItem,
-                        item.mediaKind === 'audio' ? { formatSelector: 'bestaudio/best' } : {}
+                    const downloadedPath = await require('./server/twitter-post-media').downloadWithFallback(
+                        directMediaUrl, taskRecord.playlistItem ? item.sourceUrl : (item.mediaUrl || item.sourceUrl), taskRecord.playlistItem,
+                        (targetUrl, playlistItem) => runYtDlpDownload(
+                            targetUrl,
+                            taskRecord.videoAssetId,
+                            progress => {
+                                updateTask({ status: 'fetching_video', progress: progress.percent, progressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ') });
+                                updateItem({
+                                    serverState: 'fetching', serverStage: 'fetching_video', serverProgress: progress.percent,
+                                    serverProgressText: [progress.speedText, progress.etaText ? `ETA ${progress.etaText}` : ''].filter(Boolean).join(' · ')
+                                }, 'sns-media-progress');
+                            },
+                            playlistItem,
+                            item.mediaKind === 'audio' ? { formatSelector: 'bestaudio/best' } : {}
+                        )
                     );
                     if (fs.statSync(downloadedPath).size > getTelegramMaxFileSize()) {
                         cleanupSnsWorkFiles(`${taskRecord.videoAssetId}.`);
@@ -9076,7 +9179,7 @@ const snsPostPublisher = require('./server/sns-post-markdown').createTunnelSnsPo
     record: (sessionId, id) => getHistoryMessageEntry(sessions.get(sessionId), id)?.message,
     authorize: (sessionId, deviceId) => {
         const session = sessions.get(sessionId);
-        if (!session || !['read', 'sendText', 'sendFile'].every(capability => canUseTunnelCapability(session, deviceId, capability))) throw Error('permission-denied');
+        if (!session || !['read', 'sendMarkdown', 'sendFile'].every(capability => canUseTunnelCapability(session, deviceId, capability))) throw Error('permission-denied');
     },
     metadata: runYtDlpJson, cookieFileForUrl: getSnsCookieFileForUrl, buildItem: buildSnsMediaItemFromMeta,
     update: (sessionId, message) => replaceHistoryMessage(sessionId, sessions.get(sessionId), message, 'sns-post-metadata'),
@@ -9084,7 +9187,7 @@ const snsPostPublisher = require('./server/sns-post-markdown').createTunnelSnsPo
     sender: () => ({ sender: TELEGRAM_BOT_DEVICE_ID, senderName: 'SNS 媒体文件' }),
     publish: (sessionId, message, deviceId) => {
         const session = sessions.get(sessionId);
-        if (!session || !['read', 'sendText', 'sendFile'].every(capability => canUseTunnelCapability(session, deviceId, capability))) throw Error('permission-denied');
+        if (!session || !['read', 'sendMarkdown', 'sendFile'].every(capability => canUseTunnelCapability(session, deviceId, capability))) throw Error('permission-denied');
         const result = addToSessionHistory(sessionId, session, message, { fromDeviceId: TELEGRAM_BOT_DEVICE_ID, source: 'sns-post-markdown' });
         if (!result.stored) throw Error('SNS_POST_MESSAGE_NOT_SAVED');
         emitToReadableSessionDevices(session, 'message', { message });
@@ -9487,7 +9590,7 @@ io.on('connection', (socket) => {
             if(clientType==='browser'){
                 const publicMagnet=data.magnetId&&getMagnetPayload(data.magnetId);
                 if(publicMagnet&&publicMagnet.sessionId===sessionId&&deviceId!==(knownSession?.ownerDeviceId||knownTunnel?.owner_device_id)&&!knownSession?.devices.has(deviceId)&&!tunnelAccess.enrolled(sessionId,deviceId)){
-                    const publicAccess=parseStoredTunnelAccess(knownTunnel?.permissions_json),publicSession=knownSession||{devices:new Map(),editorAssets:new Map(),fileAssets:new Map(),history:[],historySize:0,deletedMessageIds:loadPersistedDeletionTombstones(sessionId),shortCode:knownTunnel?.short_code||'',remark:knownTunnel?.remark||'',ownerDeviceId:knownTunnel?.owner_device_id||'',permissions:publicAccess.permissions,admins:publicAccess.admins,createdAt:Number(knownTunnel?.created_at)||Date.now(),lastActivity:Date.now()};
+                    const publicAccess=parseStoredTunnelAccess(knownTunnel?.permissions_json),publicSession=knownSession||{devices:new Map(),editorAssets:new Map(),fileAssets:new Map(),history:[],historySize:0,deletedMessageIds:loadPersistedDeletionTombstones(sessionId),shortCode:knownTunnel?.short_code||'',remark:knownTunnel?.remark||'',ownerDeviceId:knownTunnel?.owner_device_id||'',permissions:publicAccess.permissions,admins:publicAccess.admins,devicePermissions:publicAccess.devicePermissions,managementDevices:publicAccess.managementDevices,createdAt:Number(knownTunnel?.created_at)||Date.now(),lastActivity:Date.now()};
                     if(!knownSession)sessions.set(sessionId,publicSession);
                     currentSession=sessionId;currentDevice=deviceId;socket.data.magnetAssetId=publicMagnet.assetId;socket.data.magnetId=data.magnetId;
                     publicSession.devices.set(deviceId,{deviceId,deviceName:'磁链下载器',socketId:socket.id,clientType:'magnet',joinedAt:Date.now(),lastSeenAt:Date.now()});bindSocketToDevice(socket,deviceId);socket.emit('session-history',{sessionId,messages:[],deletedMessageIds:[]});return;
@@ -9534,6 +9637,8 @@ io.on('connection', (socket) => {
                 ownerDeviceId: storedOwnerDeviceId || deviceId,
                 permissions: storedPermissions,
                 admins: storedAdmins,
+                devicePermissions: storedAccess.devicePermissions,
+                managementDevices: storedAccess.managementDevices,
                 historySize: 0,
                     createdAt: Number(storedTunnel?.created_at) || Date.now(),
                     lastActivity: Date.now()
@@ -9545,11 +9650,13 @@ io.on('connection', (socket) => {
             if (!session.ownerDeviceId) session.ownerDeviceId = storedOwnerDeviceId || deviceId;
             if (!session.permissions) session.permissions = storedPermissions;
             if (!session.admins) session.admins = storedAdmins;
+            if (!session.devicePermissions) session.devicePermissions = storedAccess.devicePermissions;
+            if (!session.managementDevices) session.managementDevices = storedAccess.managementDevices;
             if (!Array.isArray(session.deletedMessageIds)) session.deletedMessageIds = [];
             if (!session.shortCode) session.shortCode = createShortCode(sessionId, requestedShortCode);
             session.lastActivity = Date.now();
             persistTunnelActivity(sessionId, session, true);
-            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, Date.now(), session.admins);
+            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, Date.now(), session.admins, session.devicePermissions, session.managementDevices);
             
             // 设备数量限制
             const existingDevice = session.devices.get(deviceId);
@@ -9757,12 +9864,9 @@ io.on('connection', (socket) => {
             }
             session.permissions = normalizeTunnelPermissions(data?.permissions);
             session.lastActivity = Date.now();
-            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, session.lastActivity, session.admins);
+            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, session.lastActivity, session.admins, session.devicePermissions, session.managementDevices);
             infraStore?.flush?.();
-            session.devices.forEach((_, deviceId) => {
-                const target = deviceSockets.get(deviceId);
-                if (target) target.emit('session-permissions', getSessionPermissionPayload(session, deviceId));
-            });
+            broadcastTunnelPermissions(session);
             respond({ ok: true, ...getSessionPermissionPayload(session, currentDevice) });
         } catch (err) {
             console.error('session-permissions-update error:', err);
@@ -9790,12 +9894,9 @@ io.on('connection', (socket) => {
             });
             session.admins = records;
             session.lastActivity = Date.now();
-            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, session.lastActivity, session.admins);
+            infraStore?.setTunnelAccess(sessionId, session.ownerDeviceId, session.permissions, session.lastActivity, session.admins, session.devicePermissions, session.managementDevices);
             infraStore?.flush?.();
-            session.devices.forEach((_, deviceId) => {
-                const target = deviceSockets.get(deviceId);
-                if (target) target.emit('session-permissions', getSessionPermissionPayload(session, deviceId));
-            });
+            broadcastTunnelPermissions(session);
             respond({ ok: true, ...getSessionPermissionPayload(session, currentDevice) });
             historyLog('session-admins-updated', {
                 sessionId,
@@ -9806,6 +9907,15 @@ io.on('connection', (socket) => {
             console.error('session-admins-update error:', err);
             respond({ ok: false, error: 'internal-error' });
         }
+    });
+
+    socket.on('session-device-permissions-update', (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            const session = sessions.get(data?.sessionId);
+            if (data?.sessionId !== currentSession || !session?.devices.has(currentDevice) || !canAssignTunnelPermissions(session, currentDevice)) return respond({ ok: false, error: 'manager-required' });
+            respond({ ok: true, ...saveTunnelDevicePermissions(currentSession, session, data, currentDevice) });
+        } catch (error) { respond({ ok: false, error: error.message || 'permission-save-failed' }); }
     });
 
     socket.on('register-session-codes', data => {
@@ -9985,12 +10095,8 @@ io.on('connection', (socket) => {
             if (message.sender !== currentDevice) return;
             const session = sessions.get(sessionId);
             if (!session || !session.devices.has(currentDevice)) return;
-            const requiredCapability = message.type === 'text'
-                ? 'sendText'
-                : message.type === 'rich'
-                    ? 'sendRich'
-                    : 'sendFile';
-            if (!canUseTunnelCapability(session, currentDevice, requiredCapability)) {
+            const requiredCapability = tunnelMessageCapabilities(message).find(capability => !canUseTunnelCapability(session, currentDevice, capability));
+            if (requiredCapability) {
                 return socket.emit('permission-denied', { capability: requiredCapability });
             }
 
@@ -10075,7 +10181,7 @@ io.on('connection', (socket) => {
                 const targetDeviceId = sanitizeString(data.targetDeviceId, 80);
                 if (!tunnelAccess.verify(data.targetAccessGrant, targetSessionId, targetDeviceId)) return typeof ack === 'function' && ack({ ok:false, error:'target-tunnel-access-required' });
                 targetSenderId = targetDeviceId;
-                if (!canUseTunnelCapability(sourceSession,currentDevice,'read') || !canUseTunnelCapability(targetSession,targetDeviceId,'sendFile')) return typeof ack === 'function' && ack({ ok:false,error:'permission-denied' });
+                if (!canUseTunnelCapability(sourceSession,currentDevice,'read') || tunnelMessageCapabilities(message).some(capability => !canUseTunnelCapability(targetSession,targetDeviceId,capability))) return typeof ack === 'function' && ack({ ok:false,error:'permission-denied' });
                 const files = message.type === 'file' ? [message.fileInfo] : message.type === 'collection' ? message.collection?.files || [] : [];
                 if (!isValidDeviceId(message.id) || !files.length || files.some(file => !sourceSession.fileAssets?.get(file?.id)?.providers?.has(currentDevice))) return typeof ack === 'function' && ack({ok:false,error:'forward-file-cache-required'});
                 for (const file of files) {
@@ -10086,8 +10192,7 @@ io.on('connection', (socket) => {
                 message.sessionId = targetSessionId;
                 if (message.forwardedFrom) message.forwardedFrom = { ...message.forwardedFrom, sessionId: currentSession };
             }
-            const forwardCapability = ['text', 'markdown'].includes(message.type) ? 'sendText' : message.type === 'rich' ? 'sendRich' : 'sendFile';
-            if (!canUseTunnelCapability(targetSession, targetSenderId, forwardCapability)) {
+            if (tunnelMessageCapabilities(message).some(capability => !canUseTunnelCapability(targetSession, targetSenderId, capability))) {
                 return typeof ack === 'function' && ack({ ok: false, error: 'permission-denied' });
             }
             const historyResult = addToSessionHistory(targetSessionId, targetSession, message, {
@@ -10387,7 +10492,7 @@ io.on('connection', (socket) => {
         try {
             const session = sessions.get(currentSession);
             if (data?.sessionId !== currentSession || !session?.devices.has(currentDevice)) return respond({ ok: false, error: 'invalid-session' });
-            if (!canUseTunnelCapability(session, currentDevice, 'read') || !canUseTunnelCapability(session, currentDevice, 'sendText')) return respond({ ok: false, error: 'permission-denied' });
+            if (!canUseTunnelCapability(session, currentDevice, 'read') || !canUseTunnelCapability(session, currentDevice, 'sendMarkdown')) return respond({ ok: false, error: 'permission-denied' });
             const index = session.history.findIndex(entry => entry.message.id === data.messageId && entry.message.type === 'markdown');
             if (index < 0) return respond({ ok: false, error: 'message-not-found' });
             const previous = session.history[index], result = editMarkdownRecord(previous.message, { content: data.content, baseVersion: data.baseVersion,
@@ -10443,7 +10548,7 @@ io.on('connection', (socket) => {
                     rejectedCount++;
                     continue;
                 }
-                if (message.type === 'markdown' && canUseTunnelCapability(session, currentDevice, 'read') && canUseTunnelCapability(session, currentDevice, 'sendText')) {
+                if (message.type === 'markdown' && canUseTunnelCapability(session, currentDevice, 'read') && canUseTunnelCapability(session, currentDevice, 'sendMarkdown')) {
                     const index = session.history.findIndex(entry => entry.message.id === message.id);
                     const previous = session.history[index], recovered = previous && recoverMarkdownRecord(previous.message, message);
                     if (recovered) {
@@ -11322,7 +11427,7 @@ async function shutdown(signal) {
     if (shutdownStarted) return;
     shutdownStarted = true;
     processDiagnostics.markShutdown(signal);
-    console.log(`[server-shutdown] pid=${process.pid} signal=${signal} uptime=${Math.floor(process.uptime())}s`);
+    if (signal !== 'SIGINT') console.log(`[server-shutdown] pid=${process.pid} signal=${signal} uptime=${Math.floor(process.uptime())}s`);
     telegramForwardJobs.close();
     streamingConsole.close();
     await systemBackup.close();
@@ -11338,7 +11443,7 @@ async function shutdown(signal) {
     }
     webServer.close(() => {
         flushInfraAuditQueue();
-        console.log('Server closed');
+        if (signal !== 'SIGINT') console.log('Server closed');
         process.exit(0);
     });
 

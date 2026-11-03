@@ -1,6 +1,7 @@
 (function (global) {
     'use strict';
     const rows = [
+        ['展开更早的20条记录', 'Show 20 older records'], ['收起较早记录', 'Collapse older records'],
         ['已跳过 {0} 项（读取权限受限）：','Skipped {0} items (read access denied):'],
         ['备份完成（有跳过项）','Backup completed with skipped items'],
         ['系统备份程序', 'System Backup'],

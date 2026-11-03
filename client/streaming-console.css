@@ -204,3 +204,5 @@
 .sc-import-busy-card>i{display:block;width:36px;height:36px;border:4px solid #8994aa3d;border-top-color:var(--ui-accent,#667eea);border-radius:50%;animation:sc-spin .85s linear infinite}
 .sc-import-busy-card>[data-import-stage]{font-size:16px;line-height:1.5}
 .sc-import-busy-card>[data-import-file]{max-width:100%;overflow-wrap:anywhere;font-size:13px;line-height:1.5;opacity:.75}
+
+.tunnel-markdown-image[hidden]{display:none!important}.tunnel-markdown-image-placeholder{display:inline-flex;align-items:center;justify-content:center;min-height:36px;max-width:100%;padding:6px 12px;margin:4px 0;border-radius:4px;background:var(--input-bg,transparent);color:var(--text-color,inherit);font-size:.9em;white-space:normal}

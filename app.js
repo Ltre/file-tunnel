@@ -134,6 +134,7 @@ window.addEventListener('drop2tunnel-language-changed', event => {
     if (state.socket.connected) state.socket.emit('set-language', { language });
 });
 
+window.BrowserLogs?.setContext(() => ({ sessionId: state.sessionId, deviceId: state.deviceId }));
 const HISTORY_DEBUG = getRuntimeConfig().HISTORY_DEBUG !== false;
 const MAX_CLIENT_DEBUG_LOGS = 1000;
 const MAX_EDITOR_CONTENT_SIZE = 512 * 1024;
@@ -218,6 +219,8 @@ const DEFAULT_TUNNEL_PERMISSIONS = Object.freeze({
     sendText: true,
     sendRich: true,
     sendFile: true,
+    sendMarkdown: true,
+    sendWebZip: true,
     delete: true,
     collaborativeEdit: true,
     globalIntercom: true,
@@ -228,6 +231,8 @@ const TUNNEL_PERMISSION_LABELS = Object.freeze({
     sendText: '发送文本',
     sendRich: '发送富文本',
     sendFile: '发送文件',
+    sendMarkdown: '发送Markdown',
+    sendWebZip: '发送网页ZIP',
     delete: '删除记录',
     collaborativeEdit: '协同编辑',
     globalIntercom: '全局对讲机发声',
@@ -581,6 +586,7 @@ function summarizeHistoryMessage(message) {
 }
 
 function historyLog(event, details = {}) {
+    window.BrowserLogs?.record(/error|failed|failure|失败/i.test(event) ? 'error' : 'operation', event, details);
     if (!HISTORY_DEBUG) return;
 
     const entry = {
@@ -4117,7 +4123,7 @@ function initAssetPresenceRefresh() {
 }
 
 async function sendFile(file, targetDeviceId = null, options = {}) {
-    if (!requireTunnelPermission('sendFile')) return null;
+    if (!requireTunnelPermission(/\.html\.zip$/i.test(String(file?.name || '')) ? 'sendWebZip' : 'sendFile')) return null;
     const externalFileHandle = Number(file?.size || 0) >= EXTERNAL_FILE_HANDLE_MIN_SIZE && options.externalFileHandle?.getFile
         ? options.externalFileHandle
         : null;
@@ -5148,7 +5154,9 @@ async function processOutboundFileAssetQueue() {
 }
 
 async function sendFileCollection(files, options = {}) {
-    if (!requireTunnelPermission('sendFile')) return;
+    for (const value of Array.from(files || [])) {
+        if (!requireTunnelPermission(/\.html\.zip$/i.test(String((value.file || value)?.name || '')) ? 'sendWebZip' : 'sendFile')) return;
+    }
     const entries = Array.from(files || []).map(item => item?.file ? item : { file: item, handle: null })
         .filter(item => item.file)
         .map(entry => ({
@@ -6837,6 +6845,9 @@ async function requestMissingCollectionAssetCaches(message, reason) {
 async function handleMessage(data) {
     const { message } = data;
     if (!message || typeof message.id !== 'string') return;
+    const sessionId = state.sessionId;
+    const canReceive = () => state.sessionId === sessionId && !isHistoryMessageDeleted(message.id, sessionId);
+    if (!canReceive() || message.sessionId && message.sessionId !== sessionId) return;
 
     if (message.sender === state.deviceId) {
         historyLog('realtime-message-skipped', {
@@ -6852,10 +6863,12 @@ async function handleMessage(data) {
 
     // 如果是小文件消息，提取base64数据保存到files存储
     const existing = await getFromStore('messages', message.id).catch(() => null);
+    if (!canReceive()) return;
     if (existing && existing.sessionId === state.sessionId) {
         if (!getMessageElement(message.id)) {
             await addMessageToChat(existing, existing.sender === state.deviceId, { autoRequestAsset: false });
         }
+        if (!canReceive()) return;
         if (message.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
             await requestMissingFileAssetCache(message, 'realtime-duplicate');
         }
@@ -6886,10 +6899,15 @@ async function handleMessage(data) {
     }
 
     // 保存消息
+    if (!canReceive()) return;
     await saveToStore('messages', {
         ...message,
-        sessionId: state.sessionId
+        sessionId
     });
+    if (!canReceive()) {
+        if (isHistoryMessageDeleted(message.id, sessionId)) await deleteFromStore('messages', message.id);
+        return;
+    }
     historyLog('realtime-message-stored', {
         message: summarizeHistoryMessage(message)
     });
@@ -6898,6 +6916,7 @@ async function handleMessage(data) {
     historyLog('realtime-message-rendered', {
         message: summarizeHistoryMessage(message)
     });
+    if (!canReceive()) return;
 
     if (message.type === 'file' && message.fileInfo?.isServerAsset) {
         await requestMissingFileAssetCache(message, 'realtime-server-asset');
@@ -6950,7 +6969,7 @@ function enqueueHistoryAssetRecovery(messages) {
             sessionHistoryQueue.recoveryPending = null;
             for (let index = 0; index < pending.length; index++) {
                 const message = pending[index];
-                if (message?.sessionId && message.sessionId !== state.sessionId) continue;
+                if (message?.sessionId && message.sessionId !== state.sessionId || isHistoryMessageDeleted(message?.id, message?.sessionId || state.sessionId)) continue;
                 if (message?.type === 'file' && (message.fileInfo?.isAsset || message.fileInfo?.isServerAsset)) {
                     await requestMissingFileAssetCache(message, 'snapshot-background');
                 } else if (message?.type === 'collection') {
@@ -6991,7 +7010,7 @@ async function handleSessionHistory(data) {
         if (!isCurrentSession()) return;
     }
 
-    const messages = data.messages.filter(belongsToSession).sort(compareHistoryMessages);
+    const messages = data.messages.filter(message => belongsToSession(message) && !isHistoryMessageDeleted(message?.id, sessionId)).sort(compareHistoryMessages);
     const acceptedMessages = [];
     let restored = 0;
     let duplicates = 0;
@@ -7017,7 +7036,7 @@ async function handleSessionHistory(data) {
             if (!isCurrentSession()) return;
             // Legacy snapshots lack sessionId. Never borrow a record from a
             // different IndexedDB scope just because its message ID matches.
-            if (!belongsToSession(existing)) continue;
+            if (!belongsToSession(existing) || isHistoryMessageDeleted(message.id, sessionId)) continue;
             acceptedMessages.push({ ...message, sessionId });
             if (existing) {
                 duplicates++;
@@ -7047,6 +7066,7 @@ async function handleSessionHistory(data) {
             if (message.type === 'file' && message.fileInfo?.isSmall && message.fileInfo.data) {
                 await storeInlineFileData(message, 'snapshot');
                 if (!isCurrentSession()) return;
+                if (isHistoryMessageDeleted(message.id, sessionId)) continue;
                 historyLog('snapshot-inline-file-stored', {
                     message: summarizeHistoryMessage(message)
                 });
@@ -7057,6 +7077,10 @@ async function handleSessionHistory(data) {
                 sessionId
             });
             if (!isCurrentSession()) return;
+            if (isHistoryMessageDeleted(message.id, sessionId)) {
+                await deleteFromStore('messages', message.id);
+                continue;
+            }
             historyLog('snapshot-message-stored', {
                 message: summarizeHistoryMessage(message)
             });
@@ -7111,7 +7135,7 @@ async function handleSessionHistory(data) {
         });
         historyLog('snapshot-ack-emitted', result);
     }
-    enqueueHistoryAssetRecovery(acceptedMessages);
+    enqueueHistoryAssetRecovery(acceptedMessages.filter(message => !isHistoryMessageDeleted(message.id, sessionId)));
 }
 
 async function getCurrentSessionMessages() {
@@ -7498,6 +7522,9 @@ async function renderCollectionPreviewHtml(message) {
 }
 
 async function addMessageToChat(message, isOwn, options = {}) {
+    const sessionId = message?.sessionId || state.sessionId;
+    const canRender = () => sessionId === state.sessionId && !isHistoryMessageDeleted(message?.id, sessionId);
+    if (!canRender()) return;
     const container = document.getElementById('chatMessages');
     const shouldScroll = options.forceScroll || (options.scroll !== false && isChatNearBottom(container));
     const existingElement = getMessageElement(message?.id);
@@ -7679,6 +7706,10 @@ async function addMessageToChat(message, isOwn, options = {}) {
     const fileRecordRemark = message.type === 'file'
         ? String(message.remark || message.fileInfo?.remark || '').trim()
         : '';
+    if (!canRender()) {
+        scheduleFileObjectUrlCleanup();
+        return;
+    }
     messageEl.innerHTML = `
         <div class="message-header">
             <span>${message.senderName}</span>
@@ -13565,7 +13596,11 @@ async function deleteHistoryMessage(messageId) {
 
 async function applyHistoryMessageUpdate(message, options = {}) {
     if (!message?.id) return;
+    const sessionId = state.sessionId;
+    const canUpdate = () => state.sessionId === sessionId && !isHistoryMessageDeleted(message.id, sessionId);
+    if (!canUpdate() || message.sessionId && message.sessionId !== sessionId) return;
     const previous = await getFromStore('messages', message.id).catch(() => null);
+    if (!canUpdate()) return;
     if (message.type === 'markdown' && previous?.type === 'markdown' && (Number(message.markdownVersion) || 1) < (Number(previous.markdownVersion) || 1)) return;
     if (previous) {
         const files = entry => entry.type === 'collection' ? getCollectionFiles(entry) : entry.fileInfo ? [entry.fileInfo] : [];
@@ -13584,8 +13619,12 @@ async function applyHistoryMessageUpdate(message, options = {}) {
     if (previous?.type === 'file' && message.type === 'file' && previous.fileInfo?.id && previous.fileInfo.id !== message.fileInfo?.id) replacedSingleFile = previous.fileInfo;
     await saveToStore('messages', {
         ...message,
-        sessionId: state.sessionId
+        sessionId
     });
+    if (!canUpdate()) {
+        if (isHistoryMessageDeleted(message.id, sessionId)) await deleteFromStore('messages', message.id);
+        return;
+    }
 
     const wasOwn = message.sender === state.deviceId;
     if (previous?.type === 'collection' && message.type === 'collection') {
@@ -13803,9 +13842,28 @@ async function deleteFileFromCollection(collectionMessageId, fileId) {
     });
 }
 
+function isHistoryMessageDeleted(messageId, sessionId = state.sessionId) {
+    return state.deletedHistoryMessages?.get(sessionId)?.has(messageId) || false;
+}
+
+function markHistoryMessageDeleted(messageId, sessionId = state.sessionId) {
+    if (!messageId || !sessionId) return;
+    // Page-local deletion intent closes the window before the server's next
+    // canonical snapshot. Persisted tombstones remain owned by the server.
+    const scopes = state.deletedHistoryMessages ||= new Map();
+    if (!scopes.has(sessionId)) scopes.set(sessionId, new Set());
+    scopes.get(sessionId).add(messageId);
+}
+
 async function deleteHistoryMessageLocal(messageId) {
+    const sessionId = state.sessionId;
+    markHistoryMessageDeleted(messageId, sessionId);
     const message = await getFromStore('messages', messageId);
-    if (!message) return;
+    if (!message) {
+        if (state.sessionId === sessionId) document.querySelector(`.message[data-message-id="${messageId}"]`)?.remove();
+        return;
+    }
+    if (message.sessionId && message.sessionId !== sessionId) return;
     const fileIds = new Set();
     if (message.type === 'collection') getCollectionFiles(message).forEach(file => file?.id && fileIds.add(file.id));
     if (message.type === 'rich') {
@@ -15895,7 +15953,7 @@ function initEditor() {
     editor.addEventListener('input', queueEditorSync);
 
     document.getElementById('sendEditorMarkdownBtn')?.addEventListener('click', async event => {
-        if (!requireTunnelPermission('sendText')) return;
+        if (!requireTunnelPermission('sendMarkdown')) return;
         const button = event.currentTarget; button.disabled = true;
         try {
             const markdown = window.TunnelMarkdown.fromHtml(serializeEditorContent(editor.innerHTML), state.sessionId);
@@ -17939,7 +17997,7 @@ function isTunnelOwner() {
 }
 
 function canManageTunnelSettings() {
-    return isTunnelOwner();
+    return Boolean(state.sessionOwnerDeviceId && state.sessionOwnerDeviceId === state.deviceId);
 }
 
 function hasTunnelPermission(capability) {
@@ -18083,7 +18141,7 @@ function renderTunnelPermissionSettings() {
         option.append(input, document.createTextNode(label));
         grid.appendChild(option);
     });
-    hint.textContent = isTunnelOwner() ? '你是隧道创建者' : (state.sessionIsAdmin ? '你是指定设备管理员' : '仅创建者可修改');
+    hint.textContent = canManageTunnelSettings() ? '你是隧道创建者' : (state.sessionIsAdmin ? '你是指定设备管理员' : '仅创建者可修改');
     save.hidden = !canManageTunnelSettings();
     renderTunnelAdminSettings();
 }
@@ -18097,8 +18155,8 @@ function applyTunnelPermissionUi() {
         folderUploadBtn: 'sendFile',
         directorySyncBtn: 'sendFile',
         sendRichBtn: 'sendRich',
-        sendEditorMarkdownBtn: 'sendText',
-        sendMarkdownBtn: 'sendText',
+        sendEditorMarkdownBtn: 'sendMarkdown',
+        sendMarkdownBtn: 'sendMarkdown',
         editor: 'collaborativeEdit',
         clearEditorBtn: 'collaborativeEdit',
         insertImageBtn: 'collaborativeEdit',
@@ -18109,7 +18167,7 @@ function applyTunnelPermissionUi() {
     Object.entries(bindings).forEach(([id, capability]) => {
         const element = document.getElementById(id);
         if (!element) return;
-        const allowed = hasTunnelPermission(capability);
+        const allowed = ['dropZone','fileInput'].includes(id) ? hasTunnelPermission('sendFile') || hasTunnelPermission('sendWebZip') : hasTunnelPermission(capability);
         if ('disabled' in element) element.disabled = !allowed;
         element.setAttribute('aria-disabled', String(!allowed));
         element.classList.toggle('permission-disabled', !allowed);
@@ -18340,7 +18398,7 @@ function initStreamingConsoleIntegration() {
         return [...known.values()];
     }, authorization: tunnelAuthorization,
         editMarkdown: (message, content, baseVersion) => new Promise((resolve, reject) => {
-            if (!requireTunnelPermission('sendText')) return reject(new Error('permission-denied'));
+            if (!requireTunnelPermission('sendMarkdown')) return reject(new Error('permission-denied'));
             if (!state.socket?.connected || message.sessionId !== state.sessionId) return reject(new Error('invalid-session'));
             state.socket.timeout(10000).emit('markdown-message-edit', { sessionId: message.sessionId, messageId: message.id, content, baseVersion }, async (err, result) => {
                 if (err) return reject(err);
@@ -18570,7 +18628,7 @@ function initUI() {
 
     // 文件上传
     document.getElementById('dropZone').addEventListener('click', () => {
-        if (!requireTunnelPermission('sendFile')) return;
+        if (!hasTunnelPermission('sendFile') && !requireTunnelPermission('sendWebZip')) return;
         pickFilesForSending().catch(err => {
             historyLog('file-picker-send-failed', { error: err.message });
             alert(`选择文件失败：${err.message}`);

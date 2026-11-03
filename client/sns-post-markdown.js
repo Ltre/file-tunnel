@@ -4,12 +4,14 @@
     const t = value => global.TunnelI18n?.t(value) || value;
     const escape = value => String(value || '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
     const errors = {
-        'permission-denied': '当前设备没有读取、发送文本及文件的完整权限',
+        'permission-denied': '当前设备没有读取、发送Markdown及文件的完整权限',
         'invalid-session': '隧道连接已变化，请返回原隧道后重试',
+        SNS_X_AUTHOR_SUSPENDED: '原帖发布账号已被 X 停用，当前无法读取该帖子；这不代表当前登录账号被停用',
         SNS_POST_SOURCE_MISSING: '原始帖子记录已删除或不可用',
         SNS_POST_URL_UNSUPPORTED: '该帖子链接暂不支持抓取',
         SNS_POST_CONTENT_UNAVAILABLE: '平台没有返回可读取的帖子内容，请检查对应平台 Cookie 后重试',
         SNS_POST_MEDIA_UNAVAILABLE: '帖子媒体尚未成功保存到隧道，未生成 Markdown',
+        SNS_POST_MEDIA_INCOMPLETE: '仍有帖子媒体无法读取，未生成完整 Markdown；请检查 X Cookie、网络或服务端浏览器后重试',
         SNS_POST_IMAGE_INVALID: '帖子图片读取失败，未生成 Markdown，请检查来源后重试',
         SNS_POST_ADDRESS_DENIED: '帖子来源地址不允许访问',
         SNS_POST_TIMEOUT: '读取帖子或媒体超时，请稍后重试',

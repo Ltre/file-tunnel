@@ -8,6 +8,7 @@ const http = require('node:http');
 const https = require('node:https');
 const net = require('node:net');
 const tls = require('node:tls');
+const twitterMedia = require('./twitter-post-media');
 
 const SOURCE_DOMAINS = ['youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'fb.watch', 'instagram.com',
     'threads.com', 'threads.net', 'line.me', 'twitter.com', 'x.com', 'bilibili.com', 'b23.tv', 'music.163.com', '163cn.tv', '163cn.link'];
@@ -91,6 +92,31 @@ function publicLookup(hostname, timeoutMs) {
             resolve(addresses);
         });
     });
+}
+
+const twitterDnsCache = new Map();
+function isTwitterNetworkHost(host) {
+    return /^(?:(?:www|mobile|m)\.)?(?:twitter|x)\.com$/i.test(host) || ['pbs.twimg.com', 'cdn.syndication.twimg.com'].includes(host);
+}
+
+async function twitterAddresses(hostname, proxy, timeoutMs, request = readPublicUrl) {
+    const key = proxy + '\n' + hostname, cached = twitterDnsCache.get(key);
+    if (cached?.expires > Date.now()) return cached.addresses;
+    if (!isTwitterNetworkHost(hostname)) throw Error('SNS_POST_ADDRESS_DENIED');
+    const query = new URL('https://cloudflare-dns.com/dns-query');
+    query.searchParams.set('name', hostname); query.searchParams.set('type', 'A');
+    const response = await request(query.href, { proxy, dnsBootstrap: true, accept: 'application/dns-json', maxBytes: 65536, timeoutMs: Math.min(timeoutMs, 5000) });
+    if (response.redirect || !/^application\/(?:dns-)?json$/.test(response.type || '')) throw Error('SNS_POST_DNS_INVALID');
+    const answer = JSON.parse(response.data.toString('utf8'));
+    if (answer.Status !== 0 || answer.TC || !answer.Question?.some(item => String(item.name).replace(/\.$/, '').toLowerCase() === hostname && item.type === 1)) throw Error('SNS_POST_DNS_INVALID');
+    const records = (answer.Answer || []).filter(item => item.type === 1);
+    if (!records.length) throw Error('SNS_POST_DNS_INVALID');
+    if (records.some(item => !net.isIPv4(item.data) || !publicAddress(item.data))) throw Error('SNS_POST_ADDRESS_DENIED');
+    const addresses = [...new Set(records.map(item => item.data))].map(address => ({ address, family: 4 }));
+    const ttl = Math.max(1, Math.min(...records.map(item => Math.min(Number(item.TTL) || 30, 300))));
+    if (twitterDnsCache.size >= 16) twitterDnsCache.delete(twitterDnsCache.keys().next().value);
+    twitterDnsCache.set(key, { addresses, expires: Date.now() + ttl * 1000 });
+    return addresses;
 }
 
 function connectHttpProxy(proxy, target, port, timeoutMs) {
@@ -181,18 +207,28 @@ async function proxySocket(value, url, addresses, timeoutMs) {
 }
 
 /** Public-DNS-pinned request: page/redirect URLs are constrained separately; cookies never follow to a CDN. */
-async function readPublicUrl(value, { maxBytes = 2 * 1024 * 1024, cookie = '', timeoutMs = 20000, proxy: proxyOverride } = {}) {
+async function readPublicUrl(value, { maxBytes = 2 * 1024 * 1024, cookie = '', timeoutMs = 20000, proxy: proxyOverride,
+    twitterNetwork = false, dnsBootstrap = false, accept = 'text/html,application/json,image/*;q=0.8' } = {}) {
     const href = safeHttpUrl(value);
     if (!href) return Promise.reject(Error('SNS_POST_URL_UNSUPPORTED'));
     const url = new URL(href);
-    const started = Date.now(), addresses = await publicLookup(url.hostname, timeoutMs);
+    const started = Date.now();
     const proxy = proxyOverride === undefined ? configuredProxy(url) : proxyOverride;
+    let addresses;
+    if (dnsBootstrap && url.hostname === 'cloudflare-dns.com') addresses = [{ address: '1.1.1.1', family: 4 }];
+    else if (twitterNetwork && proxy && isTwitterNetworkHost(url.hostname)) {
+        try { addresses = await twitterAddresses(url.hostname, proxy, timeoutMs); }
+        catch (error) {
+            if (error.message === 'SNS_POST_ADDRESS_DENIED') throw error;
+            addresses = await publicLookup(url.hostname, Math.max(1, timeoutMs - (Date.now() - started)));
+        }
+    } else addresses = await publicLookup(url.hostname, timeoutMs);
     const connection = proxy ? await proxySocket(proxy, url, addresses, Math.max(1, timeoutMs - (Date.now() - started))) : null;
     return new Promise((resolve, reject) => {
         let timer;
         const finish = (error, value) => { clearTimeout(timer); if (error) { connection?.destroy(); reject(error); } else resolve(value); };
         const request = (url.protocol === 'https:' ? https : http).request(url, {
-            headers: { 'User-Agent': 'Mozilla/5.0 Drop2Tunnel-SNS-Post', Accept: 'text/html,application/json,image/*;q=0.8', ...(cookie ? { Cookie: cookie } : {}) },
+            headers: { 'User-Agent': 'Mozilla/5.0 Drop2Tunnel-SNS-Post', Accept: accept, ...(cookie ? { Cookie: cookie } : {}) },
             ...(connection ? { createConnection: () => connection } : { agent: false }),
             lookup(host, options, callback) {
                 if (options.all) return callback(null, addresses);
@@ -271,13 +307,15 @@ function extractPostMetadata(html, pageUrl) {
 async function readWebPost(value, { cookieFileForUrl = () => '', request = readPublicUrl } = {}) {
     let url = sourceUrl(value);
     for (let redirects = 0; redirects <= 4; redirects++) {
-        const response = await request(url, { maxBytes: 2 * 1024 * 1024, cookie: cookieHeader(cookieFileForUrl(url), url) });
+        const cookie = cookieHeader(cookieFileForUrl(url), url);
+        const response = await request(url, { maxBytes: 2 * 1024 * 1024, cookie, twitterNetwork: Boolean(twitterPostId(value)) });
         if (response.redirect) { url = sourceUrl(response.redirect); continue; }
         if (response.type && !/^(?:text\/html|application\/xhtml\+xml)$/.test(response.type)) throw Error('SNS_POST_PAGE_INVALID');
         const html = response.data.toString('utf8');
         const metadata = extractPostMetadata(html, url);
-        const photos = extractTwitterPageImages(html, value);
-        return { ...metadata, ...(photos.length ? { images: photos, structuredImages: true } : {}), url };
+        const media = twitterMedia.fromHtml(html, twitterPostId(value));
+        const post = { ...metadata, ...(media || {}), url };
+        return post;
     }
     throw Error('SNS_POST_REDIRECT_LIMIT');
 }
@@ -298,29 +336,6 @@ function twitterPhotoUrls(photos) {
     return images;
 }
 
-function extractTwitterPageImages(html, pageUrl) {
-    const id = twitterPostId(pageUrl);
-    if (!id) return [];
-    let images = [];
-    // X's HTML can contain the focal TweetResultByRestId response as an escaped
-    // JSON result.value in its hydration script, even when syndication is down.
-    // Parse only data: never execute the script or collect images from replies,
-    // quoted posts, avatars, or video previews elsewhere in the page.
-    for (const script of String(html).matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)) {
-        for (const match of script[1].matchAll(/\bvalue\s*:\s*("(?:[^"\\]|\\[\s\S])*")/g)) {
-            let result;
-            try { result = JSON.parse(JSON.parse(match[1]))?.data?.tweet_result_by_rest_id; }
-            catch (_) { continue; }
-            const post = result?.result;
-            if (String(result?.rest_id || '') !== id || String(post?.rest_id || '') !== id || post?.__typename !== 'Tweet') continue;
-            const photos = Array.isArray(post.media_entities2) ? post.media_entities2.filter(item => item?.type === 'photo') : [];
-            const found = twitterPhotoUrls(photos);
-            if (found.length > images.length) images = found;
-        }
-    }
-    return images;
-}
-
 async function readTwitterPost(value, { request = readPublicUrl } = {}) {
     const id = twitterPostId(value);
     if (!id) return null;
@@ -330,10 +345,11 @@ async function readTwitterPost(value, { request = readPublicUrl } = {}) {
     const url = new URL('https://cdn.syndication.twimg.com/tweet-result');
     url.searchParams.set('id', id);
     url.searchParams.set('token', ((Number(id) / 1e15) * Math.PI).toString(36).replace(/[0.]/g, ''));
-    const response = await request(url.href, { maxBytes: 1024 * 1024, timeoutMs: 8000 });
+    const response = await request(url.href, { maxBytes: 1024 * 1024, timeoutMs: 8000, twitterNetwork: true });
     if (response.redirect || response.type && !/^application\/json$/.test(response.type)) throw Error('SNS_POST_PAGE_INVALID');
     let post;
     try { post = JSON.parse(response.data.toString('utf8')); } catch (_) { throw Error('SNS_POST_PAGE_INVALID'); }
+    if (post?.__typename === 'TweetTombstone' && /from a suspended account/i.test(post.tombstone?.text?.text || '')) throw Error('SNS_X_AUTHOR_SUSPENDED');
     if (!post || typeof post !== 'object' || String(post.id_str || '') !== id) throw Error('SNS_POST_CONTENT_UNAVAILABLE');
     const photos = (Array.isArray(post.mediaDetails) ? post.mediaDetails.filter(item => item?.type === 'photo') : [])
         .concat(Array.isArray(post.photos) ? post.photos : []);
@@ -342,25 +358,39 @@ async function readTwitterPost(value, { request = readPublicUrl } = {}) {
     return { title: text.slice(0, 1000), body: text,
         author: typeof post.user?.name === 'string' ? post.user.name.slice(0, 1000) : '',
         publishedAt: typeof post.created_at === 'string' ? post.created_at.slice(0, 100) : '',
-        images, structuredBody: Boolean(text), url: value };
+        images, structuredBody: Boolean(text), ...twitterMedia.fromPost(post, id), url: value };
 }
 
 async function readSnsPostContent(value, options = {}) {
-    const [page, embedded] = await Promise.allSettled([readWebPost(value, options), readTwitterPost(value, options)]);
+    const isTwitter = Boolean(twitterPostId(value));
+    // Public page and public embed get the first chance. Do not spend an
+    // account Cookie when either can already provide the focal post's media.
+    const publicOptions = isTwitter ? { ...options, cookieFileForUrl: () => '' } : options;
+    const [page, embedded] = await Promise.allSettled([readWebPost(value, publicOptions), readTwitterPost(value, options)]);
+    if ([page, embedded].some(result => result.status === 'rejected' && result.reason?.message === 'SNS_X_AUTHOR_SUSPENDED')) throw Error('SNS_X_AUTHOR_SUSPENDED');
     let webpage = page.status === 'fulfilled' ? page.value : {};
-    if (/(?:log\s*in|sign\s*in|security check|just a moment|access denied|登录|安全验证|验证码)/i.test(webpage.title || '') && !webpage.structuredBody) webpage = {};
+    const publicPost = isTwitter ? twitterMedia.mergeParts([webpage, embedded.status === 'fulfilled' ? embedded.value : null]) : null;
+    const needsMore = publicPost && (!publicPost.inventoryKnown || twitterMedia.missingVideos(publicPost, publicPost.videoMetas).length);
+    if (isTwitter && needsMore && cookieHeader(options.cookieFileForUrl?.(value), value)) {
+        try {
+            const authenticated = await readWebPost(value, options);
+            webpage = twitterMedia.mergeParts([webpage, authenticated]);
+        } catch (_) { /* Keep public content and the original error if neither path succeeds. */ }
+    }
+    if (/(?:log\s*in|sign\s*in|security check|just a moment|access denied|登录|安全验证|验证码)/i.test(webpage.title || '') && !webpage.structuredBody && !webpage.structuredImages && !webpage.requiresLogin) webpage = {};
     const twitter = embedded.status === 'fulfilled' ? embedded.value : null;
+    if (isTwitter && (page.status === 'fulfilled' || twitter || webpage.body)) return twitterMedia.mergeParts([webpage, twitter]);
     if (twitter?.body || twitter?.images.length) return { ...webpage, ...twitter,
         images: webpage.structuredImages && webpage.images.length > twitter.images.length ? webpage.images
             : twitter.images.length ? twitter.images : webpage.images || [] };
-    if (page.status === 'fulfilled') return webpage;
+    if (page.status === 'fulfilled' || webpage.images?.length || webpage.body) return webpage;
     throw page.reason;
 }
 
 async function readPostImage(value, { request = readPublicUrl } = {}) {
     let url = safeHttpUrl(value);
     for (let redirects = 0; redirects <= 4; redirects++) {
-        const response = await request(url, { maxBytes: 20 * 1024 * 1024 });
+        const response = await request(url, { maxBytes: 20 * 1024 * 1024, twitterNetwork: new URL(url).hostname === 'pbs.twimg.com' });
         if (response.redirect) { url = safeHttpUrl(response.redirect); if (!url) throw Error('SNS_POST_URL_UNSUPPORTED'); continue; }
         // SVG is active document content, so only raster images enter SNS assets.
         const body = response.data;
@@ -406,15 +436,35 @@ function createSnsPostImagePublisher({ assetDir, record, registerAsset, fileInfo
     };
 }
 
-async function inspectSnsPost(source, { runMetadata, cookieFileForUrl, request } = {}) {
+async function inspectSnsPost(source, { runMetadata, cookieFileForUrl, request, readBrowserPost } = {}) {
+    const isTwitter = Boolean(twitterPostId(source.sourceUrl));
+    const metadataOptions = { noPlaylist: !isTwitter, flatPlaylist: false, ignoreNoFormats: true, allowIgnoreNoFormatsFallback: false, timeoutMs: 45000, operation: 'sns-post-markdown-metadata' };
     const [parsed, page] = await Promise.allSettled([
-        runMetadata(sourceUrl(source.sourceUrl), { noPlaylist: true, flatPlaylist: false, ignoreNoFormats: true,
-            allowIgnoreNoFormatsFallback: false, timeoutMs: 45000, operation: 'sns-post-markdown-metadata' }),
+        runMetadata(sourceUrl(source.sourceUrl), { ...metadataOptions, ...(isTwitter ? { noCookie: true } : {}) }),
         readSnsPostContent(source.sourceUrl, { cookieFileForUrl, request })
     ]);
-    const metadata = parsed.status === 'fulfilled' ? parsed.value || {} : {};
+    if (page.status === 'rejected' && page.reason?.message === 'SNS_X_AUTHOR_SUSPENDED') throw page.reason;
+    let metadata = parsed.status === 'fulfilled' ? parsed.value || {} : {};
     let webpage = page.status === 'fulfilled' ? page.value : {};
-    if (/(?:log\s*in|sign\s*in|security check|just a moment|access denied|登录|安全验证|验证码)/i.test(webpage.title || '') && !webpage.structuredBody) webpage = {};
+    if (/(?:log\s*in|sign\s*in|security check|just a moment|access denied|登录|安全验证|验证码)/i.test(webpage.title || '') && !webpage.structuredBody && !webpage.structuredImages && !webpage.requiresLogin) webpage = {};
+    let recoveredEntries = isTwitter ? twitterMedia.mergeMetas(twitterMedia.playableEntries(metadata), webpage.videoMetas) : null;
+    const declaredVideo = () => metadata._type === 'video' && !webpage.inventoryKnown && !recoveredEntries.length;
+    const incomplete = () => twitterMedia.missingVideos(webpage, recoveredEntries).length > 0 || webpage.requiresLogin || declaredVideo();
+    if (isTwitter && incomplete() && cookieHeader(cookieFileForUrl?.(source.sourceUrl), source.sourceUrl)) {
+        try {
+            const authenticated = await runMetadata(sourceUrl(source.sourceUrl), { ...metadataOptions, noCookie: false });
+            recoveredEntries = twitterMedia.mergeMetas(recoveredEntries, twitterMedia.playableEntries(authenticated));
+            if (twitterMedia.playableEntries(authenticated).length) metadata = { ...metadata, ...authenticated };
+        } catch (_) { /* Retain successful public media; recover only the missing part below. */ }
+    }
+    if (isTwitter && incomplete()) {
+        try {
+            const browser = await (readBrowserPost || require('./twitter-post-browser').readBrowserPost)(source.sourceUrl, { cookie: cookieHeader(cookieFileForUrl?.(source.sourceUrl), source.sourceUrl), proxy: configuredProxy(new URL(source.sourceUrl)) });
+            webpage = twitterMedia.mergeParts([webpage, browser]);
+            recoveredEntries = twitterMedia.mergeMetas(recoveredEntries, browser.videoMetas);
+        } catch (_) { /* A crawler failure must not erase media already obtained. */ }
+    }
+    if (isTwitter && incomplete()) throw Error('SNS_POST_MEDIA_INCOMPLETE');
     const entries = Array.isArray(metadata.entries) ? metadata.entries.filter(Boolean) : [];
     if (entries.length > 40) throw Error('SNS_POST_MEDIA_LIMIT');
     const description = String(metadata.description || metadata.caption || entries.map(item => item.description || item.caption || '').filter(Boolean).join('\n\n')).trim();
@@ -429,8 +479,9 @@ async function inspectSnsPost(source, { runMetadata, cookieFileForUrl, request }
         images: webpage.images || [],
         // OpenGraph is a preview, not a promise that a long article was fully extracted.
         partial: !description && !webpage.structuredBody,
-        mediaMetas: entries.length ? entries : [metadata],
-        mediaParsed: parsed.status === 'fulfilled'
+        mediaMetas: isTwitter ? recoveredEntries : entries.length ? entries : [metadata],
+        mediaParsed: isTwitter ? recoveredEntries.length > 0 : parsed.status === 'fulfilled',
+        ...(isTwitter ? { mediaComplete: true } : {})
     };
 }
 
@@ -458,7 +509,7 @@ function buildPostMarkdown({ source, metadata, media, notes = [] }) {
 }
 
 /** All external operations are injected. Authorization is checked again after every long wait. */
-function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}, acquire, image, publish, existing, sender, onError = () => {} }) {
+function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}, acquire, image, publish, updatePublished, existing, sender, onError = () => {} }) {
     const jobs = new Map();
     function start({ sessionId, messageId, sourceId, deviceId }) {
         authorize(sessionId, deviceId);
@@ -468,10 +519,11 @@ function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}
         sourceUrl(source.sourceUrl);
         const key = [sessionId, messageId, sourceId].join(':');
         const found = existing(sessionId, messageId, sourceId);
-        if (found) return { id: found.id, started: false, promise: Promise.resolve(found) };
+        const refresh = Boolean(found && twitterPostId(source.sourceUrl) && found.snsAcquisition?.mediaComplete !== true);
+        if (found && !refresh) return { id: found.id, started: false, promise: Promise.resolve(found) };
         if (jobs.has(key)) return jobs.get(key);
         if (jobs.size >= 16) throw Error('SNS_POST_BUSY');
-        const id = crypto.randomUUID();
+        const id = refresh ? found.id : crypto.randomUUID();
         const job = { id, started: true };
         job.promise = Promise.resolve().then(async () => {
             const metadata = await inspect(source);
@@ -505,10 +557,14 @@ function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}
             authorize(sessionId, deviceId);
             if (!record(sessionId, messageId)) throw Error('SNS_POST_SOURCE_MISSING');
             const previous = existing(sessionId, messageId, sourceId);
-            if (previous) return previous;
+            if (previous && (!refresh || previous.snsAcquisition?.mediaComplete === true)) return previous;
             const message = { id, type: 'markdown', markdown, timestamp: Date.now(), ...sender(), sessionId,
-                snsAcquisition: { source: 'sns-post-markdown', sourceMessageId: messageId, sourceId, sourceUrl: source.sourceUrl } };
-            await publish(sessionId, message, deviceId);
+                snsAcquisition: { source: 'sns-post-markdown', sourceMessageId: messageId, sourceId, sourceUrl: source.sourceUrl,
+                    ...(twitterPostId(source.sourceUrl) ? { mediaComplete: true } : {}) } };
+            if (refresh && updatePublished) {
+                if (await updatePublished(sessionId, message, deviceId) === false) throw Error('SNS_POST_SOURCE_MISSING');
+            }
+            else await publish(sessionId, message, deviceId);
             return message;
         }).finally(() => jobs.delete(key));
         // A disconnected caller does not create an unhandled rejection or duplicate the job.
@@ -522,11 +578,11 @@ function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}
 function createTunnelSnsPostPublisher(options) {
     const { record, session, authorize, publish, sender } = options;
     return createSnsPostPublisher({
-        authorize, record, publish, sender,
+        authorize, record, publish, sender, updatePublished: options.update,
         existing: (sessionId, messageId, sourceId) => (session(sessionId)?.history || []).map(entry => entry.message || entry)
             .find(message => message?.type === 'markdown' && message.snsAcquisition?.source === 'sns-post-markdown' &&
                 message.snsAcquisition.sourceMessageId === messageId && message.snsAcquisition.sourceId === sourceId),
-        inspect: source => inspectSnsPost(source, { runMetadata: options.metadata, cookieFileForUrl: options.cookieFileForUrl, request: options.request }),
+        inspect: source => inspectSnsPost(source, { runMetadata: options.metadata, cookieFileForUrl: options.cookieFileForUrl, request: options.request, readBrowserPost: options.readBrowserPost }),
         prepare(sessionId, messageId, source, metadata) {
             if (!metadata.mediaParsed && !metadata.images?.length) return;
             const message = record(sessionId, messageId);
@@ -539,11 +595,12 @@ function createTunnelSnsPostPublisher(options) {
                 const direct = safeHttpUrl(entry.url) && /^(?:mp4|webm|mov|mkv|m4a|mp3|aac|flac|opus|ogg)$/i.test(entry.ext || '');
                 if (!video && !audio && !direct) return [];
                 const item = options.buildItem(messageId, source, entry, index);
+                if (twitterPostId(source.sourceUrl)) item.directMediaUrl = twitterMedia.directVideoUrl(entry);
                 if (!video && audio && item.mediaKind !== 'song') item.mediaKind = 'audio';
                 item.sourceType = metadata.mediaMetas.length > 1 ? 'collection' : 'single';
                 // Preserve an existing acquisition identity and completed assets.
-                const previous = (message.snsMediaItems || []).find(old => old.id === item.id);
-                return [{ ...item, ...(previous?.serverState === 'ready' ? previous : {}) }];
+                const previous = (message.snsMediaItems || []).find(old => old.id === item.id || twitterPostId(source.sourceUrl) && old.sourceId === source.id && old.youtubeVideoId && old.youtubeVideoId === item.youtubeVideoId);
+                return [{ ...item, ...(previous?.serverState === 'ready' ? previous : previous ? { id: previous.id, acquisitionTaskId: previous.acquisitionTaskId } : {}) }];
             }) : (message.snsMediaItems || []).filter(item => item.sourceId === source.id);
             message.snsMediaItems = (message.snsMediaItems || []).filter(item => item.sourceId !== source.id).concat(fresh);
             Object.assign(currentSource, { parseStatus: 'ready', parseError: '', imageUrls: metadata.images || [], mediaItemIds: fresh.map(item => item.id) });
@@ -564,5 +621,5 @@ function createTunnelSnsPostPublisher(options) {
     });
 }
 
-module.exports = { sourceUrl, publicAddress, cookieHeader, configuredProxy, readPublicUrl, extractPostMetadata, readWebPost, readTwitterPost, readSnsPostContent, readPostImage, inspectSnsPost, createSnsPostImagePublisher,
+module.exports = { sourceUrl, publicAddress, twitterAddresses, cookieHeader, configuredProxy, readPublicUrl, extractPostMetadata, readWebPost, readTwitterPost, readSnsPostContent, readPostImage, inspectSnsPost, createSnsPostImagePublisher,
     buildPostMarkdown, createSnsPostPublisher, createTunnelSnsPostPublisher };

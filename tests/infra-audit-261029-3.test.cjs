@@ -101,9 +101,11 @@ const diagnostics = 'const processDiagnostics = require(' + JSON.stringify(diagn
 function runDiagnosticChild(t, program) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'infra-process-261101-4-'));
     t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
-    return spawnSync(process.execPath, ['-e', program], {
+    const result = spawnSync(process.execPath, ['-e', program], {
         encoding: 'utf8', timeout: 5000, env: { ...process.env, TUNNEL_DATA_DIR: dataDir }
     });
+    result.processLog = fs.readFileSync(path.join(dataDir, 'server-process.log'), 'utf8');
+    return result;
 }
 
 for (const [name, action, code, expected] of [
@@ -131,6 +133,7 @@ test('a requested shutdown is logged before asynchronous cleanup and retains its
     const child = runDiagnosticChild(t, diagnostics + stubs + shutdown + "\nprocess.emit('SIGINT');");
     assert.equal(child.error, undefined);
     assert.equal(child.status, 0);
-    assert.match(child.stdout, /\[server-shutdown\] pid=\d+ signal=SIGINT/);
-    assert.match(child.stderr, /code=0 signal=SIGINT/);
+    assert.doesNotMatch(child.stdout + child.stderr, /\[server-(?:shutdown|proxy-exit|exit)\]/);
+    assert.match(child.processLog, /\[server-shutdown\] pid=\d+ signal=SIGINT/);
+    assert.match(child.processLog, /code=0 signal=SIGINT/);
 });

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v116-content-v8-history-scope-261102-2';
+const CACHE_NAME = 'instant-tunnel-v117-content-v8-sns-logs-permissions-261103-1';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -49,6 +49,8 @@ const APP_SHELL = [
     '/client/file-assets.js',
     '/client/folder-archive.js',
     '/client/web-zip-runtime.js',
+    '/client/browser-logs.js',
+    '/client/browser-logs.css',
     '/client/notification-center.js',
     '/client/notification-center.css',
     '/client/streaming-console.js',

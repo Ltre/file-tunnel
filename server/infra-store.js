@@ -430,7 +430,7 @@ class InfraStore {
         );
     }
 
-    setTunnelAccess(sessionId, ownerDeviceId = '', permissions = {}, lastActivity = Date.now(), admins = {}) {
+    setTunnelAccess(sessionId, ownerDeviceId = '', permissions = {}, lastActivity = Date.now(), admins = {}, devicePermissions = {}, managementDevices = {}) {
         const now = Date.now();
         this.run(`
             INSERT INTO tunnels (session_id, short_code, created_at, last_activity, owner_device_id, permissions_json, deleted_at)
@@ -439,7 +439,7 @@ class InfraStore {
                 owner_device_id = COALESCE(NULLIF(tunnels.owner_device_id, ''), excluded.owner_device_id),
                 permissions_json = excluded.permissions_json,
                 last_activity = MAX(tunnels.last_activity, excluded.last_activity)
-        `, [sessionId, now, lastActivity || now, ownerDeviceId, JSON.stringify({ permissions: permissions || {}, admins: admins || {} })]);
+        `, [sessionId, now, lastActivity || now, ownerDeviceId, JSON.stringify({ permissions: permissions || {}, admins: admins || {}, devicePermissions: devicePermissions || {}, managementDevices: managementDevices || {} })]);
         this.scheduleSave();
     }
 
@@ -743,6 +743,7 @@ class InfraStore {
                 t.created_at,
                 t.last_activity,
                 t.remark,
+                t.owner_device_id,
                 t.deleted_at,
                 COALESCE(active_devices.count, 0) AS active_device_count,
                 COALESCE(members.count, 0) AS historical_device_count,

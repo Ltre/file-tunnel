@@ -41,7 +41,8 @@ function historyClient(socket, sessionId, stored) {
         reconcileLocalHistory: async () => {}, pruneLocalHistoryToCanonicalSnapshot: async () => {},
         enqueueHistoryAssetRecovery: messages => recovery.push(...structuredClone(messages))
     });
-    vm.runInContext(section(appSource, 'async function handleSessionHistory(', 'async function getCurrentSessionMessages('), context);
+    vm.runInContext(section(appSource, 'function isHistoryMessageDeleted(', 'async function deleteHistoryMessageLocal(') +
+        section(appSource, 'async function handleSessionHistory(', 'async function getCurrentSessionMessages('), context);
     let pending = Promise.resolve();
     socket.on('session-history', payload => {
         received.push(payload);

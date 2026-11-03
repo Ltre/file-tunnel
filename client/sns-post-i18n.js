@@ -1,6 +1,8 @@
 (function (global) {
     'use strict';
     const rows = [
+        ['当前设备没有读取、发送Markdown及文件的完整权限', 'This device needs permission to read, send Markdown and send files'],
+        ['仍有帖子媒体无法读取，未生成完整 Markdown；请检查 X Cookie、网络或服务端浏览器后重试', 'Some post media is still unavailable. Complete Markdown was not generated. Check the X cookie, network or server browser, then retry.'],
         ['音频', 'Audio'], ['音频文件', 'Audio file'], ['图片文件', 'Image file'], ['帖子 Markdown', 'Post Markdown'],
         ['网易云音乐', 'NetEase Cloud Music'],
         ['其它 SNS 媒体下载', 'Other SNS media downloads'],

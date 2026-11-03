@@ -16,7 +16,8 @@ function fixture() {
         getCurrentSessionMessages:async()=>[...stored.values()].filter(x=>x.sessionId===state.sessionId),
         reconcileLocalHistory:async()=>{},pruneLocalHistoryToCanonicalSnapshot:async()=>{},
         enqueueHistoryAssetRecovery:messages=>recovery.push(...messages)});
-    vm.runInContext(section('async function handleSessionHistory(', 'async function getCurrentSessionMessages('), context);
+    vm.runInContext(section('function isHistoryMessageDeleted(', 'async function deleteHistoryMessageLocal(') +
+        section('async function handleSessionHistory(', 'async function getCurrentSessionMessages('), context);
     return {context,state,stored,rendered,writes,recovery,emitted,deleted,run:data=>context.handleSessionHistory(data)};
 }
 
@@ -81,7 +82,8 @@ test('a queued recovery from A is skipped after the active tunnel changes to B',
     const requests=[];
     const runtime=vm.createContext({state:{sessionId:'tunnel-B'},sessionHistoryQueue:queue,
         requestMissingFileAssetCache:async message=>requests.push(message.id),sleep:async()=>{},historyLog(){}});
-    vm.runInContext(section('function enqueueHistoryAssetRecovery(', 'async function handleSessionHistory('),runtime);
+    vm.runInContext(section('function isHistoryMessageDeleted(', 'async function deleteHistoryMessageLocal(') +
+        section('function enqueueHistoryAssetRecovery(', 'async function handleSessionHistory('),runtime);
     runtime.enqueueHistoryAssetRecovery([{id:'A-file',sessionId:'tunnel-A',type:'file',fileInfo:{isAsset:true}},
         {id:'B-file',sessionId:'tunnel-B',type:'file',fileInfo:{isAsset:true}}]);
     await new Promise(resolve=>setImmediate(resolve));

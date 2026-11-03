@@ -86,7 +86,8 @@ test('/sns-dl uses ordinary SNS cookies, its own parse cache, and an empty tag p
 });
 
 test('后台显示隧道备注，音轨修正版只对截取任务开放', () => {
-    const admin = read('pages/admin.html');
+    const admin = read('client/admin-overview.js');
+    assert.match(read('pages/admin-tunnels.html'), /src="\/client\/admin-overview\.js"/);
     const premium = read('pages/youtube-premium-dl.html');
     assert.match(admin, /const safeRemark = escapeHtml\(String\(session\.remark \|\| ''\)\.trim\(\)\)/);
     assert.match(admin, /隧道备注：\$\{safeRemark \|\| '未设置'\}/);

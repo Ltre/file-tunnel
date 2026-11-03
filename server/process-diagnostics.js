@@ -77,12 +77,15 @@ function installProcessDiagnostics(options = {}) {
             record('phase', '');
         },
         markShutdown(signal) {
-            if (['SIGINT', 'SIGTERM', 'SIGHUP'].includes(signal)) shutdownSignal = signal;
-            diagnostics.setPhase('shutdown');
+            if (['SIGINT', 'SIGTERM', 'SIGHUP'].includes(signal)) {
+                const first = shutdownSignal !== signal; shutdownSignal = signal;
+                diagnostics.setPhase('shutdown');
+                if (first) record('shutdown', 'signal=' + signal);
+            }
         },
         proxyChildExit(child, code, signal) {
             record('proxy-exit', 'childPid=' + (child.pid || 'none') + ' code=' + (code ?? 'none') +
-                ' signal=' + (signal || 'none'), true);
+                ' signal=' + (signal || 'none'), shutdownSignal !== 'SIGINT');
         },
         proxyChildError(child, error) {
             record('proxy-error', 'childPid=' + (child.pid || 'none') + ' ' + errorDetails(error), true);
@@ -93,7 +96,7 @@ function installProcessDiagnostics(options = {}) {
         record('fatal', 'origin=' + origin + ' ' + errorDetails(error), true);
     });
     process.on('exit', code => {
-        record('exit', 'code=' + code + ' signal=' + (shutdownSignal || 'none'), true);
+        record('exit', 'code=' + code + ' signal=' + (shutdownSignal || 'none'), shutdownSignal !== 'SIGINT');
     });
     record('start', 'node=' + process.version + ' platform=' + process.platform + ' arch=' + process.arch);
     return diagnostics;
