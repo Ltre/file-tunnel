@@ -406,14 +406,14 @@ async function readPostImage(value, { request = readPublicUrl } = {}) {
 }
 
 function createSnsPostImagePublisher({ assetDir, record, registerAsset, fileInfo, publish, sender, authorize = () => {}, readImage = readPostImage }) {
-    return async (sessionId, source, imageUrl, index, deviceId) => {
+    return async (sessionId, source, imageUrl, index, deviceId, ownerId = '') => {
         authorize(sessionId, deviceId);
-        const key = [sessionId, source.messageId, source.id, imageUrl, index].join('\n');
+        const key = [sessionId, source.messageId, source.id, imageUrl, index, ...(ownerId ? [ownerId] : [])].join('\n');
         const digest = crypto.createHash('sha256').update(key).digest();
         const assetId = digest.subarray(0, 16).toString('base64url');
         const hex = digest.subarray(16).toString('hex');
         const messageId = [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
-        const previous = record(sessionId, messageId);
+        const previous = !ownerId && record(sessionId, messageId);
         if (previous?.fileInfo?.id === assetId && fs.existsSync(path.join(assetDir, assetId))) return previous;
         const image = await readImage(imageUrl);
         authorize(sessionId, deviceId);
@@ -425,13 +425,13 @@ function createSnsPostImagePublisher({ assetDir, record, registerAsset, fileInfo
         finally { try { fs.unlinkSync(temporary); } catch (_) {} }
         const asset = { id: assetId, path: target, name: (index === 'author-avatar' ? 'sns-author-avatar' : 'sns-post-' + (index + 1)) + '.' + ext, type: image.type,
             size: image.data.length, sessionId, createdAt: Date.now(), source: 'sns-post-image', sourceUrl: image.url,
-            sourceMessageId: source.messageId, snsMediaItemId: source.id, mediaKind: 'image' };
+            sourceMessageId: source.messageId, snsMediaItemId: source.id, mediaKind: 'image', ...(ownerId ? { markdownOwnerId: ownerId } : {}) };
         // These image assets have no yt-dlp acquisition task. The existing SNS
         // cleanup rule intentionally retains non-refetchable assets after peer caching.
         registerAsset(asset);
         const message = { id: messageId, type: 'file', fileInfo: fileInfo(asset), timestamp: Date.now(), ...sender(), sessionId,
             snsAcquisition: { source: 'sns-post-image', sourceMessageId: source.messageId, sourceId: source.id, sourceUrl: source.sourceUrl } };
-        await publish(sessionId, message, deviceId);
+        if (!ownerId) await publish(sessionId, message, deviceId);
         return message;
     };
 }
@@ -521,7 +521,7 @@ function buildPostMarkdown({ source, metadata, media, avatar, notes = [] }) {
 }
 
 /** All external operations are injected. Authorization is checked again after every long wait. */
-function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}, acquire, image, publish, updatePublished, existing, sender, onError = () => {} }) {
+function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}, acquire, image, publish, updatePublished, existing, sender, cleanup, trackProgress = false, onError = () => {} }) {
     const jobs = new Map();
     function start({ sessionId, messageId, sourceId, deviceId }) {
         authorize(sessionId, deviceId);
@@ -530,15 +530,31 @@ function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}
         if (!source) throw Error('SNS_POST_SOURCE_MISSING');
         sourceUrl(source.sourceUrl);
         const key = [sessionId, messageId, sourceId].join(':');
-        const found = existing(sessionId, messageId, sourceId);
-        const complete = message => message?.snsAcquisition?.mediaComplete === true && message?.snsAcquisition?.authorVersion === 1;
-        const refresh = Boolean(found && twitterPostId(source.sourceUrl) && !complete(found));
-        if (found && !refresh) return { id: found.id, started: false, promise: Promise.resolve(found) };
         if (jobs.has(key)) return jobs.get(key);
+        const found = existing(sessionId, messageId, sourceId);
+        const bundled = typeof cleanup === 'function';
+        const complete = message => bundled ? Array.isArray(message?.markdownAttachments)
+            : message?.snsAcquisition?.mediaComplete === true && message?.snsAcquisition?.authorVersion === 1;
+        const refresh = Boolean(found && (bundled || twitterPostId(source.sourceUrl)) && !complete(found));
+        if (found && !refresh) return { id: found.id, started: false, promise: Promise.resolve(found) };
         if (jobs.size >= 16) throw Error('SNS_POST_BUSY');
         const id = refresh ? found.id : crypto.randomUUID();
-        const job = { id, started: true };
-        job.promise = Promise.resolve().then(async () => {
+        const ownerId = bundled ? id : '';
+        const base = { id, type: 'markdown', timestamp: refresh ? found.timestamp || Date.now() : Date.now(), ...sender(), sessionId,
+            snsAcquisition: { source: 'sns-post-markdown', sourceMessageId: messageId, sourceId, sourceUrl: source.sourceUrl } };
+        let revision = Number(found?.snsMarkdownRevision) || 0;
+        let progress;
+        async function report(next, create = false) {
+            if (!trackProgress) return;
+            const previous = record(sessionId, id);
+            if (!create && !previous) throw Error('SNS_POST_PLACEHOLDER_REMOVED');
+            const row = { ...base, markdown: '', ...previous, snsMarkdownRevision: ++revision, snsMarkdownProgress: next };
+            if (await (create ? publish : updatePublished)(sessionId, row, deviceId) === false) throw Error('SNS_POST_PLACEHOLDER_REMOVED');
+            progress = next;
+        }
+        const ready = Promise.resolve().then(() => report({ stage: 'inspect', frameworkReady: false, done: 0, total: null }, !found));
+        const job = { id, sessionId, started: true, ready };
+        job.promise = ready.then(async () => {
             const metadata = await inspect(source);
             authorize(sessionId, deviceId);
             await prepare(sessionId, messageId, source, metadata);
@@ -549,59 +565,86 @@ function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}
             const items = (current.snsMediaItems || []).filter(item => item?.sourceId === sourceId && item.mediaKind !== 'unsupported' && item.mediaKind !== 'none');
             if (items.length > 40) throw Error('SNS_POST_MEDIA_LIMIT');
             if (!metadata.body && !metadata.title && !items.length && !metadata.images?.length) throw Error('SNS_POST_CONTENT_UNAVAILABLE');
+            const pictures = metadata.images || [];
+            if (pictures.length > MAX_IMAGES) throw Error('SNS_POST_IMAGE_LIMIT');
+            const author = twitterPostId(source.sourceUrl) && metadata.authorHandle && metadata.authorAvatar
+                ? twitterMedia.authorInfo({ screen_name: metadata.authorHandle, profile_image_url_https: metadata.authorAvatar }) : null;
+            if (metadata.partial) notes.push('平台仅返回了摘要；本文不保证包含原帖全部内容，请结合原帖链接核对。');
+            if (metadata.note) notes.push(metadata.note);
+            if (trackProgress) {
+                await report({ ...progress, stage: 'framework' });
+                buildPostMarkdown({ source, metadata, media, notes });
+            }
+            let done = 0, total = items.reduce((sum, item) => sum + (item.mediaKind === 'song' ? 2 : 1), pictures.length + Number(Boolean(author?.authorAvatar)));
+            const fetching = resource => report({ stage: 'resources', frameworkReady: true, done, total, resource });
             for (const item of items) {
-                const generated = await acquire(sessionId, messageId, item.id);
+                if (trackProgress) await fetching(item.mediaKind === 'song' ? 'audio' : item.mediaKind);
+                const generated = await acquire(sessionId, messageId, item.id, ownerId);
                 authorize(sessionId, deviceId);
                 const files = generated?.type === 'file' ? [generated.fileInfo] : generated?.collection?.files || [];
                 if (!files.length) throw Error('SNS_POST_MEDIA_UNAVAILABLE');
-                for (const file of files) media.push({ sessionId, messageId: generated.id, file });
+                for (const file of files) media.push({ sessionId, messageId: ownerId || generated.id, file });
+                done += files.length;
+                total += files.length - (item.mediaKind === 'song' ? 2 : 1);
             }
-            const pictures = metadata.images || [];
-            if (pictures.length > MAX_IMAGES) throw Error('SNS_POST_IMAGE_LIMIT');
             for (let index = 0; index < pictures.length; index++) {
-                const generated = await image(sessionId, source, pictures[index], index, deviceId);
+                if (trackProgress) await fetching('image');
+                const generated = await image(sessionId, source, pictures[index], index, deviceId, ownerId);
                 authorize(sessionId, deviceId);
                 if (!generated?.fileInfo?.id) throw Error('SNS_POST_MEDIA_UNAVAILABLE');
-                media.push({ sessionId, messageId: generated.id, file: generated.fileInfo });
+                media.push({ sessionId, messageId: ownerId || generated.id, file: generated.fileInfo });
+                done++;
             }
-            if (metadata.partial) notes.push('平台仅返回了摘要；本文不保证包含原帖全部内容，请结合原帖链接核对。');
-            if (metadata.note) notes.push(metadata.note);
             let avatar;
-            if (twitterPostId(source.sourceUrl) && metadata.authorHandle && metadata.authorAvatar) {
-                const safe = twitterMedia.authorInfo({ screen_name: metadata.authorHandle, profile_image_url_https: metadata.authorAvatar });
-                if (safe.authorAvatar) {
-                    const generated = await image(sessionId, source, safe.authorAvatar, 'author-avatar', deviceId);
-                    authorize(sessionId, deviceId);
-                    if (!generated?.fileInfo?.id) throw Error('SNS_POST_MEDIA_UNAVAILABLE');
-                    avatar = { sessionId, messageId: generated.id, file: generated.fileInfo };
-                }
+            if (author?.authorAvatar) {
+                if (trackProgress) await fetching('avatar');
+                const generated = await image(sessionId, source, author.authorAvatar, 'author-avatar', deviceId, ownerId);
+                authorize(sessionId, deviceId);
+                if (!generated?.fileInfo?.id) throw Error('SNS_POST_MEDIA_UNAVAILABLE');
+                avatar = { sessionId, messageId: ownerId || generated.id, file: generated.fileInfo };
+                done++;
             }
+            if (trackProgress) await report({ stage: 'publishing', frameworkReady: true, done, total });
             const markdown = buildPostMarkdown({ source, metadata, media, avatar, notes });
+            const attachments = [...new Map([...media, ...(avatar ? [avatar] : [])].map(({ file }) => [file.id, file])).values()];
+            if (bundled && attachments.reduce((sum, file) => sum + Number(file.size), 0) > 256 * 1024 * 1024) throw Error('SNS_POST_MEDIA_LIMIT');
             authorize(sessionId, deviceId);
             if (!record(sessionId, messageId)) throw Error('SNS_POST_SOURCE_MISSING');
             const previous = existing(sessionId, messageId, sourceId);
-            if (previous && (!refresh || complete(previous))) return previous;
-            const message = { id, type: 'markdown', markdown, timestamp: refresh ? found.timestamp || Date.now() : Date.now(), ...sender(), sessionId,
-                snsAcquisition: { source: 'sns-post-markdown', sourceMessageId: messageId, sourceId, sourceUrl: source.sourceUrl,
+            if (previous && previous.id !== id && (!refresh || complete(previous))) return previous;
+            const message = { ...base, markdown,
+                ...(trackProgress ? { snsMarkdownRevision: ++revision, markdownVersion: Number(previous?.markdownVersion) || 1,
+                    favorite: previous?.favorite, favoritedAt: previous?.favoritedAt } : {}),
+                ...(bundled ? { markdownAttachments: attachments } : {}),
+                snsAcquisition: { ...base.snsAcquisition,
                     ...(twitterPostId(source.sourceUrl) ? { mediaComplete: true, authorVersion: 1 } : {}) } };
-            if (refresh && updatePublished) {
+            if ((trackProgress || refresh) && updatePublished) {
                 if (await updatePublished(sessionId, message, deviceId) === false) throw Error('SNS_POST_SOURCE_MISSING');
             }
             else await publish(sessionId, message, deviceId);
             return message;
+        }).catch(async error => {
+            try { if (ownerId) await cleanup(sessionId, ownerId); }
+            finally {
+                if (progress && record(sessionId, id)) {
+                    const code = /^(?:SNS_(?:POST|X)_[A-Z0-9_]+|permission-denied)$/.test(error.message) ? error.message : 'SNS_POST_FAILED';
+                    await report({ ...progress, stage: 'failed', error: code });
+                }
+            }
+            throw error;
         }).finally(() => jobs.delete(key));
         // A disconnected caller does not create an unhandled rejection or duplicate the job.
         job.promise.catch(error => onError(error));
         jobs.set(key, job);
         return job;
     }
-    return { start };
+    return { start, isRunning: (sessionId, id) => [...jobs.values()].some(job => job.id === id && job.sessionId === sessionId) };
 }
 
 function createTunnelSnsPostPublisher(options) {
     const { record, session, authorize, publish, sender } = options;
     return createSnsPostPublisher({
-        authorize, record, publish, sender, updatePublished: options.update,
+        authorize, record, publish, sender, updatePublished: options.update, cleanup: options.cleanup, trackProgress: options.trackProgress,
         existing: (sessionId, messageId, sourceId) => (session(sessionId)?.history || []).map(entry => entry.message || entry)
             .find(message => message?.type === 'markdown' && message.snsAcquisition?.source === 'sns-post-markdown' &&
                 message.snsAcquisition.sourceMessageId === messageId && message.snsAcquisition.sourceId === sourceId),
@@ -632,7 +675,8 @@ function createTunnelSnsPostPublisher(options) {
             delete currentSource.parseRetryCount; delete currentSource.parseRetryAfter;
             options.update(sessionId, message);
         },
-        acquire: async (sessionId, messageId, mediaItemId) => {
+        acquire: async (sessionId, messageId, mediaItemId, ownerId) => {
+            if (ownerId) return options.acquire(sessionId, messageId, mediaItemId, ownerId);
             const result = await options.acquire(sessionId, messageId, mediaItemId);
             const generated = record(sessionId, result?.generatedMessageId);
             if (!generated) throw Error('SNS_POST_MEDIA_UNAVAILABLE');

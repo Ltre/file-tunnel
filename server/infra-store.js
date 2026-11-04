@@ -682,8 +682,7 @@ class InfraStore {
         }
         // A deletion tombstone prevents an offline client from resurrecting a
         // removed record after restart, so persist this low-frequency action now.
-        this.save();
-        return true;
+        return this.save();
     }
 
     listHistoryRecords(sessionId, { includeDeleted = false, limit = 1000, offset = 0 } = {}) {

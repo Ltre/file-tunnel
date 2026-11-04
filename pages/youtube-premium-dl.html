@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>私人 YouTube Premium 下载</title>
     <link rel="stylesheet" href="/client/audio-track-repair.css">
+    <link rel="stylesheet" href="/client/download-form-tabs.css">
     <style>
         :root { color-scheme:light dark; --bg:#f4f6fa; --panel:#fff; --text:#172033; --muted:#667085; --line:#d8dfeb; --primary:#1d5fd1; --primary-soft:#eaf1ff; --danger:#be2f36; --ok:#08774f; --shadow:0 10px 30px rgba(24,39,75,.08); }
         * { box-sizing:border-box; }
@@ -179,6 +180,9 @@
     <nav class="task-filters" aria-label="任务手动分类"><button type="button" data-task-category="pending" aria-pressed="true">待处理</button><button type="button" data-task-category="handled" aria-pressed="false">✔已处理</button><button type="button" data-task-category="all" aria-pressed="false">▦全部任务</button></nav>
     <hr>
     <section class="panel">
+        <div class="download-form-heading"><div class="download-form-tabs" id="downloadFormTabs" aria-label="任务表单"></div>
+            <div class="download-form-tools"><button type="button" id="copyDownloadForm" aria-label="复制表单" title="复制表单">⧉</button><button type="button" id="deleteDownloadForm" aria-label="删除表单" title="删除表单">🗑</button></div>
+        </div>
         <div class="form-grid">
             <input id="urlInput" type="url" autocomplete="off" spellcheck="false" placeholder="https://www.youtube.com/watch?v=...">
             <button class="primary" id="startBtn" type="button">开始下载</button>
@@ -412,6 +416,7 @@
 <link rel="stylesheet" href="/client/disk-saved-location.css">
 <script src="/client/disk-saved-location.js"></script>
 <script src="/client/audio-track-repair.js"></script>
+<script src="/client/download-form-tabs.js"></script>
 <script src="/client/telegram-target-forward.js"></script>
 <script>
     const urlInput = document.getElementById('urlInput');
@@ -509,9 +514,6 @@
         ['comment', 'Comment', true], ['lyrics', 'Lyrics', true]
     ];
     let analysis = null;
-    let analysisInputUrl = '';
-    let analysisRequest = 0;
-    let analyzeTimer = 0;
     let page = 1;
     let pages = 1;
     const thumbnailDownloads = new Set();
@@ -529,7 +531,9 @@
             setBrowserCacheState(taskId, { status: 'browser_cache_caching', progress });
         }
     }) || null;
-    cacheFilesInput.checked = localStorage.getItem('youtubePremiumCacheFiles') !== '0';
+    const defaultCacheFiles = localStorage.getItem('youtubePremiumCacheFiles') !== '0';
+    cacheFilesInput.checked = defaultCacheFiles;
+    const cacheTask = task => task.autoCacheEnabled !== false && (typeof task.cacheFiles === 'boolean' || defaultCacheFiles);
 
     const statusLabels = {
         queued: '等待中', parsing: '解析中', downloading: '下载中', merging: '合并中',
@@ -785,65 +789,34 @@
         applyFormatMode(data);
     }
 
-    async function analyzeFormats(forceRefresh = false) {
-        const url = urlInput.value.trim();
-        if (!url) return;
-        const request = ++analysisRequest;
-        analysis = null;
-        analysisInputUrl = '';
-        formatList.replaceChildren();
-        selectionSummary.hidden = true;
-        formatStatus.textContent = '正在解析媒体格式...';
-        analyzeBtn.disabled = true;
-        try {
-            const data = await api('/api/youtube-premium/formats', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, refresh: forceRefresh === true })
-            });
-            if (request !== analysisRequest) return;
-            analysis = data;
-            analysisInputUrl = url;
-            renderFormats(data);
-        } catch (error) {
-            if (request !== analysisRequest) return;
-            formatStatus.textContent = `解析失败：${error.message}`;
-        } finally {
-            if (request === analysisRequest) analyzeBtn.disabled = false;
-        }
-    }
-
-    function scheduleAnalyze() {
-        clearTimeout(analyzeTimer);
-        if (mode() !== 'custom' || !urlInput.value.trim() || activeManualFormat()) return;
-        if (analysis && analysisInputUrl === urlInput.value.trim()) {
-            renderFormats(analysis);
-            return;
-        }
-        analyzeTimer = setTimeout(() => analyzeFormats(false), 700);
-    }
-
     async function startDownload() {
+        const draft = downloadForms.capture();
+        if (draft.submitting) return;
         const url = urlInput.value.trim();
         if (!url) return void (notice.textContent = '请先填写 URL。');
         const manualFormat = activeManualFormat();
         const selectedFormatIds = mode() === 'custom' && !manualFormat
             ? selectedFormats().map(format => format.id)
             : [];
-        if (mode() === 'custom' && !manualFormat && (!analysis || analysisInputUrl !== url || !updateSelectionSummary())) {
+        if (mode() === 'custom' && !manualFormat && (!analysis || !updateSelectionSummary())) {
             return void (notice.textContent = '请先完成格式解析并确认有效组合。');
         }
         if (selectedMusicCutNeedsOffsetWarning() && !confirm('在剪切模式下选取非 m4a/aac 音频编码，可能导致实际提取片段略有偏移，即更可能无法准确吻合期望的剪切首尾 offset。')) return;
         let created;
         try {
+            draft.submitting = true;
             startBtn.disabled = true;
             notice.textContent = '正在创建私人下载任务...';
             created = await api('/api/youtube-premium/tasks', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url, mode: mode(), asMusic: asMusicInput.checked, downloadSections: downloadSectionsInput.value.trim(), remark: preDownloadRemarkInput.value.trim(), selectedFormatIds, manualFormat, useManualFormat: Boolean(manualFormat) }), keepalive: true
+                body: JSON.stringify({ url, mode: draft.mode, asMusic: draft.asMusic, cacheFiles: draft.cacheFiles, downloadSections: draft.downloadSections.trim(), remark: draft.remark.trim(), selectedFormatIds, manualFormat, useManualFormat: Boolean(manualFormat) }), keepalive: true
             });
+            downloadForms.reset(draft);
             notice.textContent = '任务已创建。';
             window.MediaTaskLink?.created(created);
             page = 1;
-            await loadTasks();
+            if (taskCategory === 'handled') document.querySelector('[data-task-category="pending"]').click();
+            await loadTasks({ force: true });
             const card = [...taskList.children].find(item => item.dataset.taskId === created.id);
             if (card) {
                 card.tabIndex = -1;
@@ -856,7 +829,8 @@
             notice.textContent = created ? `任务已创建，但页面更新失败：${error.message}` : `创建失败：${error.message}`;
             notice.title = error.code || '';
         } finally {
-            startBtn.disabled = false;
+            draft.submitting = false;
+            if (draft === downloadForms.active) startBtn.disabled = false;
         }
     }
 
@@ -930,7 +904,7 @@
                     version,
                     status: stored.status === 'cached' ? 'browser_cache_cached' :
                         (stored.status === 'cleared' ? 'browser_cache_cleared' :
-                            (task.autoCacheEnabled!==false&&cacheFilesInput.checked ? 'browser_cache_waiting' : 'browser_cache_disabled')),
+                            (cacheTask(task) ? 'browser_cache_waiting' : 'browser_cache_disabled')),
                     progress: stored.status === 'cached' ? 100 : 0,
                     error: ''
                 });
@@ -948,7 +922,7 @@
         if (!force && state?.status === 'browser_cache_cached') return Promise.resolve(true);
         if (!force && state?.status === 'browser_cache_cleared') return Promise.resolve(false);
         const job = browserCacheTail.then(async () => {
-            if (!force && !cacheFilesInput.checked) {
+            if (!force && !cacheTask(task)) {
                 setBrowserCacheState(task.id, { status: 'browser_cache_disabled', progress: 0 });
                 return false;
             }
@@ -993,9 +967,9 @@
         const blob = await premiumBrowserCache?.getBlob(task);
         if (blob) return blob;
         setBrowserCacheState(task.id, {
-            status: cacheFilesInput.checked ? 'browser_cache_waiting' : 'browser_cache_disabled', progress: 0
+            status: cacheTask(task) ? 'browser_cache_waiting' : 'browser_cache_disabled', progress: 0
         });
-        if (cacheFilesInput.checked) queueBrowserCache(task);
+        if (cacheTask(task)) queueBrowserCache(task);
         return null;
     }
 
@@ -1971,6 +1945,11 @@
             main.appendChild(error);
         }
         const actions = document.createElement('div');
+        const reuse = document.createElement('button');
+        reuse.type = 'button';
+        reuse.textContent = '复用此参数创建任务';
+        reuse.onclick = () => downloadForms.reuse(task);
+        actions.append(reuse);
         actions.className = 'task-actions';
         const handled = document.createElement('button'); handled.type = 'button'; handled.textContent = task.handled ? '标记为·待处理' : '✔标记为已处理';
         handled.onclick = async () => { handled.disabled = true; try { await saveTaskDetails(task, { handled: !task.handled }); await loadTasks({ force: true }); } catch (error) { handled.disabled = false; notice.textContent = `标记失败：${error.message}`; } }; actions.append(handled);
@@ -2147,46 +2126,66 @@
         pageLabel.textContent = `${page} / ${pages}`;
         prevBtn.disabled = page <= 1;
         nextBtn.disabled = page >= pages;
-        if (cacheFilesInput.checked) currentTasks.forEach(task => {
-            if (browserCacheStates.get(task.id)?.status === 'browser_cache_waiting') queueBrowserCache(task);
+        currentTasks.forEach(task => {
+            if (cacheTask(task) && browserCacheStates.get(task.id)?.status === 'browser_cache_waiting') queueBrowserCache(task);
         });
     }
 
+    const downloadForms = DownloadFormTabs.create({
+        key: 'youtubePremiumDownloadForms', tabs: document.getElementById('downloadFormTabs'),
+        copy: document.getElementById('copyDownloadForm'), remove: document.getElementById('deleteDownloadForm'), formatList,
+        fields: { url: urlInput, asMusic: asMusicInput, cacheFiles: cacheFilesInput, downloadSections: downloadSectionsInput,
+            remark: preDownloadRemarkInput, manualFormat: manualFormatInput, useManualFormat: useManualFormatInput },
+        readMode: mode, writeMode: value => { document.querySelector(`input[name="mode"][value="${value === 'custom' ? 'custom' : 'default'}"]`).checked = true; },
+        parse: (url, forceRefresh) => api('/api/youtube-premium/formats', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, refresh: forceRefresh === true })
+        }),
+        paint(draft) {
+            analysis = draft.analysis;
+            startBtn.disabled = Boolean(draft.submitting);
+            analyzeBtn.disabled = Boolean(draft.pending);
+            customPanel.hidden = draft.mode !== 'custom';
+            if (analysis && !customPanel.hidden) {
+                renderFormats(analysis);
+                if (draft.ids) {
+                    for (const input of formatList.querySelectorAll('input')) input.checked = !input.disabled && draft.ids.includes(input.value);
+                    updateSelectionSummary();
+                }
+            } else {
+                formatList.replaceChildren();
+                formatStatus.textContent = draft.pending ? '正在解析媒体格式...' : draft.error ? `解析失败：${draft.error}` : '输入 URL 后将自动解析。';
+                selectionSummary.hidden = true;
+                if (activeManualFormat()) updateSelectionSummary();
+            }
+        }
+    });
+    urlInput.addEventListener('input', () => {
+        const draft = downloadForms.capture();
+        downloadForms.update(draft);
+        downloadForms.schedule(draft);
+    });
+    document.querySelectorAll('input[name="mode"]').forEach(input => input.addEventListener('change', () => {
+        const draft = downloadForms.capture();
+        downloadForms.update(draft);
+        downloadForms.schedule(draft);
+    }));
+    asMusicInput.addEventListener('change', () => {
+        const draft = downloadForms.capture();
+        draft.ids = null;
+        downloadForms.update(draft);
+        downloadForms.schedule(draft);
+    });
     function onManualFormatChange() {
-        clearTimeout(analyzeTimer);
-        updateSelectionSummary();
-        if (!activeManualFormat() && (!analysis || analysisInputUrl !== urlInput.value.trim())) scheduleAnalyze();
+        const draft = downloadForms.capture();
+        draft.restoreIds = null;
+        if (draft.analysis || activeManualFormat()) updateSelectionSummary();
+        else selectionSummary.hidden = true;
+        downloadForms.schedule(draft);
     }
     manualFormatInput.addEventListener('input', onManualFormatChange);
     useManualFormatInput.addEventListener('change', onManualFormatChange);
-    document.querySelectorAll('input[name="mode"]').forEach(input => input.addEventListener('change', () => {
-        customPanel.hidden = mode() !== 'custom';
-        if (!customPanel.hidden) {
-            if (analysis && analysisInputUrl === urlInput.value.trim()) renderFormats(analysis);
-            else scheduleAnalyze();
-        }
-    }));
-    asMusicInput.addEventListener('change', () => {
-        if (mode() !== 'custom') return;
-        if (activeManualFormat()) { updateSelectionSummary(); return; }
-        if (analysis && analysisInputUrl === urlInput.value.trim()) applyFormatMode(analysis);
-        else analyzeFormats();
-    });
-    cacheFilesInput.addEventListener('change', () => {
-        localStorage.setItem('youtubePremiumCacheFiles', cacheFilesInput.checked ? '1' : '0');
-        currentTasks.forEach(task => {
-            const state = browserCacheStates.get(task.id);
-            if (cacheFilesInput.checked) {
-                if (task.hasFile && ['browser_cache_disabled', 'browser_cache_failed', 'browser_cache_waiting'].includes(state?.status)) {
-                    queueBrowserCache(task);
-                }
-            } else if (task.hasFile && state?.status === 'browser_cache_waiting' && !browserCacheJobs.has(task.id)) {
-                setBrowserCacheState(task.id, { status: 'browser_cache_disabled' });
-            }
-        });
-    });
-    urlInput.addEventListener('input', scheduleAnalyze);
-    analyzeBtn.addEventListener('click', () => analyzeFormats(true));
+    for (const input of [cacheFilesInput, downloadSectionsInput, preDownloadRemarkInput, formatList]) input.addEventListener('input', () => downloadForms.capture());
+    analyzeBtn.addEventListener('click', () => downloadForms.analyze(downloadForms.capture(), true));
     document.getElementById('refreshMetadataReference').addEventListener('click', refreshMetadataReference);
     startBtn.addEventListener('click', startDownload);
     document.getElementById('refreshBtn').addEventListener('click', () => loadTasks().catch(error => { notice.textContent = error.message; }));

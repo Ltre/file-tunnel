@@ -1,0 +1,16 @@
+.download-form-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.download-form-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.download-form-tabs button,.download-form-tools button{min-width:36px;padding:5px 9px}
+.download-form-tabs button[aria-pressed="true"]{background:#e8efff;border-color:#8aa3df;color:#244a9b;font-weight:700}
+.download-form-tools{display:flex;gap:6px;flex:none}
+.download-form-heading + .url-row{margin-top:0}
+.sns-download-options .segmented{display:inline-flex;border:1px solid var(--line);border-radius:9px;padding:3px}
+.sns-download-options .segmented label{position:relative;display:flex;cursor:pointer}
+.sns-download-options .segmented input{position:absolute;opacity:0}
+.sns-download-options .segmented span{padding:5px 11px;border-radius:6px}
+.sns-download-options .segmented input:checked + span{background:#e8efff;color:#244a9b;font-weight:700}
+.sns-download-options .segmented input:focus-visible + span{outline:2px solid #456ac6;outline-offset:1px}
+.sns-manual-format{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+.sns-manual-format input[type="text"]{flex:1;min-width:175px}
+.sns-manual-format label{display:flex;gap:6px;align-items:center}
+.created-highlight{outline:2px solid #6388dc;outline-offset:2px}

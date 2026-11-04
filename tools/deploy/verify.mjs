@@ -164,6 +164,7 @@ async function main() {
   for (const [source, assetPath] of Object.entries(buildManifest.scripts || {})) {
     if (['client/admin-records.js', 'client/admin-layout.js', 'client/data-backup.js', 'client/data-backup-i18n.js', 'client/s3-management.js', 'client/media-library.js', 'client/media-task-link.js',
       'client/admin-overview.js', 'client/admin-tunnel-permissions.js', 'client/tunnel-access-editor.js',
+      'client/download-form-tabs.js',
       'client/vendor/web-markdown/marked-18.0.14.umd.js', 'client/vendor/web-markdown/purify-3.4.16.min.js'].includes(source)) continue;
     if (!sw.includes(assetPath)) errors.push(`service-worker APP_SHELL missing ${assetPath}`);
   }

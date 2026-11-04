@@ -58,6 +58,17 @@ test('a persisted Markdown image preview can read the server copy before any bro
     f.serverAssets.get(source.fileId).sessionId = 'another-tunnel';
     const mismatch = await read();
     assert.equal((await mismatch.json()).error, 'TUNNEL_REFERENCE_MISSING', 'a copy registered in a different tunnel must not be served directly');
+    const record = f.records.at(-1);
+    const owner = 'markdown-record';
+    Object.assign(f.serverAssets.get(source.fileId), { sessionId: source.sessionId, markdownOwnerId: owner });
+    record.fileInfo.markdownOwnerId = owner;
+    assert.equal((await read()).status, 404, 'a private attachment cannot be opened through a different record');
+    f.records.push({ id: owner, type: 'markdown', markdownAttachments: [record.fileInfo] });
+    const owned = await read({ ...source, messageId: owner });
+    assert.equal(owned.status, 200);
+    assert.deepEqual(Buffer.from(await owned.arrayBuffer()), image);
+    f.records.pop();
+    assert.equal((await read({ ...source, messageId: owner })).status, 404);
     f.records.pop();
     const deleted = await read();
     assert.equal((await deleted.json()).error, 'TUNNEL_REFERENCE_MISSING');

@@ -49,7 +49,9 @@ function mountMarkdownReferenceRoute(app, { canRead, file, serverAsset }) {
             }
             if (info.isServerAsset && info.serverAssetUrl === '/api/server-assets/' + fileId) {
                 const asset = serverAsset(fileId);
-                if (asset?.sessionId === sessionId && Number(asset.size) === size) {
+                if (asset?.sessionId === sessionId && Number(asset.size) === size &&
+                    (asset.markdownOwnerId || '') === (info.markdownOwnerId || '') &&
+                    (!asset.markdownOwnerId || asset.markdownOwnerId === messageId)) {
                     const stat = await fs.stat(asset.path).catch(error => { if (error.code !== 'ENOENT') throw error; });
                     if (stat?.isFile() && stat.size === size) {
                         if (!canRead(sessionId, deviceId, grant)) return res.status(403).json({ error: 'TUNNEL_REFERENCE_DENIED' });

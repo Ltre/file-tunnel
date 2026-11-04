@@ -744,6 +744,20 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
     justify-content: flex-end;
 }
 
+.history-selection-active #fileUploadComposer,
+.history-selection-active > .input-area,
+.history-selection-active .message-record-actions,
+.history-selection-actions[hidden] { display: none; }
+.history-selection-actions { display:flex; align-items:center; gap:6px; padding:8px 0; overflow-x:auto; flex:none; }
+.history-selection-actions > * { flex:none; white-space:nowrap; }
+.history-selection-active .message { position:relative; cursor:pointer; user-select:none; }
+.history-selection-check { position:absolute; right:8px; top:5px; color:var(--ui-accent,#4064bd); font-weight:700; }
+.message.own .history-selection-check { right:auto; left:8px; }
+.history-selection-active .message.history-selected .message-bubble { outline:2px solid var(--ui-accent,#4064bd); outline-offset:2px; }
+.sns-markdown-progress { display:grid; gap:.35em; min-inline-size:min(13rem,100%); }
+.sns-markdown-progress span { font-size:.9em; overflow-wrap:anywhere; }
+.sns-markdown-progress progress { inline-size:100%; block-size:.55em; accent-color:var(--ui-accent,#4064bd); }
+
 /* 文件消息 */
 .file-message {
     display: block;

@@ -5,7 +5,8 @@
     let options = {};
     let referenceReader = {};
     const inlineReferences = new WeakMap();
-    function configureReferences({ authorization, canReadLocal, message, file, complete }) {
+    const readers = new Map();
+    function configureReferences({ authorization, canReadLocal, message, file, complete, cacheAttachment }) {
         const names = new Map(), flights = new Map();
         const rememberName = (url, name) => names.set(url, name.replace(/[\\/:*?"<>|]/g, '_'));
         async function readLocal(sessionId, messageId, fileId) {
@@ -15,7 +16,8 @@
             const cached = await file(fileId);
             const original = messageId === 'editor-assets'
                 ? (cached?.isEditorAsset && cached.sessionId === sessionId ? cached : null)
-                : record.type === 'file' ? record.fileInfo : record.collection?.files?.find(item => item.id === fileId);
+                : record.type === 'file' ? record.fileInfo
+                    : (record.type === 'markdown' ? record.markdownAttachments : record.collection?.files)?.find(item => item.id === fileId);
             if (original?.id !== fileId || !cached?.data || cached.cacheCleared || cached.isPartial || !complete(cached, original) || !canReadLocal(sessionId, messageId)) return null;
             const type = String(original.type || cached.type || '').toLowerCase();
             const mime = /^(image|audio|video)\//.test(type) && !type.startsWith('image/svg+xml') ? type : 'text/plain; charset=utf-8';
@@ -52,6 +54,7 @@
                     }
                     const blob = await response.blob();
                     if (blob.size > maxBytes) throw Error('TUNNEL_REFERENCE_LIMIT');
+                    await cacheAttachment?.({ sessionId, messageId, fileId, blob });
                     rememberName(url, decodeURIComponent(response.headers.get('X-Tunnel-Reference-Name') || fileId));
                     return blob;
                 })().finally(() => flights.delete(key));
@@ -173,7 +176,8 @@
         const panel = document.createElement('section'), header = document.createElement('header'), title = document.createElement('strong'), content = document.createElement('div'), status = document.createElement('p');
         title.textContent = t('Markdown 预览'); panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); content.className = 'sc-document message-content';
         let resolved; const controller = new AbortController(), body = recordBody(message), images = invitationImages(message);
-        const close = () => { controller.abort(); resolved?.close(); layer.remove(); document.removeEventListener('keydown', escape, true); };
+        const close = () => { readers.delete(layer); controller.abort(); resolved?.close(); layer.remove(); document.removeEventListener('keydown', escape, true); };
+        readers.set(layer, { id: message.id, close });
         const escape = event => { if (event.key === 'Escape' && [...document.querySelectorAll('.sc-markdown-dialog')].at(-1) === layer) { event.preventDefault(); event.stopImmediatePropagation(); close(); } };
         const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.textContent = t('关闭'); dismiss.onclick = close;
         const loading = document.createElement('div'); loading.className = 'sc-markdown-loading'; loading.textContent = t('正在加载 Markdown…'); loading.setAttribute('role', 'status');
@@ -378,5 +382,7 @@
         else { const url = URL.createObjectURL(file), link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
     }
     function init(config) { options = config; }
-    global.TunnelMarkdown = { init, configureReferences, render, refs, archive, mount, fromHtml, menuActions, save: message => exportRecord(message, true), preview: previewRecord };
+    global.TunnelMarkdown = { init, configureReferences, render, refs, archive, mount, fromHtml, menuActions,
+        closeRecord(id) { for (const reader of readers.values()) if (reader.id === id) reader.close(); },
+        save: message => exportRecord(message, true), preview: previewRecord };
 })(window);

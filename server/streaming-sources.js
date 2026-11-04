@@ -90,6 +90,7 @@ function createStreamingSources({ disk, tunnel, broker = createStreamingBroker()
         if (start < 0 || end >= metadata.size) throw sourceError('STREAM_RANGE_INVALID');
         if (source.kind === 'disk') return disk.read(source, start, end, signal);
         if (metadata.inline) return Readable.from(metadata.inline.subarray(start, end + 1));
+        if (metadata.markdownAttachment) return tunnel.readAttachment(source, start, end, signal);
         return broker.read(source, source.kind === 'local' ? [sourceDeviceId || source.deviceId]
             : [sourceDeviceId, ...tunnel.providers(source)].filter(Boolean), start, end, signal);
     }
