@@ -18,6 +18,50 @@ before(async()=>{
 });
 after(async()=>{await browser?.close();if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}});
 async function pageFor(t){const page=await browser.newPage();t.after(()=>page.close());await page.goto(base+'/case');return page;}
+test('SNS progress keeps one visible record and a late snapshot cannot replace the finished Markdown', async t => {
+    const page = await pageFor(t);
+    await page.addScriptTag({ path: 'client/sns-post-markdown.js' });
+    await page.addStyleTag({ path: 'client/index.css' });
+    await page.locator('#inline').evaluate(node => { node.id = 'chatMessages'; });
+    const app = fs.readFileSync('app.js', 'utf8');
+    const section = (start, end) => app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start)));
+    await page.addScriptTag({ content: `
+        const state = { sessionId: 'fixture-tunnel', deviceId: 'browser' }, records = new Map();
+        const isHistoryMessageDeleted = () => false, isChatNearBottom = () => true;
+        const getMessageElement = id => document.querySelector('[data-message-id="' + id + '"]');
+        const formatTransferTimestamp = () => 'now', historyLog = () => {}, summarizeHistoryMessage = value => value;
+        const syncTransferRecordFavoriteBadge = () => {}, syncTransferRecordSnsBadge = () => {}, renderMessageRecordActions = () => {};
+        const activeCollectionPreviewMessageId = null, getCollectionFiles = () => [];
+        const insertMessageElementByTimestamp = (container, element) => container.append(element);
+        const saveToStore = async (_store, message) => records.set(message.id, message);
+        const getFromStore = async (_store, id) => records.get(id);
+        ${section('async function addMessageToChat(', 'function getFileInfoFromMessageElement(')}
+        ${section('const snsMarkdownUpdates =', 'async function updateHistoryMessage(')}
+    ` });
+    const record = { id: 'post-progress', type: 'markdown', markdown: '', sessionId: 'fixture-tunnel', sender: 'server', senderName: 'SNS' };
+    const update = row => page.evaluate(row => applyHistoryMessageUpdate(row, { remote: true }), row);
+    const first = { ...record, snsMarkdownRevision: 1, snsMarkdownProgress: { stage: 'inspect', frameworkReady: false, done: 0, total: null } };
+    await update(first);
+    const row = page.locator('[data-message-id="post-progress"]');
+    assert.equal(await row.getByText('正在解析帖子').count(), 1);
+    assert.equal(await row.getByRole('progressbar').getAttribute('value'), null);
+    const working = { ...record, snsMarkdownRevision: 2, snsMarkdownProgress: { stage: 'resources', frameworkReady: true, done: 1, total: 3, resource: 'video' } };
+    await update(working);
+    assert.equal(await row.getByText('文档框架已就绪').count(), 1);
+    assert.equal(await row.getByText('引用资源 1/3').count(), 1);
+    assert.equal(await row.getByText('正在保存视频').count(), 1);
+    assert.equal(await row.getByRole('progressbar').getAttribute('value'), '1');
+    await update({ ...record, snsMarkdownRevision: 3, snsMarkdownProgress: { ...working.snsMarkdownProgress, stage: 'failed', error: 'SNS_POST_INTERRUPTED' } });
+    assert.equal(await row.getByText('生成 Markdown 未完成').count(), 1);
+    assert.equal(await row.getByRole('progressbar').count(), 0);
+    const finished = { ...record, markdown: '# Finished post', snsMarkdownRevision: 4 };
+    await page.evaluate(async ([finished, stale]) => {
+        await Promise.all([applyHistoryMessageUpdate(finished), applyHistoryMessageUpdate(stale)]);
+    }, [finished, working]);
+    assert.equal(await row.count(), 1);
+    assert.equal(await row.getByRole('heading', { name: 'Finished post' }).count(), 1);
+    assert.equal(await row.getByRole('progressbar').count(), 0);
+});
 test('inline Markdown shows four loading placeholders, never four broken images, before references arrive',async t=>{
     const page=await pageFor(t);await page.evaluate(()=>TunnelMarkdown.mount(document.getElementById('inline'),message));
     assert.equal(await page.getByText('图片载入中...', {exact:true}).count(),4);
@@ -37,17 +81,18 @@ test('reloading a converted SNS post keeps its avatar and four server images vis
     const fixture = await require('./support/streaming-console-fixture.cjs').createFixture();
     t.after(() => fixture.close());
     const body = fixture.sourceFiles[0].body;
+    const owner = 'sns-converted-post';
     const attachments = ['avatar', 'photo-1', 'photo-2', 'photo-3', 'photo-4'].map(label => {
         const id = 'sns-asset-' + label;
         const filePath = path.join(fixture.dataDir, id);
         fs.writeFileSync(filePath, body);
-        fixture.serverAssets.set(id, { sessionId: 'fixture-tunnel', size: body.length, path: filePath });
-        return { id: 'record-' + label, sessionId: 'fixture-tunnel', type: 'file', fileInfo: { id, name: label + '.png', type: 'image/png',
-            size: body.length, isServerAsset: true, serverAssetUrl: '/api/server-assets/' + id } };
+        fixture.serverAssets.set(id, { sessionId: 'fixture-tunnel', size: body.length, path: filePath, markdownOwnerId: owner });
+        return { id, name: label + '.png', type: 'image/png', size: body.length, isServerAsset: true,
+            serverAssetUrl: '/api/server-assets/' + id, markdownOwnerId: owner };
     });
-    fixture.records.push(...attachments);
-    fixture.records.push({ id: 'sns-converted-post', type: 'markdown', markdown: '# X 帖子\n\n' + attachments.map(record =>
-        '![' + record.fileInfo.name + '](tunnel-blob:fixture-tunnel/' + record.id + '/' + record.fileInfo.id + ')').join('\n\n') });
+    fixture.records.push({ id: owner, type: 'markdown', sessionId: 'fixture-tunnel', markdownAttachments: attachments,
+        markdown: '# X 帖子\n\n' + attachments.map(file =>
+            '![' + file.name + '](tunnel-blob:fixture-tunnel/' + owner + '/' + file.id + ')').join('\n\n') });
     const page = await browser.newPage();
     t.after(() => page.close());
     await page.addInitScript(() => {
@@ -97,7 +142,7 @@ test('reloading a converted SNS post keeps its avatar and four server images vis
     await page.locator('#record-fixture-picture img:visible').waitFor();
     await page.evaluate(async ({ ids, bytes }) => {
         for (const id of ids) await fixtureMarkdownCache.put(id, { data: new Blob([Uint8Array.from(bytes)], { type: 'image/png' }) });
-    }, { ids: attachments.map(record => record.fileInfo.id), bytes: [...body] });
+    }, { ids: attachments.map(file => file.id), bytes: [...body] });
     let before = mediaRequests;
     await renderPost();
     await verifyImages('#record-sns-converted-post');
@@ -117,4 +162,10 @@ test('reloading a converted SNS post keeps its avatar and four server images vis
     assert.equal(mediaRequests - before, 5, 'each cache miss makes one direct media request');
     await page.locator('#record-sns-converted-post h1').click();
     await verifyImages('.sc-markdown-reader');
+    await page.reload();
+    await page.locator('#record-fixture-picture img:visible').waitFor();
+    before = mediaRequests;
+    await renderPost();
+    await verifyImages('#record-sns-converted-post');
+    assert.equal(mediaRequests, before, 'the fallback media was persisted under the Markdown attachment IDs');
 });

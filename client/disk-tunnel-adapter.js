@@ -12,6 +12,19 @@
             if (!files.length) throw new Error('此记录没有文件');
             return saveFiles(record.id, files);
         },
+        async saveRecords(records, archiveMarkdown) {
+            const files = [];
+            for (const record of records) {
+                if (record.type === 'markdown') {
+                    const blob = await archiveMarkdown(record);
+                    files.push({ name: blob.name, size: blob.size, type: blob.type, blob });
+                } else {
+                    files.push(...host.filesForRecord(record).map(file => ({ ...file, sourceRecordId: record.id })));
+                }
+            }
+            if (!files.length) throw new Error('所选记录没有可保存的文件');
+            return saveFiles('', files);
+        },
         saveFiles(recordId, files) { return saveFiles(recordId, files); }
     };
     async function saveFiles(recordId, files) {
@@ -26,8 +39,19 @@
             if (!files) return;
         }
         const navigationVersion = window.DiskUI.navigationVersion;
-        const result = await window.DiskClient.upload(files, folderPath, host.readFile, { source: 'tunnel', recordId, transportContext });
-        await host.linkBackup?.(recordId, files, result?.items || []);
+        const result = await window.DiskClient.upload(files, folderPath, file => file.blob || host.readFile(file), { source: 'tunnel', recordId, transportContext });
+        if (recordId) await host.linkBackup?.(recordId, files, result?.items || []);
+        else {
+            const groups = new Map();
+            for (const [index, file] of files.entries()) {
+                if (!file.sourceRecordId || !result?.items?.[index]) continue;
+                if (!groups.has(file.sourceRecordId)) groups.set(file.sourceRecordId, { files: [], items: [] });
+                const group = groups.get(file.sourceRecordId);
+                group.files.push(file);
+                group.items.push(result.items[index]);
+            }
+            for (const [id, group] of groups) await host.linkBackup?.(id, group.files, group.items);
+        }
         if (window.DiskClient.getAccount() === transportContext.accountId)
             await window.DiskUI.revealUploadedDirectory(folderPath, navigationVersion, result?.items || [], transportContext);
         return result;

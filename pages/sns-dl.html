@@ -8,6 +8,7 @@
     <script defer src="/client/sns-post-i18n.js"></script>
     <script defer src="/client/i18n.js?v=20260812-1"></script>
     <link rel="stylesheet" href="/client/audio-track-repair.css">
+    <link rel="stylesheet" href="/client/download-form-tabs.css">
     <style>
         :root { color-scheme:light dark; --bg:#eef2f7; --panel:#fff; --text:#162033; --muted:#69758a; --line:#d9e0ea; --accent:#3567d6; --danger:#c83c4a; --ok:#15805f; --warn:#a76a08; --shadow:0 14px 42px rgba(34,48,80,.09); }
         @media (prefers-color-scheme:dark) { :root { --bg:#111722; --panel:#1b2433; --text:#edf2fb; --muted:#9ca9bb; --line:#344054; --accent:#75a2ff; --danger:#ff8490; --ok:#55d2a6; --warn:#e4ad4e; --shadow:0 18px 48px rgba(0,0,0,.22); } }
@@ -106,13 +107,18 @@
     <nav class="task-filters" aria-label="任务手动分类"><button type="button" data-task-category="pending" aria-pressed="true">待处理</button><button type="button" data-task-category="handled" aria-pressed="false">✔已处理</button><button type="button" data-task-category="all" aria-pressed="false">▦全部任务</button></nav>
     <hr>
     <section class="panel">
+        <div class="download-form-heading"><div class="download-form-tabs" id="downloadFormTabs" aria-label="任务表单"></div>
+            <div class="download-form-tools"><button type="button" id="copyDownloadForm" aria-label="复制表单" title="复制表单">⧉</button><button type="button" id="deleteDownloadForm" aria-label="删除表单" title="删除表单">🗑</button></div>
+        </div>
         <div class="url-row">
             <input id="urlInput" type="url" autocomplete="off" spellcheck="false" placeholder="粘贴 SNS / B站 / 网易云音乐单曲、MV 或电台节目链接">
             <button class="primary" id="startBtn" type="button">开始下载</button>
         </div>
-        <div class="options">
-            <label><input type="radio" name="mode" value="default" checked>默认格式</label>
-            <label><input type="radio" name="mode" value="custom">自选媒体编号</label>
+        <div class="options sns-download-options">
+            <div class="segmented" role="radiogroup" aria-label="抓取方案">
+                <label><input type="radio" name="mode" value="default" checked><span>默认格式</span></label>
+                <label><input type="radio" name="mode" value="custom"><span>自选媒体编号</span></label>
+            </div>
             <label><input id="cacheFilesInput" type="checkbox" checked>完成后缓存到浏览器</label>
         </div>
         <div class="sections"><label for="downloadSectionsInput">截取媒体区间（可选）</label><input id="downloadSectionsInput" type="text" placeholder="例如：*00:00:15-00:00:45"></div>
@@ -121,6 +127,10 @@
         <div class="custom" id="customPanel" hidden>
             <div class="section-head"><div><strong>媒体编号</strong><div class="subtle" id="formatStatus">输入 URL 后将自动解析。</div></div><button id="analyzeBtn" type="button">重新解析（忽略缓存）</button></div>
             <div class="analysis-fields" id="analysisFields"></div>
+            <div class="sns-manual-format">
+                <input id="manualFormatInput" type="text" maxlength="2048" autocomplete="off" aria-label="手写媒体格式" placeholder="手写媒体格式，例如 137+140">
+                <label><input id="useManualFormatInput" type="checkbox">以此手写格式为准</label>
+            </div>
             <div class="format-list" id="formatList"></div>
             <div class="selection" id="selectionSummary" hidden></div>
         </div>
@@ -145,6 +155,7 @@
 <link rel="stylesheet" href="/client/disk-saved-location.css">
 <script src="/client/disk-saved-location.js"></script>
 <script src="/client/audio-track-repair.js"></script>
+<script src="/client/download-form-tabs.js"></script>
 <script src="/client/telegram-target-forward.js"></script>
 <script>
 (() => {
@@ -159,6 +170,7 @@
     const customPanel = $('customPanel');
     const analyzeBtn = $('analyzeBtn');
     const cacheFilesInput = $('cacheFilesInput');
+    const manualFormatInput = $('manualFormatInput'), useManualFormatInput = $('useManualFormatInput');
     const downloadSectionsInput = $('downloadSectionsInput');
     const formatStatus = $('formatStatus');
     const formatList = $('formatList');
@@ -181,9 +193,6 @@
     const forwardTarget = $('forwardTarget');
     const forwardStatus = $('forwardStatus');
     let analysis = null;
-    let analysisUrl = '';
-    let analysisRequest = 0;
-    let analyzeTimer = 0;
     let page = 1;
     let taskCategory = 'pending', taskListRevision = 0;
     document.querySelectorAll('[data-task-category]').forEach(button => button.onclick = () => {
@@ -201,7 +210,9 @@
     const browserCache = window.createSnsDownloadBrowserCache?.({
         onProgress(taskId, progress) { cacheStates.set(taskId, { status:'caching', progress }); renderTaskCache(taskId); }
     });
-    cacheFilesInput.checked = localStorage.getItem('snsDownloadCacheFiles') !== '0';
+    const defaultCacheFiles = localStorage.getItem('snsDownloadCacheFiles') !== '0';
+    cacheFilesInput.checked = defaultCacheFiles;
+    const cacheTask = task => task.autoCacheEnabled !== false && (typeof task.cacheFiles === 'boolean' || defaultCacheFiles);
 
     const statusLabels = { queued:'等待中', parsing:'解析中', downloading:'下载中', merging:'合并中', completed:'已完成', failed:'失败', cancelled:'已取消', cleared:'缓存已清除' };
     const platformLabels = { tiktok:'TikTok', facebook:'Facebook', instagram:'Instagram', twitter:'Twitter', x:'X', threads:'Threads', line:'LINE', bilibili:'Bilibili / B站', netease:'网易云音乐' };
@@ -246,6 +257,12 @@
         return ids.map(id => analysis?.formats?.find(format => format.id === id)).filter(Boolean);
     }
     function validateSelection() {
+        if (activeManualFormat()) {
+            selectionSummary.hidden = false;
+            selectionSummary.classList.remove('error');
+            selectionSummary.textContent = '以此手写格式为准：' + activeManualFormat();
+            return true;
+        }
         const selected = selectedFormats(); let error = '';
         if (!selected.length || selected.length > 2) error = '请选择一个媒体编号，或一个纯视频编号加一个纯音频编号。';
         else if (selected.length === 1 && !['video','audio','video_audio'].includes(selected[0].kind)) error = '该编号不包含可下载的音视频轨。';
@@ -270,9 +287,9 @@
             const item = element('span'); const strong = element('strong','',`${label}：`); item.append(strong,String(value)); analysisFields.append(item);
         });
     }
-    function renderFormats(data) {
+    function renderFormats(data, ids) {
         formatList.replaceChildren(); renderAnalysisFields(data);
-        const suggested = new Set(data.selection?.ids || []);
+        const suggested = new Set(ids || data.selection?.ids || []);
         for (const format of data.formats || []) {
             const row = element('label','format');
             const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.value = format.id; checkbox.checked = suggested.has(format.id);
@@ -288,43 +305,51 @@
         formatStatus.textContent = data.downloadable
             ? `${data.title || platformLabels[data.platform] || 'SNS 媒体'} · ${data.formats.length} 个格式${data.cacheHit ? ' · 已复用解析缓存' : ' · 新解析并已缓存'}`
             : '页面信息已解析，但没有发现可下载的音频或视频格式。';
-        if (data.formats?.length) validateSelection();
+        if (data.formats?.length || activeManualFormat()) validateSelection();
         else { selectionSummary.hidden = false; selectionSummary.className = 'selection error'; selectionSummary.textContent = '没有可选媒体格式。'; }
     }
-    async function analyzeFormats(refresh = false) {
-        const url = urlInput.value.trim(); if (!url) return;
-        const request = ++analysisRequest;
-        formatStatus.textContent = refresh ? '正在跳过缓存重新解析…' : '正在查询解析缓存或来源页面…';
-        analyzeBtn.disabled = true;
-        try {
-            const data = await api(`${API_ROOT}/formats`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ url, refresh }) });
-            if (request !== analysisRequest) return;
-            analysis = data; analysisUrl = url; renderFormats(data);
-        } catch (error) {
-            if (request === analysisRequest) { analysis = null; formatList.replaceChildren(); analysisFields.replaceChildren(); formatStatus.textContent = `解析失败：${error.message}`; }
-        } finally { if (request === analysisRequest) analyzeBtn.disabled = false; }
-    }
-    function scheduleAnalyze() {
-        clearTimeout(analyzeTimer); if (mode() !== 'custom' || !urlInput.value.trim()) return;
-        analyzeTimer = setTimeout(() => analyzeFormats(false), 650);
+    function activeManualFormat() {
+        return mode() === 'custom' && useManualFormatInput.checked ? manualFormatInput.value.trim() : '';
     }
     async function startDownload() {
-        const url = urlInput.value.trim(); if (!url) return showNotice('请先输入 SNS 链接。', true);
-        if (mode() === 'custom' && (analysisUrl !== url || !analysis)) await analyzeFormats(false);
-        if (mode() === 'custom' && !validateSelection()) return;
-        startBtn.disabled = true; showNotice('正在创建独立 SNS 下载任务…');
+        const draft = downloadForms.capture(), url = draft.url.trim();
+        if (draft.submitting) return;
+        if (!url) return showNotice('请先输入 SNS 链接。', true);
+        const manualFormat = activeManualFormat();
+        if (draft.mode === 'custom' && !manualFormat && (!draft.analysis || !validateSelection())) {
+            downloadForms.schedule(draft);
+            return showNotice('请先完成媒体编号解析并确认有效组合。', true);
+        }
+        const selectedFormatIds = draft.mode === 'custom' && !manualFormat ? selectedFormats().map(item => item.id) : [];
+        draft.submitting = true;
+        startBtn.disabled = true;
+        showNotice('正在创建独立 SNS 下载任务…');
         try {
             const task = await api(`${API_ROOT}/tasks`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
-                url, mode:mode(), selectedFormatIds:mode() === 'custom' ? selectedFormats().map(item => item.id) : [], downloadSections:downloadSectionsInput.value.trim(), remark:$('preDownloadRemarkInput').value.trim()
+                url, mode:draft.mode, selectedFormatIds, cacheFiles:draft.cacheFiles, downloadSections:draft.downloadSections.trim(),
+                remark:draft.remark.trim(), manualFormat, useManualFormat:Boolean(manualFormat)
             }) });
+            downloadForms.reset(draft);
             window.MediaTaskLink?.created(task);
-            showNotice(`任务 ${task.id.slice(0,8)} 已进入 ${platformLabels[task.platform] || 'SNS'} 队列。`); page = 1; await loadTasks();
-        } catch (error) { showNotice(error.message, true); } finally { startBtn.disabled = false; }
+            showNotice(`任务 ${task.id.slice(0,8)} 已进入 ${platformLabels[task.platform] || 'SNS'} 队列。`);
+            page = 1;
+            if (taskCategory === 'handled') document.querySelector('[data-task-category="pending"]').click();
+            await loadTasks({ force: true });
+            const card = taskList.querySelector(`[data-task-id="${CSS.escape(task.id)}"]`);
+            if (card) {
+                card.tabIndex = -1;
+                card.classList.add('created-highlight');
+                card.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block:'center' });
+                card.focus({ preventScroll:true });
+                setTimeout(() => card.classList.remove('created-highlight'), 2000);
+            }
+        } catch (error) { showNotice(error.message, true); }
+        finally { draft.submitting = false; if (draft === downloadForms.active) startBtn.disabled = false; }
     }
     function cacheStateText(task) {
         const state = cacheStates.get(task.id);
         if(task.autoCacheEnabled===false&&!['cached','caching'].includes(state?.status))return '已停止自动缓存到浏览器';
-        if (!state) return cacheFilesInput.checked ? '浏览器缓存：待检查' : '浏览器缓存：未启用';
+        if (!state) return cacheTask(task) ? '浏览器缓存：待检查' : '浏览器缓存：未启用';
         return ({ cached:'浏览器缓存：已完成', caching:`浏览器缓存：${Math.round(state.progress || 0)}%`, missing:'浏览器缓存：未缓存', cleared:'浏览器缓存：已清除', stopped:'已停止自动缓存到浏览器', failed:`浏览器缓存失败：${state.error || ''}` })[state.status] || '';
     }
     function renderTaskCache(taskId) {
@@ -337,7 +362,7 @@
         const job = (async () => {
             try {
                 let state = await browserCache.inspect(task);
-                if (state.status !== 'cached' && cacheFilesInput.checked && task.hasFile) {
+                if (state.status !== 'cached' && (force || cacheTask(task)) && task.hasFile) {
                     cacheStates.set(task.id,{status:'caching',progress:0}); renderTaskCache(task.id); state = await browserCache.store(task,{automatic:!force});
                 }
                 cacheStates.set(task.id,{status:state.status});
@@ -392,6 +417,7 @@
         if (task.error) card.append(element('div','task-error',task.error));
         const cacheLabel=element('div','subtle',cacheStateText(task)); cacheLabel.dataset.cacheState=''; card.append(cacheLabel);
         const actions=element('div','actions');
+        actions.append(makeAction('复用此参数创建任务', () => downloadForms.reuse(task)));
         actions.append(makeAction(task.handled ? '标记为·待处理' : '✔标记为已处理', async () => {
             await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({handled:!task.handled}) });
             await loadTasks({force:true});
@@ -402,7 +428,7 @@
             if (task.status === 'completed' && !task.asMusic && !['audio','song'].includes(task.mediaType)) {
                 const transcode=document.createElement('a');transcode.className='button';transcode.href=`/video-transcode?source=sns&taskId=${encodeURIComponent(task.id)}`;transcode.textContent='前往转码处理';actions.append(transcode);
             }
-            actions.append(makeAction('缓存到浏览器',async()=>{cacheFilesInput.checked=true;localStorage.setItem('snsDownloadCacheFiles','1');await ensureBrowserCache(task,true);}));
+            actions.append(makeAction('缓存到浏览器', () => ensureBrowserCache(task, true)));
             actions.append(makeAction(task.autoCacheEnabled===false?'允许自动缓存到浏览器':'停止自动缓存到浏览器',async()=>{const enabled=task.autoCacheEnabled===false;if(!enabled)browserCache?.cancelAutomatic(task.id);await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({autoCacheEnabled:enabled})});await loadTasks();}));
             actions.append(makeAction('转发到隧道',()=>showForward(task)));
             actions.append(makeAction('原尺寸封面',()=>downloadThumbnail(task)));
@@ -481,9 +507,46 @@
     }
     async function downloadThumbnail(task) { const response=await fetch(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/thumbnail`,{method:'POST',credentials:'same-origin'});if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||`HTTP ${response.status}`);}const blob=await response.blob();const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=`${task.title||task.platform||'sns'}-thumbnail`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
 
-    document.querySelectorAll('input[name="mode"]').forEach(input=>input.addEventListener('change',()=>{customPanel.hidden=mode()!=='custom';if(mode()==='custom')scheduleAnalyze();}));
-    urlInput.addEventListener('input',scheduleAnalyze); analyzeBtn.addEventListener('click',()=>analyzeFormats(true)); startBtn.addEventListener('click',startDownload);
-    cacheFilesInput.addEventListener('change',()=>localStorage.setItem('snsDownloadCacheFiles',cacheFilesInput.checked?'1':'0'));
+    const downloadForms = DownloadFormTabs.create({
+        key: 'snsDownloadForms', tabs: $('downloadFormTabs'), copy: $('copyDownloadForm'), remove: $('deleteDownloadForm'), formatList,
+        fields: { url: urlInput, cacheFiles: cacheFilesInput, downloadSections: downloadSectionsInput,
+            remark: $('preDownloadRemarkInput'), manualFormat: manualFormatInput, useManualFormat: useManualFormatInput },
+        readMode: mode, writeMode: value => { document.querySelector(`input[name="mode"][value="${value === 'custom' ? 'custom' : 'default'}"]`).checked = true; },
+        parse: (url, refresh) => api(`${API_ROOT}/formats`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url,refresh}) }),
+        paint(draft) {
+            analysis = draft.analysis;
+            startBtn.disabled = Boolean(draft.submitting);
+            analyzeBtn.disabled = Boolean(draft.pending);
+            customPanel.hidden = draft.mode !== 'custom';
+            if (analysis && !customPanel.hidden) renderFormats(analysis, draft.ids);
+            else {
+                formatList.replaceChildren();
+                analysisFields.replaceChildren();
+                formatStatus.textContent = draft.pending ? '正在解析媒体编号…' : draft.error ? `解析失败：${draft.error}` : '输入 URL 后将自动解析。';
+                selectionSummary.hidden = true;
+                if (activeManualFormat()) validateSelection();
+            }
+        }
+    });
+    function updateDownloadDraft() {
+        const draft = downloadForms.capture();
+        downloadForms.update(draft);
+        downloadForms.schedule(draft);
+    }
+    document.querySelectorAll('input[name="mode"]').forEach(input => input.addEventListener('change', updateDownloadDraft));
+    urlInput.addEventListener('input', updateDownloadDraft);
+    function onManualFormatChange() {
+        const draft = downloadForms.capture();
+        draft.restoreIds = null;
+        if (draft.analysis || activeManualFormat()) validateSelection();
+        else selectionSummary.hidden = true;
+        downloadForms.schedule(draft);
+    }
+    manualFormatInput.addEventListener('input', onManualFormatChange);
+    useManualFormatInput.addEventListener('change', onManualFormatChange);
+    for (const input of [cacheFilesInput, downloadSectionsInput, $('preDownloadRemarkInput'), formatList]) input.addEventListener('input', () => downloadForms.capture());
+    analyzeBtn.addEventListener('click', () => downloadForms.analyze(downloadForms.capture(), true));
+    startBtn.addEventListener('click', startDownload);
     $('refreshBtn').addEventListener('click',loadTasks); $('prevBtn').addEventListener('click',()=>{if(page>1){page--;loadTasks();}}); $('nextBtn').addEventListener('click',()=>{if(page<pages){page++;loadTasks();}});
     $('cleanupCacheBtn').addEventListener('click',async()=>{const data=await api(`${API_ROOT}/tasks?page=1&pageSize=1`);const removed=await browserCache?.cleanupOrphans(data.ids||[]);showNotice(`已清理 ${removed||0} 条无任务对应的浏览器缓存；待转存到网盘的缓存已保留。`);});
     $('addTagBtn').addEventListener('click',addTag); tagInput.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();addTag();}});

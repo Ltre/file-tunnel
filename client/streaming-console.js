@@ -1670,13 +1670,20 @@
         if (['markdown','text','rich'].includes(message.type)) return Boolean(String(message.markdown || message.text || message.content || '').trim());
         return (message.type === 'file' ? [message.fileInfo] : message.collection?.files || []).some(file => file && kindOf(file));
     }
-    async function importRecord(message, createNew=false, force=false) {
+    async function importRecord(message, createNew = false, force = false) {
+        return importRecords([message], createNew, force);
+    }
+    async function importRecords(messages, createNew=false, force=false) {
         await ready;
-        if(!force&&dirty()){confirmLeave(()=>importRecord(message,createNew,true).catch(error));return;}
+        const records = messages;
+        if (!records.length) throw Error(t('所选记录没有可导入的内容'));
+        if(!force&&dirty()){confirmLeave(()=>importRecords(records,createNew,true).catch(error));return;}
         const actor=account();
-        const grants=await config.tunnels(),context=grants.find(entry=>entry.sessionId===(message.sessionId||config.currentTunnel()));
+        const scope = records[0].sessionId || config.currentTunnel();
+        if (records.some(message => (message.sessionId || config.currentTunnel()) !== scope)) throw Error('STREAM_TUNNEL_DENIED');
+        const grants=await config.tunnels(),context=grants.find(entry=>entry.sessionId===scope);
         if(!context)throw Error('STREAM_TUNNEL_DENIED');
-        const result=await request('/tunnel-candidates','POST',{...context,messageId:message.id});
+        const result=await request('/tunnel-candidates','POST',{...context, ...(records.length === 1 ? {messageId:records[0].id} : {messageIds:records.map(record=>record.id)})});
         if(!result.candidates.length){if(isOpen())notice('这条记录没有可导入的可视内容');else config.toast(t('这条记录没有可导入的可视内容'));return;}
         const prepare=stationId=>result.candidates.map(candidate=>{const item=structuredClone(candidate);item.id=uid();item.stay=10;item.start=0;item.source.tunnelGrants=Object.fromEntries(grants.map(entry=>[entry.sessionId,entry.accessGrant]));return item;});
         const enter=async(station,d,position,baseline)=>{
@@ -1806,5 +1813,5 @@
         ready.then(async () => { const url = entryUrl; if (url.searchParams.has('stream_invite')) await inspectInvitation(url.searchParams.get('stream_invite')); else if (url.searchParams.has('stream')) { await open(); navigate('watch', url.searchParams.get('stream'), false, 'discover'); } }).catch(error);
         return ready;
     }
-    global.StreamingConsole = { init, open, minimize, close: closeConsole, isOpen, ownsHistory: () => isOpen() || Boolean(dialog), notification, compose, sendMarkdown, openInvitation, canImportRecord, importRecord, request, inspectInvitation, whenReady: () => ready, clearViewerCache:()=>peerMedia?.clearCache() };
+    global.StreamingConsole = { init, open, minimize, close: closeConsole, isOpen, ownsHistory: () => isOpen() || Boolean(dialog), notification, compose, sendMarkdown, openInvitation, canImportRecord, importRecord, importRecords, request, inspectInvitation, whenReady: () => ready, clearViewerCache:()=>peerMedia?.clearCache() };
 })(window);

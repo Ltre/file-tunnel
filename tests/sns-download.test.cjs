@@ -85,6 +85,36 @@ test('/sns-dl uses ordinary SNS cookies, its own parse cache, and an empty tag p
     assert.match(read('pages/sns-cookies.html'), /最好使用闲置 B 站小号的 Cookie，避免大号被封/);
 });
 
+test('SNS custom manual format and cache choice persist on the task and reach download unchanged', async t => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sns-manual-format-'));
+    t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+    let options, selector;
+    const manualFormat = '137+140/best';
+    const service = createSnsDownloadService({
+        dataDir,
+        analyze: async (url, input) => {
+            options = input;
+            return { url, selection: { formatSelector: input.manualFormat, ids: ['137', '140'] } };
+        },
+        download: async ({ taskDir, analysis }) => {
+            selector = analysis.selection.formatSelector;
+            const outputPath = path.join(taskDir, 'file.mp4');
+            fs.writeFileSync(outputPath, 'video');
+            return { outputPath, outputFileName: 'file.mp4', outputFileSize: 5 };
+        }
+    });
+    const params = { url: 'https://x.com/demo/status/123', mode: 'custom', useManualFormat: true, cacheFiles: false };
+    assert.throws(() => service.create({ ...params, manualFormat: 'bad\nselector' }), /custom-manual-format-invalid/);
+    const created = service.create({ ...params, manualFormat, selectedFormatIds: ['stale'] });
+    const done = await waitFor(() => service.get(created.id)?.status === 'completed' && service.get(created.id));
+    assert.deepEqual(options.selectedFormatIds, []);
+    assert.equal(options.manualFormat, manualFormat);
+    assert.equal(selector, manualFormat);
+    assert.equal(done.manualFormat, manualFormat);
+    assert.equal(done.autoCacheEnabled, false);
+    assert.equal(done.cacheFiles, false);
+});
+
 test('后台显示隧道备注，音轨修正版只对截取任务开放', () => {
     const admin = read('client/admin-overview.js');
     assert.match(read('pages/admin-tunnels.html'), /src="\/client\/admin-overview\.js"/);

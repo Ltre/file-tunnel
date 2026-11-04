@@ -711,7 +711,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             canReadLocal: (sessionId, messageId) => sessionId === state.sessionId && hasTunnelPermission('read') && !isHistoryMessageDeleted(messageId, sessionId),
             message: messageId => getFromStore('messages', messageId),
             file: async fileId => materializeExternalFileRecord(await materializeCachedFileRecord(await getFromStore('files', fileId)), { requestPermission: false }),
-            complete: hasCompleteFileCache
+            complete: hasCompleteFileCache,
+            cacheAttachment: cacheMarkdownAttachment
         });
         initStreamingConsoleIntegration();
         if (!restoredSession || !await runStartupStage('tunnel-access', ensureTunnelAccess)) {
@@ -6865,6 +6866,7 @@ async function handleMessage(data) {
         });
         return;
     }
+    if (message.snsMarkdownRevision) return applyHistoryMessageUpdate(message, { remote: true, scroll: true });
 
     historyLog('realtime-message-processing', {
         message: summarizeHistoryMessage(message)
@@ -7047,6 +7049,12 @@ async function handleSessionHistory(data) {
             // different IndexedDB scope just because its message ID matches.
             if (!belongsToSession(existing) || isHistoryMessageDeleted(message.id, sessionId)) continue;
             acceptedMessages.push({ ...message, sessionId });
+            if (message.snsMarkdownRevision && (!existing || isAuthoritativeHistoryMessageChanged(existing, message))) {
+                await applyHistoryMessageUpdate(message, { remote: true, snapshot: true });
+                if (existing) duplicates++;
+                else restored++;
+                continue;
+            }
             if (existing) {
                 duplicates++;
                 historyLog('snapshot-message-skipped', {
@@ -7728,8 +7736,13 @@ async function addMessageToChat(message, isOwn, options = {}) {
     `;
     syncTransferRecordFavoriteBadge(messageEl, message);
     if (message.type === 'markdown') {
-        window.TunnelMarkdown?.mount(messageEl.querySelector('[data-tunnel-markdown]'), message); messageEl.classList.add('markdown-record-clickable');
-        messageEl.addEventListener('click', event => { if (event.target.closest('button,a,input,textarea,video,audio,.message-record-actions') || window.getSelection?.()?.toString()) return; window.TunnelMarkdown?.preview(message); });
+        const bubble = messageEl.querySelector('[data-tunnel-markdown]');
+        if (message.snsMarkdownProgress) window.SnsPostMarkdown?.renderProgress(bubble, message.snsMarkdownProgress);
+        else {
+            window.TunnelMarkdown?.mount(bubble, message);
+            messageEl.classList.add('markdown-record-clickable');
+            messageEl.addEventListener('click', event => { if (event.target.closest('button,a,input,textarea,video,audio,.message-record-actions') || window.getSelection?.()?.toString()) return; window.TunnelMarkdown?.preview(message); });
+        }
     }
     syncTransferRecordSnsBadge(messageEl, message);
     if (fileRecordRemark) {
@@ -7919,7 +7932,8 @@ async function showTransferRecordDetails(messageId) {
                     <div><dt>发送时间</dt><dd>${escapeHtml(formatDateTime(message.timestamp || Date.now()))}</dd></div>
                     <div><dt>备注</dt><dd>${escapeHtml(String(message.remark || message.collection?.remark || '无'))}</dd></div>
                 </dl>
-                ${message.type === 'text' || message.type === 'markdown' ? `<section class="transfer-record-details-content"><h3>消息内容</h3><p>${escapeHtml(message.type === 'markdown' ? message.markdown || '' : message.text || '')}</p></section>` : ''}
+                ${message.snsMarkdownProgress ? '<section class="transfer-record-details-content" data-sns-markdown-progress></section>' :
+                    message.type === 'text' || message.type === 'markdown' ? `<section class="transfer-record-details-content"><h3>消息内容</h3><p>${escapeHtml(message.type === 'markdown' ? message.markdown || '' : message.text || '')}</p></section>` : ''}
                 ${message.type === 'rich' ? `<section class="transfer-record-details-content"><h3>富文本摘要</h3><p>${escapeHtml(String(message.content || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1000))}</p></section>` : ''}
                 ${fileDetails.length ? `<section class="transfer-record-details-files"><h3>文件信息 · ${fileDetails.length}</h3>${fileDetails.map((entry, index) => `
                     <article class="transfer-record-detail-file">
@@ -7943,8 +7957,16 @@ async function showTransferRecordDetails(messageId) {
         closeTransferRecordDetails();
         await focusTransferRecordById(message.id, { timeoutMs: 5000 });
     });
+    const scope = state.sessionId;
+    window.SnsPostMarkdown?.renderProgress(overlay.querySelector('[data-sns-markdown-progress]'), message.snsMarkdownProgress);
     window.SnsPostMarkdown?.bind(overlay, message, {
-        request: emitSocketWithAck, sessionId: state.sessionId, socket: state.socket, toast: showAppToast
+        request: emitSocketWithAck, sessionId: scope, socket: state.socket, toast: showAppToast,
+        currentSession: () => state.sessionId,
+        showRecord: id => {
+            if (state.sessionId !== scope || !overlay.isConnected) return;
+            closeTransferRecordDetails();
+            focusTransferRecordById(id, { timeoutMs: 5000, behavior: 'smooth', isCurrent: () => state.sessionId === scope }).catch(() => {});
+        }
     });
     overlay.querySelectorAll('[data-sns-fetch]').forEach(button => {
         button.addEventListener('click', async event => {
@@ -8238,6 +8260,8 @@ function createRecordActionButton(glyph, text, title, run) {
     button.replaceChildren(icon, label); return button;
 }
 function renderMessageRecordActions(messageEl, message) {
+    messageEl.dataset.type = message.type;
+    messageEl.toggleAttribute('data-markdown-unfinished', Boolean(message.snsMarkdownProgress));
     messageEl.querySelector('.message-record-actions')?.remove();
     const actions = document.createElement('div');
     actions.className = 'message-record-actions';
@@ -8248,7 +8272,7 @@ function renderMessageRecordActions(messageEl, message) {
     menuItems.push(createRecordActionButton('🔗', '复制此锚点', '复制可直接定位到此记录的链接', () => {
         copyTransferRecordLink(message.id);
     }));
-    menuItems.push(createRecordActionButton('⧉', '复制文本', '复制记录中的正文、备注和文件名', () => copyTransferRecordText(message.id).catch(error => showAppToast(error.message))));
+    if (!message.snsMarkdownProgress) menuItems.push(createRecordActionButton('⧉', '复制文本', '复制记录中的正文、备注和文件名', () => copyTransferRecordText(message.id).catch(error => showAppToast(error.message))));
     menuItems.push(createRecordActionButton(message.favorite ? '★' : '☆', message.favorite ? '取消收藏' : '收藏', message.favorite ? '从已收藏中移除此记录' : '将此传输记录加入已收藏', () => {
         toggleTransferRecordFavorite(message.id).catch(err => {
             alert(`收藏状态保存失败：${err.message}`);
@@ -8271,16 +8295,16 @@ function renderMessageRecordActions(messageEl, message) {
             });
         }));
     }
-    menuItems.push(createRecordActionButton('⎇', message.type === 'markdown' ? '发送到其他隧道' : '发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
+    if (!message.snsMarkdownProgress) menuItems.push(createRecordActionButton('⎇', message.type === 'markdown' ? '发送到其他隧道' : '发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
         forwardHistoryMessage(message.id).catch(err => {
             alert(`转发失败：${err.message}`);
             historyLog('history-message-forward-failed', { messageId: message.id, error: err.message });
         });
     }));
-    if (window.StreamingConsole?.canImportRecord(message)) {
+    if (!message.snsMarkdownProgress && window.StreamingConsole?.canImportRecord(message)) {
         for (const [label,create] of [['创建串流台',true],['添加到串流台',false]]) menuItems.push(createRecordActionButton('/client/icons/streaming.png',label,label,()=>window.StreamingConsole.importRecord(message,create).catch(error=>showAppToast(error.message))));
     }
-    if (message.type === 'markdown') {
+    if (message.type === 'markdown' && !message.snsMarkdownProgress) {
         menuItems.push(createRecordActionButton('☁', '保存到网盘', '将 Markdown 保存到自己的 Telegram 网盘', () => {
             window.TunnelMarkdown.save(message).catch(error => alert(`资源准备失败：${error.message}`));
         }));
@@ -8290,7 +8314,7 @@ function renderMessageRecordActions(messageEl, message) {
         }));
     }
     menuItems.push(createRecordActionButton('🗑', '删除', '从会话中删除此记录', () => {
-        deleteHistoryMessage(message.id);
+        deleteHistoryMessage(message.id).catch(error => showAppToast(`删除未确认：${error.message}`));
     }));
     const trigger = document.createElement('button');
     trigger.type = 'button';
@@ -8303,8 +8327,159 @@ function renderMessageRecordActions(messageEl, message) {
         event.stopPropagation();
         openMessageRecordActionMenu(trigger, menuItems);
     });
+    trigger.addEventListener('record-menu-open', event => openMessageRecordActionMenu(trigger, menuItems, event.detail));
     actions.appendChild(trigger);
     messageEl.appendChild(actions);
+    markSelectedHistoryRow(messageEl);
+}
+
+const selectedHistoryIds = new Set();
+function markSelectedHistoryRow(row) {
+    const selected = selectedHistoryIds.has(row.dataset.messageId);
+    row.classList.toggle('history-selected', selected);
+    row.querySelector('.history-selection-check')?.remove();
+    if (!selected) return;
+    const check = document.createElement('span');
+    check.className = 'history-selection-check';
+    check.textContent = '✓';
+    check.setAttribute('aria-label', window.TunnelI18n?.t('已选中') || '已选中');
+    row.append(check);
+}
+
+function initHistoryRecordSelection() {
+    const chat = document.getElementById('chatMessages'), toolbar = document.getElementById('historySelectionActions');
+    if (!chat || !toolbar || toolbar.dataset.bound) return;
+    toolbar.dataset.bound = '1';
+    const panel = toolbar.parentElement;
+    let choosing = false, busy = false, gesture, suppressClick = 0;
+    const t = text => window.TunnelI18n?.t(text) || text;
+    toolbar.setAttribute('aria-label', t('传输记录批量操作'));
+    const rowFor = target => target.closest?.('.message[data-message-id]');
+    const rows = () => [...chat.querySelectorAll('.message[data-message-id]')];
+    function action(text, run, allowUnfinished = false) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-secondary';
+        button.textContent = t(text);
+        if (!allowUnfinished) button.dataset.requiresCompleteRecord = 'true';
+        button.onclick = async () => {
+            if (busy) return;
+            busy = true;
+            button.disabled = true;
+            const scope = state.sessionId;
+            try {
+                const records = await Promise.all(rows().filter(row => selectedHistoryIds.has(row.dataset.messageId))
+                    .map(row => getFromStore('messages', row.dataset.messageId)));
+                const selected = records.filter(record => record?.sessionId === scope);
+                if (!selected.length || state.sessionId !== scope || !allowUnfinished && selected.some(record => record.snsMarkdownProgress)) return;
+                await run(selected, scope);
+            } catch (error) { showAppToast(error.message); }
+            finally { busy = false; button.disabled = false; }
+        };
+        return button;
+    }
+    function exit() {
+        choosing = false;
+        selectedHistoryIds.clear();
+        rows().forEach(markSelectedHistoryRow);
+        panel.classList.remove('history-selection-active');
+        toolbar.hidden = true;
+    }
+    async function copy(text) {
+        if (!await copyTextToClipboard(text)) throw Error(t('复制失败，请检查浏览器剪贴板权限'));
+        showAppToast(t('已复制'));
+    }
+    const save = action('保存到网盘', records => window.DiskTunnelAdapter.saveRecords(records, window.TunnelMarkdown.archive));
+    const count = document.createElement('span');
+    toolbar.append(
+        action('复制所有文本', records => copy(records.map(record => recordTextPayload(record).text.trim()).filter(Boolean).join('\n'))),
+        action('复制所有锚点', (records, scope) => copy(records.map(record => getTransferRecordAnchorUrl(record.id, scope)).join('\n')), true),
+        action('收藏', async records => { for (const record of records) if (!record.favorite) await toggleTransferRecordFavorite(record.id); }, true),
+        action('发送到其他隧道', async (records, scope) => {
+            const target = await chooseForwardTargetSession();
+            if (!target) return;
+            for (const record of records) {
+                if (state.sessionId !== scope) throw Error(t('当前隧道已变化'));
+                await forwardHistoryMessage(record.id, target);
+            }
+        }),
+        action('创建串流台', records => window.StreamingConsole.importRecords(records, true)),
+        action('添加到串流台', records => window.StreamingConsole.importRecords(records)),
+        save,
+        action('删除', async records => { if (await deleteHistoryMessage(records.map(record => record.id))) exit(); }, true),
+        count
+    );
+    const cancel = document.createElement('button');
+    cancel.type = 'button'; cancel.className = 'btn btn-secondary'; cancel.textContent = t('退出多选'); cancel.onclick = exit;
+    toolbar.append(cancel);
+    function update() {
+        const selected = rows().filter(row => selectedHistoryIds.has(row.dataset.messageId));
+        for (const id of selectedHistoryIds) if (!selected.some(row => row.dataset.messageId === id)) selectedHistoryIds.delete(id);
+        const unfinished = selected.some(row => row.hasAttribute('data-markdown-unfinished'));
+        save.hidden = unfinished || selected.length === 0 || selected.some(row => ['text', 'rich'].includes(row.dataset.type));
+        for (const button of toolbar.querySelectorAll('button')) if (button !== cancel) button.disabled = !selected.length || unfinished && Boolean(button.dataset.requiresCompleteRecord);
+        count.textContent = t('已选择') + ' ' + selected.length;
+    }
+    function toggle(row) {
+        const id = row.dataset.messageId;
+        if (selectedHistoryIds.has(id)) selectedHistoryIds.delete(id);
+        else selectedHistoryIds.add(id);
+        markSelectedHistoryRow(row);
+        update();
+    }
+    function activate(row, target, anchor) {
+        window.getSelection?.()?.removeAllRanges();
+        if (choosing) { toggle(row); return; }
+        if (target.closest('.message-bubble')) {
+            row.querySelector('.message-record-menu-trigger')?.dispatchEvent(new CustomEvent('record-menu-open', { detail: anchor }));
+            return;
+        }
+        choosing = true;
+        panel.classList.add('history-selection-active');
+        toolbar.hidden = false;
+        toggle(row);
+    }
+    function clearGesture() {
+        clearTimeout(gesture?.timer);
+        gesture = null;
+    }
+    chat.addEventListener('contextmenu', event => {
+        const row = rowFor(event.target);
+        if (!row) return;
+        event.preventDefault();
+        if ((!event.pointerType || event.pointerType === 'touch') && Date.now() < suppressClick) return;
+        clearGesture();
+        if (event.pointerType === 'touch') suppressClick = Date.now() + 700;
+        const anchor = event.pointerType || event.button === 2 ? { x: event.clientX, y: event.clientY } : null;
+        activate(row, event.target, anchor);
+    }, true);
+    chat.addEventListener('pointerdown', event => {
+        const row = rowFor(event.target);
+        if (event.pointerType !== 'touch' || !row || event.target.closest('button,input,textarea')) return;
+        clearGesture();
+        const origin = { x: event.clientX, y: event.clientY };
+        gesture = { id: event.pointerId, origin, anchor: origin, timer: setTimeout(() => {
+            const anchor = gesture.anchor;
+            suppressClick = Date.now() + 700;
+            clearGesture();
+            activate(row, event.target, anchor);
+        }, 550) };
+    }, true);
+    chat.addEventListener('pointermove', event => {
+        if (gesture?.id !== event.pointerId) return;
+        if (Math.hypot(event.clientX - gesture.origin.x, event.clientY - gesture.origin.y) > 12) clearGesture();
+        else gesture.anchor = { x: event.clientX, y: event.clientY };
+    }, true);
+    for (const name of ['pointerup', 'pointercancel', 'pointerleave']) chat.addEventListener(name, clearGesture, true);
+    chat.addEventListener('click', event => {
+        if (Date.now() >= suppressClick && !choosing) return;
+        const row = rowFor(event.target);
+        if (!row) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (choosing && Date.now() >= suppressClick) toggle(row);
+    }, true);
+    new MutationObserver(() => { if (choosing) update(); }).observe(chat, { childList: true });
 }
 
 async function toggleTransferRecordFavorite(messageId) {
@@ -8404,7 +8579,7 @@ function syncCollectionFileFavoriteBadge(card, favorite) {
     target.appendChild(badge);
 }
 
-function openMessageRecordActionMenu(trigger, menuItems) {
+function openMessageRecordActionMenu(trigger, menuItems, anchor) {
     document.querySelector('.message-record-action-menu-layer')?.remove();
     const layer = document.createElement('div');
     layer.className = 'message-record-action-menu-layer';
@@ -8429,15 +8604,34 @@ function openMessageRecordActionMenu(trigger, menuItems) {
     layer.addEventListener('contextmenu', event => event.preventDefault());
 
     if (!window.matchMedia('(max-width: 767px)').matches) {
-        const rect = trigger.getBoundingClientRect();
-        const menuRect = menu.getBoundingClientRect();
-        const left = Math.min(window.innerWidth - menuRect.width - 8, Math.max(8, rect.right - menuRect.width));
-        const preferredTop = rect.bottom + 5;
-        const top = preferredTop + menuRect.height <= window.innerHeight - 8
-            ? preferredTop
-            : Math.max(8, rect.top - menuRect.height - 5);
-        menu.style.left = `${left}px`;
-        menu.style.top = `${top}px`;
+        if (anchor) {
+            const viewport = window.visualViewport;
+            const width = viewport?.width ?? document.documentElement.clientWidth;
+            const height = viewport?.height ?? document.documentElement.clientHeight;
+            menu.style.maxWidth = `${width}px`;
+            menu.style.maxHeight = `${height}px`;
+            menu.style.overflowY = 'auto';
+            const menuRect = menu.getBoundingClientRect();
+            const fit = (point, size, start, span) => {
+                const end = start + span;
+                const position = Math.min(end, Math.max(start, point));
+                if (position + size <= end) return position;
+                if (position - size >= start) return position - size;
+                return Math.max(start, end - size);
+            };
+            menu.style.left = `${fit(anchor.x, menuRect.width, viewport?.offsetLeft ?? 0, width)}px`;
+            menu.style.top = `${fit(anchor.y, menuRect.height, viewport?.offsetTop ?? 0, height)}px`;
+        } else {
+            const rect = trigger.getBoundingClientRect();
+            const menuRect = menu.getBoundingClientRect();
+            const left = Math.min(window.innerWidth - menuRect.width - 8, Math.max(8, rect.right - menuRect.width));
+            const preferredTop = rect.bottom + 5;
+            const top = preferredTop + menuRect.height <= window.innerHeight - 8
+                ? preferredTop
+                : Math.max(8, rect.top - menuRect.height - 5);
+            menu.style.left = `${left}px`;
+            menu.style.top = `${top}px`;
+        }
     }
 
     let dragPointerId = null;
@@ -8624,12 +8818,12 @@ async function cloneForwardFileInfo(fileInfo, targetSessionId) {
     };
 }
 
-async function forwardHistoryMessage(messageId) {
+async function forwardHistoryMessage(messageId, targetSessionId) {
     const sourceSessionId = state.sessionId, socket = state.socket, sender = state.deviceId;
     const checkContext = () => { if (sourceSessionId !== state.sessionId || socket !== state.socket || sender !== state.deviceId) throw new Error('当前隧道已变化，请重新选择转发目标'); };
     const source = await getFromStore('messages', messageId);
     if (!source) throw new Error('找不到原传输记录');
-    const targetSessionId = await chooseForwardTargetSession();
+    targetSessionId ||= await chooseForwardTargetSession();
     if (!targetSessionId) return;
     checkContext();
     localStorage.setItem(LAST_FORWARD_SESSION_STORAGE_KEY, targetSessionId);
@@ -8663,8 +8857,11 @@ async function forwardHistoryMessage(messageId) {
     const response = await new Promise((resolve, reject) => {
         socket.timeout(10000).emit('forward-message', { targetSessionId, message, targetDeviceId: tunnelDeviceId(targetSessionId), targetAccessGrant: savedTunnelGrant(targetSessionId) }, (err, response) => {
             if (err) return reject(new Error('服务器响应超时'));
-            const failures = { 'target-tunnel-access-required':'目标隧道访问凭据无效，请重新加入后再试', 'permission-denied':'当前设备没有转发所需的隧道权限', 'forward-file-cache-required':'转发文件缓存尚未准备完成，请重试', 'forward-record-not-stored':'转发记录未保存，请检查目标隧道后重试' };
-            if (!response?.ok) return reject(new Error(failures[response?.error] || response?.error || '服务器拒绝转发'));
+            const failures = { 'target-tunnel-access-required':'目标隧道访问凭据无效，请重新加入后再试', 'permission-denied':'当前设备没有转发所需的隧道权限', 'forward-file-cache-required':'转发文件缓存尚未准备完成，请重试', 'forward-record-not-stored':'转发记录未保存，请检查目标隧道后重试', 'markdown-attachment-missing':'Markdown 引用的附件缺少可用副本，未转发' };
+            if (!response?.ok) {
+                const text = failures[response?.error] || response?.error || '服务器拒绝转发';
+                return reject(new Error(window.TunnelI18n?.t(text) || text));
+            }
             resolve(response);
         });
     });
@@ -13312,53 +13509,13 @@ function attachCollectionRecordInteractions(messageEl) {
 }
 
 function attachFileRecordInteractions(messageEl) {
-    let longPressTimer = null;
-    let suppressClickUntil = 0;
-    let startPoint = null;
     const messageId = messageEl.dataset.messageId;
     const isAction = target => Boolean(target.closest('.file-actions, .file-cache-retry, .message-record-actions'));
-    const cancelLongPress = () => {
-        if (longPressTimer) clearTimeout(longPressTimer);
-        longPressTimer = null;
-        startPoint = null;
-    };
-    const clearSelection = () => {
-        try {
-            window.getSelection?.()?.removeAllRanges();
-        } catch {}
-    };
-
     messageEl.addEventListener('click', event => {
-        if (isAction(event.target) || Date.now() < suppressClickUntil) return;
-        runExclusiveFilePreviewOpen(() => openFileRecord(messageId), { messageId });
-    });
-    messageEl.addEventListener('contextmenu', event => {
-        if (isAction(event.target)) return;
-        event.preventDefault();
-        clearSelection();
-        suppressClickUntil = Date.now() + 500;
-        showFileDetails(messageId).catch(err => historyLog('file-details-open-failed', { messageId, error: err.message }));
+        if (!isAction(event.target)) runExclusiveFilePreviewOpen(() => openFileRecord(messageId), { messageId });
     });
     messageEl.addEventListener('selectstart', event => {
         if (!isAction(event.target)) event.preventDefault();
-    });
-    messageEl.addEventListener('pointerdown', event => {
-        if (event.pointerType !== 'touch' || isAction(event.target)) return;
-        startPoint = { x: event.clientX, y: event.clientY };
-        longPressTimer = setTimeout(() => {
-            longPressTimer = null;
-            suppressClickUntil = Date.now() + 700;
-            clearSelection();
-            navigator.vibrate?.(12);
-            showFileDetails(messageId).catch(err => historyLog('file-details-open-failed', { messageId, error: err.message }));
-        }, 550);
-    });
-    messageEl.addEventListener('pointermove', event => {
-        if (!startPoint || event.pointerType !== 'touch') return;
-        if (Math.hypot(event.clientX - startPoint.x, event.clientY - startPoint.y) > 12) cancelLongPress();
-    });
-    ['pointerup', 'pointercancel', 'pointerleave'].forEach(eventName => {
-        messageEl.addEventListener(eventName, cancelLongPress);
     });
 }
 
@@ -13592,24 +13749,47 @@ async function restoreFileCache(messageId, options = {}) {
     historyLog('file-cache-restore-requested', { messageId, fileId: fileInfo.id });
 }
 
-async function deleteHistoryMessage(messageId) {
+async function deleteHistoryMessage(messageIds) {
     if (!requireTunnelPermission('delete')) return;
-    if (!state.socket?.connected) {
+    const { socket, sessionId } = state;
+    if (!socket?.connected) {
         alert('当前未连接到会话，无法同步删除记录。');
         return;
     }
-    if (!confirm('删除会同步移除所有设备中的这条传输记录，并清理其文件缓存。此操作不可撤销，继续吗？')) return;
-    await deleteHistoryMessageLocal(messageId);
-    state.socket.emit('delete-message', { sessionId: state.sessionId, messageId });
+    const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
+    if (!confirm(ids.length === 1 ? '删除会同步移除所有设备中的这条传输记录，并清理其文件缓存。此操作不可撤销，继续吗？'
+        : `删除会同步移除所有设备中的 ${ids.length} 条传输记录，并清理相关文件缓存。此操作不可撤销，继续吗？`)) return;
+    for (const messageId of ids) {
+        if (state.sessionId !== sessionId || state.socket !== socket) throw Error('当前隧道已变化');
+        const result = await socket.timeout(10000).emitWithAck('delete-message', { sessionId, messageId });
+        if (!result?.ok) {
+            const failures = { 'invalid-session': '当前隧道连接已失效，请重新进入后再试', 'invalid-record': '服务端无法识别这条记录，请刷新后再试', 'permission-denied': '当前设备没有删除记录的权限' };
+            const text = failures[result?.error] || '服务端尚未确认删除，请刷新后核对记录';
+            throw Error(window.TunnelI18n?.t(text) || text);
+        }
+        if (state.sessionId === sessionId) await deleteHistoryMessageLocal(messageId);
+    }
+    return true;
 }
 
+const snsMarkdownUpdates = new Map();
 async function applyHistoryMessageUpdate(message, options = {}) {
     if (!message?.id) return;
     const sessionId = state.sessionId;
+    if (message.snsMarkdownRevision && !options.orderedSnsUpdate) {
+        const key = `${sessionId}:${message.id}`;
+        const pending = (snsMarkdownUpdates.get(key) || Promise.resolve()).catch(() => {}).then(() => {
+            if (state.sessionId === sessionId) return applyHistoryMessageUpdate(message, { ...options, orderedSnsUpdate: true });
+        });
+        snsMarkdownUpdates.set(key, pending);
+        try { return await pending; }
+        finally { if (snsMarkdownUpdates.get(key) === pending) snsMarkdownUpdates.delete(key); }
+    }
     const canUpdate = () => state.sessionId === sessionId && !isHistoryMessageDeleted(message.id, sessionId);
     if (!canUpdate() || message.sessionId && message.sessionId !== sessionId) return;
     const previous = await getFromStore('messages', message.id).catch(() => null);
     if (!canUpdate()) return;
+    if ((Number(message.snsMarkdownRevision) || 0) < (Number(previous?.snsMarkdownRevision) || 0)) return;
     if (message.type === 'markdown' && previous?.type === 'markdown' && (Number(message.markdownVersion) || 1) < (Number(previous.markdownVersion) || 1)) return;
     if (previous) {
         const files = entry => entry.type === 'collection' ? getCollectionFiles(entry) : entry.fileInfo ? [entry.fileInfo] : [];
@@ -13647,7 +13827,12 @@ async function applyHistoryMessageUpdate(message, options = {}) {
         }
     } else {
         const existingElement = getMessageElement(message.id);
-        const shouldScroll = Boolean(existingElement && isChatNearBottom(document.getElementById('chatMessages')));
+        const shouldScroll = Boolean((existingElement || options.scroll) && isChatNearBottom(document.getElementById('chatMessages')));
+        if (existingElement && previous?.snsMarkdownProgress && message.snsMarkdownProgress) {
+            window.SnsPostMarkdown?.renderProgress(existingElement.querySelector('[data-tunnel-markdown]'), message.snsMarkdownProgress);
+            syncTransferRecordFavoriteBadge(existingElement, message);
+            return;
+        }
         existingElement?.remove();
         await addMessageToChat(message, wasOwn, {
             scroll: shouldScroll,
@@ -13864,6 +14049,21 @@ function markHistoryMessageDeleted(messageId, sessionId = state.sessionId) {
     scopes.get(sessionId).add(messageId);
 }
 
+async function cacheMarkdownAttachment({ sessionId, messageId, fileId, blob }) {
+    const active = () => sessionId === state.sessionId && hasTunnelPermission('read') && !isHistoryMessageDeleted(messageId, sessionId);
+    if (!active()) return;
+    const record = await getFromStore('messages', messageId);
+    const file = record?.sessionId === sessionId && record.markdownAttachments?.find(item => item.id === fileId && item.markdownOwnerId === messageId);
+    if (!file || Number(file.size) !== blob.size || !active()) return;
+    try {
+        await saveToStore('files', { id: fileId, name: file.name, type: file.type, size: blob.size,
+            sessionId, markdownOwnerId: messageId, data: blob, timestamp: record.timestamp });
+        if (isHistoryMessageDeleted(messageId, sessionId)) enqueueFileCacheCleanup(new Set([fileId]), 'markdown-deleted-during-cache');
+    } catch (error) {
+        historyLog('markdown-attachment-cache-failed', { messageId, fileId, error: error.message });
+    }
+}
+
 async function deleteHistoryMessageLocal(messageId) {
     const sessionId = state.sessionId;
     markHistoryMessageDeleted(messageId, sessionId);
@@ -13874,6 +14074,7 @@ async function deleteHistoryMessageLocal(messageId) {
     }
     if (message.sessionId && message.sessionId !== sessionId) return;
     const fileIds = new Set();
+    if (message.type === 'markdown') message.markdownAttachments?.forEach(file => file?.id && fileIds.add(file.id));
     if (message.type === 'collection') getCollectionFiles(message).forEach(file => file?.id && fileIds.add(file.id));
     if (message.type === 'rich') {
         extractAssetIds(message.content).forEach(fileId => fileIds.add(fileId));
@@ -13885,6 +14086,7 @@ async function deleteHistoryMessageLocal(messageId) {
     await deleteFromStore('messages', messageId);
     pendingHistoryMessageIds.delete(messageId);
     document.querySelector(`.message[data-message-id="${messageId}"]`)?.remove();
+    if (message.type === 'markdown') window.TunnelMarkdown?.closeRecord?.(messageId);
     if (activeCollectionPreviewMessageId === messageId || activeFileDetailsMessageId === messageId) {
         closeFileDetails();
         closeFilePreview({ forceClose: true, fromHistory: true });
@@ -13917,6 +14119,9 @@ async function findReferencedFileIds(fileIds, excludingMessageId = null) {
     for (const entry of messages) {
         if (!entry || entry.id === excludingMessageId || referenced.size === targets.size) continue;
         if (entry.fileInfo?.id && targets.has(entry.fileInfo.id)) referenced.add(entry.fileInfo.id);
+        if (entry.type === 'markdown') for (const file of entry.markdownAttachments || []) {
+            if (targets.has(file.id)) referenced.add(file.id);
+        }
         for (const file of getCollectionFiles(entry)) {
             if (targets.has(file.id)) referenced.add(file.id);
         }
@@ -13961,9 +14166,10 @@ async function findGarbageFileCaches() {
             : getAllFromStore('files').then(items => items.filter(item => item.sessionId === state.sessionId)),
         getFromStore('editorContent', 'current')
     ]);
-    const referenced = new Set();
+    const referenced = new Set(), markdownAttachments = new Set();
     messages.forEach(message => {
         if (message.fileInfo?.id) referenced.add(message.fileInfo.id);
+        if (message.type === 'markdown') for (const file of message.markdownAttachments || []) markdownAttachments.add(file.id);
         if (message.type === 'collection') {
             getCollectionFiles(message).forEach(file => referenced.add(file.id));
         }
@@ -13976,10 +14182,15 @@ async function findGarbageFileCaches() {
         extractAssetIds(editorContent.content).forEach(id => referenced.add(id));
         extractFileRefIds(editorContent.content).forEach(id => referenced.add(id));
     }
-    return files.filter(file => !referenced.has(file.id) || file.isPartial || file.transferInterrupted);
+    return files.filter(file => !markdownAttachments.has(file.id) && (!referenced.has(file.id) || file.isPartial || file.transferInterrupted));
 }
 
 async function clearGarbageFileCaches(files) {
+    const possibleAttachments = files.filter(file => file.markdownOwnerId);
+    if (possibleAttachments.length) {
+        const owned = await findReferencedFileIds(new Set(possibleAttachments.map(file => file.id)));
+        files = files.filter(file => !owned.has(file.id));
+    }
     const streaming = files.filter(file => file.streamingCacheKey);
     if (streaming.length) {
         await window.StreamingCache?.clearViewer(streaming.map(file => file.streamingCacheKey));
@@ -14200,7 +14411,7 @@ async function getSessionResourceInventory() {
         resource.references.push(normalized);
     };
 
-    files.forEach(file => upsertResource(file, true));
+    files.filter(file => !file.markdownOwnerId).forEach(file => upsertResource(file, true));
 
     messages.forEach(message => {
         if (message.fileInfo?.id) {
@@ -18424,6 +18635,7 @@ function initStreamingConsoleIntegration() {
 
 function initUI() {
     initTunnelSettings();
+    initHistoryRecordSelection();
     initLanP2pGuide();
     initThemeSwitcher();
     window.WebWorkshop?.init({

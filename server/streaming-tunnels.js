@@ -2,7 +2,7 @@
 const crypto = require('node:crypto');
 const { mediaKind } = require('./streaming-console');
 const references = body => [...String(body).matchAll(/tunnel-blob:([\w-]+)\/([\w.-]+)\/([\w.-]+)/g)];
-function createStreamingTunnels({ session, messages, admitted, capability, publish, mapDevices = values => values }) {
+function createStreamingTunnels({ session, messages, admitted, capability, publish, readAttachment, mapDevices = values => values }) {
     const deny = code => { throw new Error(code); };
     function memberId(input, actor) {
         let memberId = input.tunnelDeviceId || actor.deviceId;
@@ -19,6 +19,7 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
     function stat(source) {
         if (source.authorizedDeviceId && !capability(session(source.sessionId), source.authorizedDeviceId, 'read')) deny('STREAM_SOURCE_REVOKED');
         const entry = messages(source.sessionId).find(message => message.id === source.messageId);
+        if (entry?.snsMarkdownProgress && !entry.markdown && source.fileId === 'record') deny('STREAM_SOURCE_NOT_READY');
         if (source.messageId === 'editor-assets') {
             const metadata = session(source.sessionId)?.editorAssets?.get(source.fileId)?.metadata;
             if (!metadata) deny('STREAM_SOURCE_DELETED');
@@ -28,13 +29,14 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
             const inline = Buffer.from(entry.type === 'rich' ? entry.content || '' : entry.type === 'markdown' ? entry.markdown : entry.text || '', 'utf8');
             return { name: entry.type === 'rich' ? 'message.rich' : entry.type === 'markdown' ? 'message.md' : 'message.txt', type: entry.type === 'rich' ? 'application/x-drop2tunnel-rich' : entry.type === 'markdown' ? 'text/markdown' : 'text/plain', size: inline.length, inline };
         }
-        const file = entry?.type === 'file' ? entry.fileInfo?.id === source.fileId && entry.fileInfo
-            : entry?.collection?.files?.find(file => file.id === source.fileId);
+        const attachment = entry?.type === 'markdown' && entry.markdownAttachments?.find(file => file.id === source.fileId && file.markdownOwnerId === entry.id);
+        const file = attachment || (entry?.type === 'file' ? entry.fileInfo?.id === source.fileId && entry.fileInfo
+            : entry?.collection?.files?.find(file => file.id === source.fileId));
         if (!file) deny('STREAM_SOURCE_DELETED');
         let inline;
         if (typeof file.data === 'string' && /^data:[^,]*;base64,/.test(file.data)) inline = Buffer.from(file.data.slice(file.data.indexOf(',') + 1), 'base64');
         if (inline && inline.length !== Number(file.size)) inline = null;
-        return { name: file.name, type: file.type || '', size: Number(file.size), inline };
+        return { name: file.name, type: file.type || '', size: Number(file.size), inline, ...(attachment ? { markdownAttachment: true } : {}) };
     }
     function resolve(input, actor) {
         authorize(input, actor);
@@ -44,8 +46,11 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
     function candidates(input, actor, allFiles = false) {
         authorize(input, actor);
         const result = [];
+        const requested = Array.isArray(input.messageIds) ? new Set(input.messageIds.slice(0, 1000)) : null;
         for (const message of messages(input.sessionId)) {
+            if (message.snsMarkdownProgress) continue;
             if(input.messageId && message.id!==input.messageId)continue;
+            if (requested && !requested.has(message.id)) continue;
             if (['markdown', 'text', 'rich'].includes(message.type)) {
                 const metadata = stat({ sessionId: input.sessionId, messageId: message.id, fileId: 'record' });
                 result.push({ name: metadata.name, type: metadata.type, size: metadata.size, kind: message.type, recordName: message.id,
@@ -105,7 +110,7 @@ function createStreamingTunnels({ session, messages, admitted, capability, publi
         if (input.inviteToken) service.markInviteSent(input.inviteToken, actor);
         return { ok: true, messageId, message };
     }
-    return { resolve, stat, candidates, resources: (input, actor) => candidates(input, actor, true), send, references, bind(value) { service = value; },
+    return { resolve, stat, readAttachment, candidates, resources: (input, actor) => candidates(input, actor, true), send, references, bind(value) { service = value; },
         describe(source) { const current = session(source.sessionId); return { kind:'tunnel', sessionId:source.sessionId, messageId:source.messageId, fileId:source.fileId, shortCode:current?.shortCode || '', remark:current?.remark || '' }; },
         alias(input, actor) { authorize(input, actor); return memberId(input, actor); },
         providers: source => { const values = [...new Set([...(session(source.sessionId)?.editorAssets?.get(source.fileId)?.providers || []), ...(session(source.sessionId)?.fileAssets?.get(source.fileId)?.providers || []),

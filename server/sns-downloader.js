@@ -129,6 +129,7 @@ function createSnsDownloadService({
         return {
             id: task.id,
             autoCacheEnabled: task.autoCacheEnabled !== false,
+            cacheFiles: task.cacheFiles,
             handled: task.handled === true,
             handledAt: Number(task.handledAt) || 0,
             url: task.url,
@@ -136,6 +137,7 @@ function createSnsDownloadService({
             title: task.title || '',
             cover: hasCover ? `${taskPath}/cover` : '',
             mode: task.mode,
+            manualFormat: task.manualFormat || '',
             downloadSections: task.downloadSections || '',
             selectedFormatIds: task.selectedFormatIds || [],
             formatSummary: task.formatSummary || null,
@@ -188,6 +190,7 @@ function createSnsDownloadService({
             const analysis = await analyze(task.url, {
                 includeFormats: task.mode === 'custom',
                 selectedFormatIds: task.selectedFormatIds,
+                manualFormat: task.manualFormat || '',
                 signal: controller.signal,
                 onDetail(entry = {}) {
                     emitLog(task, entry.message || 'SNS 解析细节', entry.details || {}, entry.level || 'info');
@@ -281,16 +284,19 @@ function createSnsDownloadService({
         create(input = {}) {
             const normalized = normalizeSnsDownloadUrl(input.url);
             const mode = input.mode === 'custom' ? 'custom' : 'default';
-            const selectedFormatIds = mode === 'custom'
+            const manualFormat = mode === 'custom' && input.useManualFormat === true ? String(input.manualFormat || '').trim() : '';
+            if (manualFormat && (manualFormat.length > 2048 || /[\u0000-\u001f\u007f]/.test(manualFormat))) throw new Error('custom-manual-format-invalid');
+            const selectedFormatIds = mode === 'custom' && !manualFormat
                 ? [...new Set((Array.isArray(input.selectedFormatIds) ? input.selectedFormatIds : [])
                     .map(value => String(value || '').trim()).filter(Boolean))]
                 : [];
-            if (mode === 'custom' && !selectedFormatIds.length) throw new Error('custom-format-required');
+            if (mode === 'custom' && !manualFormat && !selectedFormatIds.length) throw new Error('custom-format-required');
             if (selectedFormatIds.length > 2) throw new Error('custom-format-count-invalid');
             const now = Date.now();
             const task = {
                 id: crypto.randomUUID(), url: normalized.url, platform: normalized.platform,
-                title: '', cover: '', mode,
+                title: '', cover: '', mode, manualFormat,
+                cacheFiles: typeof input.cacheFiles === 'boolean' ? input.cacheFiles : undefined, autoCacheEnabled: input.cacheFiles !== false,
                 downloadSections: String(input.downloadSections || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 500),
                 selectedFormatIds, formatSummary: null, mediaType: '', referenceInfo: null,
                 status: 'queued', progress: { percent: 0 }, outputPath: '', coverPath: '',

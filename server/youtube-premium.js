@@ -385,6 +385,7 @@ function createYoutubePremiumService({
         return {
             id: task.id,
             autoCacheEnabled: task.autoCacheEnabled !== false,
+            cacheFiles: task.cacheFiles,
             handled: task.handled === true,
             handledAt: Number(task.handledAt) || 0,
             url: task.url,
@@ -605,6 +606,7 @@ function createYoutubePremiumService({
             const now = Date.now();
             const task = {
                 id: crypto.randomUUID(), url, title: '', cover: '', mode, manualFormat, asMusic: input.asMusic === true, downloadSections, selectedFormatIds,
+                cacheFiles: typeof input.cacheFiles === 'boolean' ? input.cacheFiles : undefined, autoCacheEnabled: input.cacheFiles !== false,
                 mediaType: '', status: 'queued', progress: { percent: 0 }, outputFileName: '',
                 outputFileSize: 0, outputPath: '', coverPath: '', error: '', createdAt: now,
                 updatedAt: now, completedAt: 0, remark: String(input.remark || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 4000), tags: [], songMetadata: null,

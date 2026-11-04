@@ -17,7 +17,10 @@ async function createFixture({ media = false, serviceWorker = false } = {}) {
     require('../../server/markdown-records').mountMarkdownReferenceRoute(f.app, {
         canRead: (sessionId, deviceId, grant) => sessionId === 'fixture-tunnel' &&
             ['device-A', 'markdown-browser-device'].includes(deviceId) && grant === 'fixture-proof',
-        file: (_sessionId, messageId) => records.find(record => record.id === messageId)?.fileInfo,
+        file: (_sessionId, messageId, fileId) => {
+            const record = records.find(item => item.id === messageId);
+            return record?.fileInfo || record?.markdownAttachments?.find(file => file.id === fileId);
+        },
         serverAsset: id => serverAssets.get(id)
     });
     const tunnel = createStreamingTunnels({ session: () => session, messages: () => records,
@@ -59,7 +62,11 @@ async function createFixture({ media = false, serviceWorker = false } = {}) {
         const cachedRecords=${JSON.stringify(records)};
         TunnelMarkdown.configureReferences({authorization:()=>({grant:'fixture-proof',deviceId:fixtureDevice}),
             canReadLocal:()=>Boolean(window.fixtureMarkdownCache), message:async id=>cachedRecords.find(item=>item.id===id),
-            file:id=>window.fixtureMarkdownCache.get(id), complete:(file,info)=>file.data.size===info.size});
+            file:id=>window.fixtureMarkdownCache.get(id), complete:(file,info)=>file.data.size===info.size,
+            cacheAttachment:({messageId,fileId,blob})=>{
+                if(cachedRecords.find(record=>record.id===messageId)?.markdownAttachments?.some(file=>file.id===fileId))
+                    return window.fixtureMarkdownCache?.put(fileId,{data:blob});
+            }});
         StreamingConsole.init(StreamingAppAdapter.create({state:{deviceId:fixtureDevice,deviceName:'Markdown 验收设备',sessionId:'fixture-tunnel',devices:new Map(),contacts:new Map()},
             listSessions:async()=>[{sessionId:'fixture-tunnel',shortCode:'ABCDE',remark:'隔离隧道'}],authorization:()=>({grant:'fixture-proof',deviceId:fixtureDevice}),home:()=>{},toast:text=>document.getElementById('fixture-status').textContent=text,
             message:async id=>(await (await fetch('/api/stream-fixture')).json()).records.find(item=>item.id===id),

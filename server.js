@@ -1063,7 +1063,7 @@ app.get('/manifest.webmanifest', (req, res) => {
 app.get('/api/server-assets/:assetId', async (req, res) => {
     const assetId = req.params.assetId;
     const asset = resolveTelegramServerAsset(assetId);
-    if (!asset) return res.status(404).json({ error: 'Asset not found' });
+    if (!asset || asset.markdownOwnerId) return res.status(404).json({ error: 'Asset not found' });
     try {
         const hadServerCopy = fs.existsSync(asset.path);
         await ensureTelegramServerAssetFile(asset);
@@ -2570,6 +2570,11 @@ const streamingTunnels = require('./server/streaming-tunnels').createStreamingTu
         if (current) return current.history.map(entry => entry.message);
         return infraStore?.hydrateTunnelHistory(sessionId, { limit: MAX_HISTORY_MESSAGES })?.messages || [];
     },
+    readAttachment: (source, start, end, signal) => {
+        const asset = resolveTelegramServerAsset(source.fileId);
+        if (asset?.sessionId !== source.sessionId || asset.markdownOwnerId !== source.messageId) throw Error('STREAM_SOURCE_MISSING');
+        return fs.createReadStream(asset.path, { start, end, signal });
+    },
     admitted: (sessionId, deviceId, grant) => isValidSessionId(sessionId) && tunnelAccess.verify(grant, sessionId, deviceId),
     capability: canUseTunnelCapability,
     publish: (sessionId, current, message, deviceId) => {
@@ -3737,6 +3742,7 @@ mountMarkdownReferenceRoute(app, {
         if (messageId === 'editor-assets') return live?.editorAssets?.get(fileId)?.metadata;
         if (live?.deletedMessageIds?.includes(messageId)) return null;
         const record = (live && getHistoryMessageEntry(live, messageId)?.message) || infraStore?.getHistoryMessage(sessionId, messageId);
+        if (record?.type === 'markdown') return record.markdownAttachments?.find(item => item.id === fileId && item.markdownOwnerId === messageId);
         return record?.type === 'file' ? record.fileInfo : record?.collection?.files?.find(item => item.id === fileId);
     },
     serverAsset: resolveTelegramServerAsset
@@ -4455,6 +4461,7 @@ function persistTelegramServerAsset(asset) {
         snsTaskId: sanitizeString(asset.snsTaskId || '', 80),
         youtubeVideoId: sanitizeString(asset.youtubeVideoId || '', 80),
         mediaKind: sanitizeString(asset.mediaKind || '', 40),
+        markdownOwnerId: asset.markdownOwnerId || '',
         fileId: asset.fileId || '',
         chatId: asset.chatId || asset.channelId || asset.telegramChatId || '',
         telegramMessageId: Number(asset.telegramMessageId) || 0,
@@ -4498,6 +4505,7 @@ function resolveTelegramServerAsset(assetId) {
         snsTaskId: sanitizeString(metadata.snsTaskId || '', 80),
         youtubeVideoId: sanitizeString(metadata.youtubeVideoId || '', 80),
         mediaKind: sanitizeString(metadata.mediaKind || '', 40),
+        markdownOwnerId: metadata.markdownOwnerId || '',
         fileId: typeof metadata.fileId === 'string' ? metadata.fileId : '',
         chatId: String(metadata.chatId || metadata.channelId || metadata.telegramChatId || ''),
         telegramMessageId: Number(metadata.telegramMessageId) || 0,
@@ -4614,12 +4622,55 @@ function removeTelegramAssetTemporaryFile(asset) {
 
 function removeConfirmedServerAssetFile(asset) {
     if (!asset?.cacheConfirmedAt || (telegramAssetReaders.get(asset.id) || 0) > 0) return false;
+    if (asset.markdownOwnerId) return false;
     if (asset.source === 'youtube-premium') return false;
     if (/^sns(?:-|$)/.test(String(asset.source || '')) && !isRecoverableSnsAsset(asset)) return false;
     if (!removeTelegramAssetTemporaryFile(asset)) return false;
     asset.temporaryFileRemovedAt = Date.now();
     persistTelegramServerAsset(asset);
     return true;
+}
+
+function removeMarkdownAttachmentAssets(sessionId, messageId, files) {
+    for (const file of files || []) {
+        if (file?.markdownOwnerId !== messageId) continue;
+        const asset = telegramServerAssets.get(file.id) || resolveTelegramServerAsset(file.id);
+        if (!asset || asset.sessionId !== sessionId || asset.markdownOwnerId !== messageId) continue;
+        fs.rmSync(asset.path, { force: true });
+        fs.rmSync(getTelegramAssetMetadataPath(asset.id), { force: true });
+        telegramServerAssets.delete(asset.id);
+    }
+}
+
+async function copyMarkdownAttachmentGroup(source, sourceSessionId, target, targetSessionId, findRecord) {
+    target.markdownAttachments = [];
+    const refs = new Map();
+    const copies = new Map();
+    const references = new Set(source.markdown.match(/tunnel-blob:[\w-]+\/[\w.-]+\/[\w.-]+/g));
+    for (const ref of references) {
+        const [scope, messageId, fileId] = ref.slice('tunnel-blob:'.length).split('/');
+        const record = scope === sourceSessionId && (messageId === source.id ? source : findRecord?.(messageId));
+        const file = record?.type === 'file' && record.fileInfo?.id === fileId ? record.fileInfo
+            : (record?.markdownAttachments || record?.collection?.files)?.find(item => item.id === fileId);
+        const asset = file?.isServerAsset && resolveTelegramServerAsset(fileId);
+        if (!asset || asset.sessionId !== sourceSessionId || Number(asset.size) !== Number(file.size) ||
+            (asset.markdownOwnerId || '') !== (file.markdownOwnerId || '') ||
+            (asset.markdownOwnerId && asset.markdownOwnerId !== messageId)) throw Error('markdown-attachment-missing');
+        const priorCopyId = copies.get(fileId);
+        if (priorCopyId) {
+            refs.set(ref, `tunnel-blob:${targetSessionId}/${target.id}/${priorCopyId}`);
+            continue;
+        }
+        const id = createServerAssetId();
+        const clone = { ...asset, id, path: path.join(TELEGRAM_ASSET_DIR, id), sessionId: targetSessionId,
+            markdownOwnerId: target.id, createdAt: Date.now(), cacheConfirmedAt: 0, cacheConfirmedBy: '', temporaryFileRemovedAt: 0 };
+        await fs.promises.copyFile(asset.path, clone.path, fs.constants.COPYFILE_EXCL);
+        target.markdownAttachments.push(createServerAssetFileInfo(clone));
+        persistTelegramServerAsset(clone);
+        copies.set(fileId, id);
+        refs.set(ref, `tunnel-blob:${targetSessionId}/${target.id}/${id}`);
+    }
+    target.markdown = source.markdown.replace(/tunnel-blob:[\w-]+\/[\w.-]+\/[\w.-]+/g, value => refs.get(value) || value);
 }
 
 function hydrateTelegramServerAssets() {
@@ -4631,6 +4682,12 @@ function hydrateTelegramServerAssets() {
         if (telegramServerAssets.has(assetId)) continue;
         const asset = resolveTelegramServerAsset(assetId);
         if (!asset) continue;
+        if (asset.markdownOwnerId && infraStore &&
+            !infraStore.getHistoryMessage(asset.sessionId, asset.markdownOwnerId)?.markdownAttachments?.some(file => file.id === asset.id)) {
+            try { removeMarkdownAttachmentAssets(asset.sessionId, asset.markdownOwnerId, [asset]); }
+            catch (error) { console.warn('Markdown attachment cleanup failed:', error.code || error.message); }
+            continue;
+        }
         restored += 1;
         if (asset.cacheConfirmedAt) removeConfirmedServerAssetFile(asset);
     }
@@ -6619,17 +6676,20 @@ function getHistoryMessageEntry(session, messageId) {
 }
 
 function replaceHistoryMessage(sessionId, session, message, reason = 'message-updated') {
+    if (!session) return false;
     const historyIndex = session.history.findIndex(entry => entry.message?.id === message.id);
     if (historyIndex < 0) return false;
     const historyMessage = createHistoryMessage(message);
     const size = Buffer.byteLength(JSON.stringify(historyMessage), 'utf8');
     const previous = session.history[historyIndex];
+    if (message.snsMarkdownRevision && (size > MAX_MESSAGE_SIZE ||
+        session.historySize - previous.size + size > MAX_HISTORY_SIZE)) throw Error('SNS_POST_CONTENT_TOO_LARGE');
     session.history[historyIndex] = { message: historyMessage, size };
     session.historySize = Math.max(0, session.historySize - previous.size + size);
     session.lastActivity = Date.now();
     persistHistoryAudit(sessionId, session, historyMessage, reason);
     emitToReadableSessionDevices(session, 'message-updated', { message: historyMessage });
-    scheduleSessionHistoryBroadcast(sessionId, reason, 500);
+    if (reason !== 'sns-post-markdown-progress') scheduleSessionHistoryBroadcast(sessionId, reason, 500);
     return true;
 }
 
@@ -7337,6 +7397,20 @@ async function analyzeSnsDownloadUrl(rawUrl, options = {}) {
         });
     }
 
+    if (options.manualFormat) {
+        const selected = await runYtDlpJson(normalized.url, {
+            noPlaylist: true, formatSelector: options.manualFormat, formatSelectionFallback: false,
+            allowIgnoreNoFormatsFallback: false, signal: options.signal, operation: 'sns-download-manual-format'
+        });
+        const formats = normalizeSnsYtDlpFormats(selected.requested_formats?.length ? selected.requested_formats : [selected], normalized.platform);
+        const mediaType = formats.some(format => ['video', 'video_audio'].includes(format.kind)) ? 'video'
+            : formats.some(format => format.kind === 'audio') ? 'audio' : '';
+        if (!mediaType) throw new Error('sns-download-media-unavailable');
+        const selection = buildSnsDefaultSelection(formats, mediaType);
+        selection.ids = getSelectedFormatIds(selected);
+        selection.formatSelector = options.manualFormat;
+        return { ...base, mediaType, selection, cacheHit };
+    }
     const requestedIds = Array.isArray(options.selectedFormatIds)
         ? options.selectedFormatIds.map(value => String(value || '').trim()).filter(Boolean)
         : [];
@@ -8221,6 +8295,7 @@ function createServerAssetFileInfo(asset, extra = {}) {
         timestamp: Date.now(), sender: TELEGRAM_BOT_DEVICE_ID, senderName: 'SNS 媒体文件',
         ownerDeviceId: TELEGRAM_BOT_DEVICE_ID, isAsset: false, isServerAsset: true,
         serverAssetUrl: `/api/server-assets/${asset.id}`,
+        ...(asset.markdownOwnerId ? { markdownOwnerId: asset.markdownOwnerId } : {}),
         ...extra
     };
 }
@@ -8241,6 +8316,8 @@ function buildSongRemark(fileName, metadata, probe) {
 function ensureGeneratedSnsMessage(sessionId, session, taskRecord) {
     const generatedMessage = taskRecord.generatedMessage;
     if (!generatedMessage?.id) throw new Error('sns-generated-message-missing');
+    if (session.deletedMessageIds?.includes(generatedMessage.id) ||
+        infraStore?.findDeletedHistoryIds(sessionId, [generatedMessage.id])?.length) throw new Error('sns-generated-record-deleted');
     const result = addToSessionHistory(sessionId, session, generatedMessage, {
         fromDeviceId: TELEGRAM_BOT_DEVICE_ID,
         source: generatedMessage.type === 'collection' ? 'sns-song-download' : 'sns-media-download'
@@ -8251,25 +8328,25 @@ function ensureGeneratedSnsMessage(sessionId, session, taskRecord) {
     return generatedMessage;
 }
 
-async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
+async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId, markdownOwnerId = '') {
     const session = sessions.get(sessionId);
     const entry = getHistoryMessageEntry(session, messageId);
     const message = entry?.message;
     let item = message?.snsMediaItems?.find(candidate => candidate?.id === mediaItemId);
     if (!session || !message || !item) throw new Error('sns-media-not-found');
     if (item.mediaKind === 'unsupported') throw new Error('sns-media-unsupported');
-    if (item.generatedMessageId && (item.serverAssetId || item.serverAssetIds?.length) && getHistoryMessageEntry(session, item.generatedMessageId)) return item;
+    if (!markdownOwnerId && item.generatedMessageId && (item.serverAssetId || item.serverAssetIds?.length) && getHistoryMessageEntry(session, item.generatedMessageId)) return item;
     const maxDuration = Math.max(60, Number(process.env.SOCIAL_MAX_DURATION_SECONDS || 6 * 60 * 60));
     if (Number(item.duration) > maxDuration) throw new Error('sns-media-duration-limit-exceeded');
 
-    const taskId = createStableSnsId('sns-task', sessionId, messageId, mediaItemId, item.youtubeVideoId || item.mediaUrl);
-    const taskKey = `${sessionId}:${messageId}:${mediaItemId}`;
+    const taskId = createStableSnsId('sns-task', sessionId, messageId, mediaItemId, item.youtubeVideoId || item.mediaUrl, ...(markdownOwnerId ? [markdownOwnerId] : []));
+    const taskKey = `${sessionId}:${messageId}:${mediaItemId}:${markdownOwnerId}`;
     if (snsMediaTasks.has(taskKey)) return snsMediaTasks.get(taskKey);
 
     const task = (async () => {
         const directMediaUrl = /^https?:\/\/(?:(?:www|mobile|m)\.)?(?:twitter|x)\.com\//i.test(item.sourceUrl || '')
             ? require('./server/twitter-post-media').directVideoUrl({ url: item.directMediaUrl }) : '';
-        let taskRecord = readSnsTask(taskId) || {
+        let taskRecord = (!markdownOwnerId && readSnsTask(taskId)) || {
             id: taskId,
             sessionId,
             sourceMessageId: messageId,
@@ -8285,7 +8362,9 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
             coverAssetId: item.mediaKind === 'song' ? createServerAssetId() : '',
             videoAssetId: item.mediaKind === 'song' ? '' : createServerAssetId()
         };
-        taskRecord = persistSnsTask({
+        const persistTask = markdownOwnerId ? value => value : persistSnsTask;
+        const registerAsset = asset => persistTelegramServerAsset(markdownOwnerId ? Object.assign(asset, { markdownOwnerId, snsTaskId: '' }) : asset);
+        taskRecord = persistTask({
             ...taskRecord,
             playlistItem: item.sourceType === 'collection'
                 ? Math.max(1, Math.trunc(Number(item.playlistItem) || Number(item.mediaIndex) + 1 || 1))
@@ -8293,6 +8372,7 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
         });
         let lastStateEmit = 0;
         const updateItem = (patch, reason = 'sns-media-status') => {
+            if (markdownOwnerId) return item;
             const now = Date.now();
             if (reason === 'sns-media-progress' && now - lastStateEmit < 1200) return item;
             lastStateEmit = now;
@@ -8303,7 +8383,7 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
             return item;
         };
         const updateTask = patch => {
-            taskRecord = persistSnsTask({ ...taskRecord, ...patch });
+            taskRecord = persistTask({ ...taskRecord, ...patch });
             return taskRecord;
         };
         const updateStage = stage => {
@@ -8358,8 +8438,8 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
                         sourceUrl: item.sourceUrl, sourceMessageId: messageId, snsMediaItemId: mediaItemId,
                         snsTaskId: taskId, youtubeVideoId: item.youtubeVideoId, mediaKind: 'song'
                     };
-                    persistTelegramServerAsset(coverAsset);
-                    persistTelegramServerAsset(audioAsset);
+                    registerAsset(coverAsset);
+                    registerAsset(audioAsset);
                     const remark = buildSongRemark(song.fileName, song.metadata, song.probe);
                     const timestamp = Date.now();
                     taskRecord.generatedMessage = {
@@ -8412,7 +8492,7 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
                         sourceUrl: item.mediaUrl || item.sourceUrl, sourceMessageId: messageId, snsMediaItemId: mediaItemId,
                         snsTaskId: taskId, youtubeVideoId: item.youtubeVideoId, mediaKind: requiredStream
                     };
-                    persistTelegramServerAsset(asset);
+                    registerAsset(asset);
                     const remark = String(item.sourceUrl || item.mediaUrl || '').slice(0, TELEGRAM_REMARK_MAX_LENGTH);
                     taskRecord.generatedMessage = {
                         id: taskRecord.generatedMessageId, type: 'file',
@@ -8424,6 +8504,7 @@ async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId) {
                 updateTask({ status: 'processed', generatedMessage: taskRecord.generatedMessage });
             }
 
+            if (markdownOwnerId) return taskRecord.generatedMessage;
             const generatedMessage = ensureGeneratedSnsMessage(sessionId, session, taskRecord);
             updateTask({ status: 'ready', generatedMessage, error: '' });
             const resultFileName = generatedMessage.type === 'collection'
@@ -9210,6 +9291,7 @@ function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast'
 
 const snsPostPublisher = require('./server/sns-post-markdown').createTunnelSnsPostPublisher({
     assetDir: TELEGRAM_ASSET_DIR,
+    trackProgress: true,
     session: id => sessions.get(id),
     record: (sessionId, id) => getHistoryMessageEntry(sessions.get(sessionId), id)?.message,
     authorize: (sessionId, deviceId) => {
@@ -9217,8 +9299,11 @@ const snsPostPublisher = require('./server/sns-post-markdown').createTunnelSnsPo
         if (!session || !['read', 'sendMarkdown', 'sendFile'].every(capability => canUseTunnelCapability(session, deviceId, capability))) throw Error('permission-denied');
     },
     metadata: runYtDlpJson, cookieFileForUrl: getSnsCookieFileForUrl, buildItem: buildSnsMediaItemFromMeta,
-    update: (sessionId, message) => replaceHistoryMessage(sessionId, sessions.get(sessionId), message, 'sns-post-metadata'),
+    update: (sessionId, message) => replaceHistoryMessage(sessionId, sessions.get(sessionId), message,
+        message.type !== 'markdown' ? 'sns-post-metadata' : message.snsMarkdownProgress && message.snsMarkdownProgress.stage !== 'failed'
+            ? 'sns-post-markdown-progress' : 'sns-post-markdown'),
     acquire: fetchSnsMediaIntoTunnel, registerAsset: persistTelegramServerAsset, fileInfo: createServerAssetFileInfo,
+    cleanup: (sessionId, messageId) => removeMarkdownAttachmentAssets(sessionId, messageId, [...telegramServerAssets.values()]),
     sender: () => ({ sender: TELEGRAM_BOT_DEVICE_ID, senderName: 'SNS 媒体文件' }),
     publish: (sessionId, message, deviceId) => {
         const session = sessions.get(sessionId);
@@ -10130,6 +10215,9 @@ io.on('connection', (socket) => {
             if (message.sender !== currentDevice) return;
             const session = sessions.get(sessionId);
             if (!session || !session.devices.has(currentDevice)) return;
+            delete message.markdownAttachments;
+            delete message.snsMarkdownProgress;
+            delete message.snsMarkdownRevision;
             const requiredCapability = tunnelMessageCapabilities(message).find(capability => !canUseTunnelCapability(session, currentDevice, capability));
             if (requiredCapability) {
                 return socket.emit('permission-denied', { capability: requiredCapability });
@@ -10189,7 +10277,8 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('forward-message', (data, ack) => {
+    socket.on('forward-message', async (data, ack) => {
+        let pendingGroup;
         try {
             const targetSessionId = sanitizeString(data?.targetSessionId, 80);
             const message = data?.message;
@@ -10227,6 +10316,35 @@ io.on('connection', (socket) => {
                 message.sessionId = targetSessionId;
                 if (message.forwardedFrom) message.forwardedFrom = { ...message.forwardedFrom, sessionId: currentSession };
             }
+            const sourceId = message.forwardedFrom?.messageId;
+            const sourceRecord = message.type === 'markdown' && sourceId && getHistoryMessageEntry(sourceSession, sourceId)?.message;
+            if (sourceRecord?.snsMarkdownProgress || message.snsMarkdownProgress) return ack?.({ ok: false, error: 'SNS_POST_NOT_READY' });
+            delete message.markdownAttachments;
+            delete message.snsMarkdownRevision;
+            if (sourceRecord?.type === 'markdown' && typeof sourceRecord.markdown === 'string' && (sourceRecord.markdownAttachments?.length ||
+                (sourceRecord.snsAcquisition?.source === 'sns-post-markdown' && sourceRecord.markdown.includes('tunnel-blob:')))) {
+                const targetDeviceId = sanitizeString(data.targetDeviceId, 80);
+                if (!isValidDeviceId(message.id) || !tunnelAccess.verify(data.targetAccessGrant, targetSessionId, targetDeviceId)) {
+                    return ack?.({ ok: false, error: 'target-tunnel-access-required' });
+                }
+                targetSenderId = targetDeviceId;
+                const sourceSessionId = currentSession;
+                const existing = getHistoryMessageEntry(targetSession, message.id)?.message;
+                const permitted = () => sessions.get(sourceSessionId) === sourceSession && currentSession === sourceSessionId &&
+                    tunnelAccess.verify(data.targetAccessGrant, targetSessionId, targetDeviceId) &&
+                    sourceSession.devices.has(currentDevice) && getHistoryMessageEntry(sourceSession, sourceId)?.message === sourceRecord &&
+                    canUseTunnelCapability(sourceSession, currentDevice, 'read') &&
+                    ['sendMarkdown', 'sendFile'].every(capability => canUseTunnelCapability(targetSession, targetDeviceId, capability));
+                if (!permitted()) return ack?.({ ok: false, error: 'permission-denied' });
+                if (existing?.sender === currentDevice && existing.forwardedFrom?.sessionId === sourceSessionId &&
+                    existing.forwardedFrom?.messageId === sourceId) return ack?.({ ok: true, stored: false, message: existing });
+                message.sessionId = targetSessionId;
+                message.forwardedFrom = { sessionId: sourceSessionId, messageId: sourceId };
+                pendingGroup = { sessionId: targetSessionId, message };
+                const findSourceRecord = id => getHistoryMessageEntry(sourceSession, id)?.message || infraStore.getHistoryMessage(sourceSessionId, id);
+                await copyMarkdownAttachmentGroup(sourceRecord, sourceSessionId, message, targetSessionId, findSourceRecord);
+                if (!permitted()) return ack?.({ ok: false, error: 'permission-denied' });
+            }
             if (tunnelMessageCapabilities(message).some(capability => !canUseTunnelCapability(targetSession, targetSenderId, capability))) {
                 return typeof ack === 'function' && ack({ ok: false, error: 'permission-denied' });
             }
@@ -10237,14 +10355,25 @@ io.on('connection', (socket) => {
                 source: 'cross-tunnel-forward',
                 auditFileAssets: getSessionAuditFileAssets(sourceSession)
             });
+            const grouped = Boolean(pendingGroup);
+            if (grouped && !historyResult.stored) return ack?.({ ok: false, error: 'forward-record-not-stored' });
+            pendingGroup = null;
             if (forwardingFiles && historyResult.stored) targetSession.history.find(entry => entry.message.id === message.id).forwardedSourceSessionId = currentSession;
             if (forwardingFiles && !historyResult.stored && !['duplicate','duplicate-file'].includes(historyResult.reason)) return typeof ack === 'function' && ack({ok:false,error:'forward-record-not-stored',reason:historyResult.reason || ''});
             emitToReadableSessionDevices(targetSession, 'message', { message });
             scheduleSessionHistoryBroadcast(targetSessionId, 'cross-tunnel-forward');
-            if (typeof ack === 'function') ack({ ok: true, stored: Boolean(historyResult.stored), reason:historyResult.reason || '', ...(forwardingFiles ? {message} : {}) });
+            if (typeof ack === 'function') ack({ ok: true, stored: Boolean(historyResult.stored), reason:historyResult.reason || '', ...(forwardingFiles || grouped ? {message} : {}) });
         } catch (err) {
+            if (err.message === 'markdown-attachment-missing' || (pendingGroup && err.code === 'ENOENT')) {
+                return ack?.({ ok: false, error: 'markdown-attachment-missing' });
+            }
             console.error('forward-message error:', err);
             if (typeof ack === 'function') ack({ ok: false, error: 'forward-failed' });
+        } finally {
+            if (pendingGroup) {
+                try { removeMarkdownAttachmentAssets(pendingGroup.sessionId, pendingGroup.message.id, pendingGroup.message.markdownAttachments); }
+                catch (error) { console.warn('Markdown forward cleanup failed:', error.code || error.message); }
+            }
         }
     });
 
@@ -10268,17 +10397,28 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('delete-message', data => {
+    socket.on('delete-message', (data, ack) => {
         try {
             const { sessionId, messageId } = data || {};
-            if (sessionId !== currentSession || !isValidDeviceId(messageId)) return;
+            if (sessionId !== currentSession) return ack?.({ ok: false, error: 'invalid-session' });
             const session = sessions.get(sessionId);
-            if (!session || !session.devices.has(currentDevice)) return;
+            if (!session || !session.devices.has(currentDevice)) return ack?.({ ok: false, error: 'invalid-session' });
             if (!canUseTunnelCapability(session, currentDevice, 'delete')) {
-                return socket.emit('permission-denied', { capability: 'delete' });
+                socket.emit('permission-denied', { capability: 'delete' });
+                return ack?.({ ok: false, error: 'permission-denied' });
             }
 
+            if (typeof messageId !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(messageId)) {
+                return ack?.({ ok: false, error: 'invalid-record' });
+            }
             const historyIndex = session.history.findIndex(entry => entry.message.id === messageId);
+            const record = session.history[historyIndex]?.message || infraStore?.getHistoryMessage(sessionId, messageId);
+            // Legacy SNS images formatted a hash as an ID without setting UUID version bits.
+            if (!isValidDeviceId(messageId) && record?.snsAcquisition?.source !== 'sns-post-image' &&
+                !session.deletedMessageIds?.includes(messageId) && !infraStore?.findDeletedHistoryIds(sessionId, [messageId])?.length) {
+                return ack?.({ ok: false, error: 'invalid-record' });
+            }
+            const attachments = record?.markdownAttachments;
             // The sender may delete immediately while its record or audit write is still in flight.
             // Keep a tombstone even when neither store has seen this id yet, so a late upload
             // or history reconciliation cannot restore the deleted record.
@@ -10305,7 +10445,6 @@ io.on('connection', (socket) => {
                 if (session.deletedMessageIds.length > MAX_HISTORY_MESSAGES) session.deletedMessageIds.shift();
             }
             session.lastActivity = Date.now();
-            emitToReadableSessionDevices(session, 'message-deleted', { messageId }, currentDevice);
             historyLog('message-deleted', {
                 sessionId,
                 deviceId: currentDevice,
@@ -10318,12 +10457,24 @@ io.on('connection', (socket) => {
                 historyCount: session.history.length
             });
             const auditDeletedAt = session.lastActivity;
+            const deletingDevice = currentDevice;
             enqueueInfraAudit(
-                () => infraStore?.markHistoryDeleted?.(sessionId, messageId, auditDeletedAt, { allowMissing: true }),
-                `history-delete:${sessionId}:${messageId}`
+                () => {
+                    if (infraStore?.markHistoryDeleted?.(sessionId, messageId, auditDeletedAt, { allowMissing: true }) === false) throw Error('delete-not-persisted');
+                    if (attachments?.length) removeMarkdownAttachmentAssets(sessionId, messageId, attachments);
+                    return true;
+                },
+                typeof ack === 'function' ? '' : `history-delete:${sessionId}:${messageId}`, {
+                    onSuccess: () => {
+                        emitToReadableSessionDevices(session, 'message-deleted', { messageId }, deletingDevice);
+                        ack?.({ ok: true });
+                    },
+                    onFinalFailure: () => ack?.({ ok: false, error: 'delete-not-confirmed' })
+                }
             );
         } catch (err) {
             console.error('delete-message error:', err);
+            ack?.({ ok: false, error: 'delete-not-confirmed' });
         }
     });
 
@@ -10331,13 +10482,22 @@ io.on('connection', (socket) => {
         try {
             const { sessionId, message } = data || {};
             if (sessionId !== currentSession || !message || !isValidDeviceId(message.id)) return;
-            if (!['text', 'rich', 'file', 'collection'].includes(message.type)) return;
+            if (!['text', 'rich', 'markdown', 'file', 'collection'].includes(message.type)) return;
             const session = sessions.get(sessionId);
             if (!session || !session.devices.has(currentDevice)) return;
 
             const historyIndex = session.history.findIndex(entry => entry.message.id === message.id);
             if (historyIndex < 0) return;
             const existingMessage = session.history[historyIndex].message;
+            if (existingMessage.type === 'markdown' || message.type === 'markdown') {
+                if (existingMessage.type !== 'markdown' || message.type !== 'markdown' || typeof message.favorite !== 'boolean' ||
+                    !canUseTunnelCapability(session, currentDevice, 'read')) return;
+                replaceHistoryMessage(sessionId, session, { ...existingMessage, favorite: message.favorite,
+                    favoritedAt: message.favorite ? Date.now() : 0 }, 'message-favorite-updated');
+                return;
+            }
+            delete message.snsMarkdownProgress;
+            delete message.snsMarkdownRevision;
             if (existingMessage.type === 'rich' && message.content !== existingMessage.content) {
                 return socket.emit('permission-denied', { capability: 'versionedRichEdit' });
             }
@@ -10409,7 +10569,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('sns-post-markdown', (data, ack) => {
+    socket.on('sns-post-markdown', async (data, ack) => {
         const respond = typeof ack === 'function' ? ack : () => {};
         try {
             if (!checkMessageRate()) return respond({ ok: false, error: 'rate-limited' });
@@ -10417,8 +10577,9 @@ io.on('connection', (socket) => {
             if (sessionId !== currentSession || !sessions.get(sessionId)?.devices.has(currentDevice)) return respond({ ok: false, error: 'invalid-session' });
             if (!isValidDeviceId(messageId) || typeof sourceId !== 'string' || sourceId.length > 80) return respond({ ok: false, error: 'SNS_POST_SOURCE_MISSING' });
             const job = snsPostPublisher.start({ sessionId, messageId, sourceId, deviceId: currentDevice });
+            await job.ready;
             respond({ ok: true, started: job.started, messageId: job.id });
-            job.promise.then(message => socket.emit('sns-post-markdown-result', { ok: true, messageId: message.id, sessionId }),
+            if (job.started) job.promise.then(message => socket.emit('sns-post-markdown-result', { ok: true, messageId: message.id, sessionId }),
                 error => socket.emit('sns-post-markdown-result', { ok: false, error: sanitizeString(sanitizeSnsDownloadError(error), 240), sessionId }));
         } catch (error) { respond({ ok: false, error: sanitizeString(sanitizeSnsDownloadError(error), 240) }); }
     });
@@ -10530,6 +10691,7 @@ io.on('connection', (socket) => {
             if (!canUseTunnelCapability(session, currentDevice, 'read') || !canUseTunnelCapability(session, currentDevice, 'sendMarkdown')) return respond({ ok: false, error: 'permission-denied' });
             const index = session.history.findIndex(entry => entry.message.id === data.messageId && entry.message.type === 'markdown');
             if (index < 0) return respond({ ok: false, error: 'message-not-found' });
+            if (session.history[index].message.snsMarkdownProgress) return respond({ ok: false, error: 'SNS_POST_NOT_READY' });
             const previous = session.history[index], result = editMarkdownRecord(previous.message, { content: data.content, baseVersion: data.baseVersion,
                 deviceId: currentDevice, deviceName: session.devices.get(currentDevice)?.deviceName || '', maxBytes: MAX_EDITOR_CONTENT_SIZE });
             if (!result.ok || result.message === previous.message) return respond(result);
@@ -10570,7 +10732,7 @@ io.on('connection', (socket) => {
                 session.deletedMessageIds = session.deletedMessageIds.slice(-MAX_HISTORY_MESSAGES);
             }
 
-            for (const message of candidates) {
+            for (let message of candidates) {
                 if (!message || !isValidDeviceId(message.id) ||
                     !['text', 'rich', 'markdown', 'file', 'collection'].includes(message.type) ||
                     message.type === 'markdown' && typeof message.markdown !== 'string' ||
@@ -10583,9 +10745,29 @@ io.on('connection', (socket) => {
                     rejectedCount++;
                     continue;
                 }
+                if (message.type === 'markdown' || message.markdownAttachments || message.snsMarkdownProgress || message.snsMarkdownRevision) {
+                    // A browser snapshot cannot create or change server-owned attachments.
+                    const live = getHistoryMessageEntry(session, message.id)?.message;
+                    const saved = !live && infraStore?.getHistoryMessage(sessionId, message.id);
+                    if (saved?.snsMarkdownRevision) {
+                        message = saved;
+                        if (saved.snsMarkdownProgress && saved.snsMarkdownProgress.stage !== 'failed' && !snsPostPublisher.isRunning(sessionId, saved.id)) {
+                            message = { ...saved, snsMarkdownRevision: saved.snsMarkdownRevision + 1,
+                                snsMarkdownProgress: { ...saved.snsMarkdownProgress, stage: 'failed', error: 'SNS_POST_INTERRUPTED' } };
+                        }
+                    } else if (saved?.markdownAttachments?.length || !live && (message.snsMarkdownRevision || message.snsMarkdownProgress)) {
+                        rejectedCount++;
+                        continue;
+                    } else {
+                        delete message.markdownAttachments;
+                        delete message.snsMarkdownProgress;
+                        delete message.snsMarkdownRevision;
+                    }
+                }
                 if (message.type === 'markdown' && canUseTunnelCapability(session, currentDevice, 'read') && canUseTunnelCapability(session, currentDevice, 'sendMarkdown')) {
                     const index = session.history.findIndex(entry => entry.message.id === message.id);
-                    const previous = session.history[index], recovered = previous && recoverMarkdownRecord(previous.message, message);
+                    const previous = session.history[index];
+                    const recovered = previous && !previous.message.snsMarkdownProgress && recoverMarkdownRecord(previous.message, message);
                     if (recovered) {
                         const size = Buffer.byteLength(JSON.stringify(recovered), 'utf8');
                         if (size <= MAX_MESSAGE_SIZE && session.historySize - previous.size + size <= MAX_HISTORY_SIZE) {
