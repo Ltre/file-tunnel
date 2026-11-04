@@ -25,6 +25,7 @@ const SCRIPT_SOURCES = [
   'client/qrcode-1.0.0.min.js',
   'client/sns-post-i18n.js',
   'client/sns-post-markdown.js',
+  'client/browser-logs.js',
   'client/tunnel-entry.js',
   'app.js',
   'client/theme-preference.js',
@@ -44,6 +45,9 @@ const SCRIPT_SOURCES = [
   'client/telegram-content.js',
   'client/telegram-target-forward.js',
   'client/admin-layout.js',
+  'client/admin-overview.js',
+  'client/admin-tunnel-permissions.js',
+  'client/tunnel-access-editor.js',
   'client/data-backup.js',
   'client/data-backup-i18n.js',
   'client/admin-records.js',
@@ -491,9 +495,10 @@ async function writeGeneratedConfig(outRoot, profile, release) {
 async function buildServiceWorker(outRoot, buildId, assets, styles) {
   const raw = await fs.readFile(path.join(ROOT, 'service-worker.js'), 'utf8');
   const adminOnly = new Set(['client/admin-records.js', 'client/admin-layout.js', 'client/data-backup.js', 'client/data-backup-i18n.js', 'client/s3-management.js', 'client/media-library.js', 'client/media-task-link.js',
+    'client/admin-overview.js', 'client/admin-tunnel-permissions.js', 'client/tunnel-access-editor.js',
     'client/vendor/web-markdown/marked-18.0.14.umd.js', 'client/vendor/web-markdown/purify-3.4.16.min.js']);
   const assetShell = [...Object.entries(assets).filter(([source]) => !adminOnly.has(source)).map(([, asset]) => asset),
-    ...Object.entries(styles).filter(([page]) => !['s3-management', 'media-library', 'system-backup'].includes(page)).map(([, asset]) => asset)].sort();
+    ...Object.entries(styles).filter(([page]) => !['s3-management', 'media-library', 'system-backup', 'admin-tunnels', 'admin-tunnel-permissions'].includes(page)).map(([, asset]) => asset)].sort();
   const pageShell = Object.entries(PAGE_ROUTES).filter(([page]) => !['media-library.html', 'system-backup.html'].includes(page)).flatMap(([, routes]) => routes);
   const appShell = Array.from(new Set([
     ...pageShell,

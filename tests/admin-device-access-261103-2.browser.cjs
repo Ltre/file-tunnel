@@ -17,6 +17,81 @@ before(async()=>{
 });
 after(async()=>{await browser?.close();if(server){server.closeAllConnections();await new Promise(r=>server.close(r));}});
 async function open(t,query=''){const page=await browser.newPage({locale:'zh-CN',viewport:{width:1000,height:480}});const errors=[];page.on('pageerror',e=>errors.push(e.message));t.after(async()=>{await page.close();assert.deepEqual(errors,[]);});await page.goto(base+'/pages/admin-tunnel-permissions.html'+query);return page;}
+async function openTouchAdmin(t) {
+    const context = await browser.newContext({locale:'zh-CN', viewport:{width:390,height:480}, isMobile:true, hasTouch:true});
+    t.after(() => context.close());
+    const page = await context.newPage();
+    await page.goto(base+'/admin?view='+encodeURIComponent('/admin/tunnel-permissions'));
+    const frame = page.frameLocator('#admin-content');
+    await frame.locator('.tunnel-access-device').first().waitFor();
+    return { page, frame };
+}
+test('selecting a device brings the loaded permission editor into the mobile viewport', async t => {
+    const { page, frame } = await openTouchAdmin(t);
+    await frame.locator('#tunnelAccessEditor').evaluate(node => {
+        const scroll = node.scrollIntoView.bind(node);
+        node.scrollIntoView = options => {
+            node.dataset.scrollBehavior = options.behavior;
+            scroll(options);
+        };
+    });
+    await frame.locator('.tunnel-access-device').first().tap();
+    await page.waitForFunction(() => {
+        const doc = document.getElementById('admin-content').contentDocument;
+        const heading = doc?.querySelector('.tunnel-access-heading')?.getBoundingClientRect();
+        return heading && heading.top >= 0 && heading.bottom <= doc.documentElement.clientHeight;
+    }, null, {timeout:3000});
+    assert.equal(await frame.locator('#tunnelAccessEditor').getAttribute('data-scroll-behavior'), 'smooth');
+});
+test('device selection leaves the scroll position alone when most of the permissions are already visible', async t => {
+    const page = await open(t);
+    await page.setViewportSize({width:1280,height:720});
+    await page.evaluate(() => {
+        const original = Element.prototype.scrollIntoView;
+        window.permissionScrolls = 0;
+        Element.prototype.scrollIntoView = function (...args) {
+            if (this.id === 'tunnelAccessEditor') window.permissionScrolls++;
+            return original.apply(this,args);
+        };
+    });
+    await page.locator('.tunnel-access-device').first().click();
+    await page.locator('.tunnel-access-record').waitFor();
+    assert.equal(await page.evaluate(() => window.permissionScrolls), 0);
+
+    await page.setViewportSize({width:390,height:720});
+    const position = await page.locator('#tunnelAccessEditor').evaluate(node => {
+        window.scrollTo(0, node.getBoundingClientRect().top + window.scrollY - 140);
+        return window.scrollY;
+    });
+    assert.ok(position > 0);
+    await page.locator(`.tunnel-access-device[data-device-id="${members[1].deviceId}"]`).evaluate(button => button.click());
+    assert.equal(await page.evaluate(() => window.scrollY), position, 'loading another device must keep the existing scroll position');
+    await page.waitForFunction(id => document.querySelector('.tunnel-access-heading')?.textContent.includes(id), members[1].deviceId);
+    assert.equal(await page.evaluate(() => window.permissionScrolls), 0);
+});
+test('a touch swipe at the bottom of the device list scrolls the permissions document', async t => {
+    const { page, frame } = await openTouchAdmin(t);
+    await frame.locator('.tunnel-access-device').first().tap();
+    await frame.locator('.tunnel-access-record').waitFor();
+    const panel = frame.locator('.tunnel-access-device-options');
+    await panel.evaluate(node => {
+        node.ownerDocument.scrollingElement.scrollTop = 0;
+        node.scrollTop = node.scrollHeight;
+    });
+    const box = await panel.boundingBox();
+    const viewport = await page.locator('#admin-content').boundingBox();
+    const x = Math.round(box.x + box.width / 2);
+    const y = Math.floor(Math.min(box.y + box.height, viewport.y + viewport.height) - 15);
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send('Input.dispatchTouchEvent', { type:'touchStart', touchPoints:[{x,y}] });
+    for (let step = 1; step <= 8; step++) {
+        await page.waitForTimeout(16);
+        await cdp.send('Input.dispatchTouchEvent', { type:'touchMove', touchPoints:[{x,y:y-step*12}] });
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type:'touchEnd', touchPoints:[] });
+    const outerScroll = await panel.evaluate(node => node.ownerDocument.scrollingElement.scrollTop);
+    assert.ok(outerScroll > 0, `touch input must move the permissions document, got ${outerScroll}px`);
+});
 test('the short back-office viewport can scroll to all controls instead of clipping below the iframe',async t=>{
     const page=await open(t);await page.waitForFunction(()=>document.querySelectorAll('.tunnel-access-record,.tunnel-access-device').length>=96);
     await page.mouse.move(10,350);await page.mouse.wheel(0,10000);await page.waitForTimeout(100);
@@ -73,11 +148,30 @@ test('manual device ID wraps and matches its adjacent device block on wide and n
 });
 test('the real back-office iframe shell allows scrolling down to permissions and back to both selection rows',async t=>{
     const page=await open(t);await page.goto(base+'/admin?view='+encodeURIComponent('/admin/tunnel-permissions'));
-    const frame=page.frameLocator('#admin-content');await frame.locator('.tunnel-access-device').first().click();await frame.locator('[data-capability]').first().waitFor();
-    await page.mouse.move(300,350);await page.mouse.wheel(0,10000);await page.waitForTimeout(100);
-    assert.equal(await frame.getByRole('button',{name:'保存设备权限',exact:true}).isVisible(),true);
-    const save=await frame.getByRole('button',{name:'保存设备权限',exact:true}).boundingBox();assert.ok(save.y<480);
-    await page.mouse.wheel(0,-10000);await page.waitForTimeout(100);const top=await frame.locator('#accessTunnelSelect').boundingBox();assert.ok(top.y>0&&top.y<480);
+    const frame=page.frameLocator('#admin-content');
+    await frame.locator('#tunnelAccessEditor').evaluate(node => {
+        const scroll = node.scrollIntoView.bind(node);
+        node.scrollIntoView = options => {
+            node.ownerDocument.addEventListener('scrollend', () => { node.dataset.scrollSettled = 'true'; }, {once:true});
+            scroll(options);
+        };
+    });
+    await frame.locator('.tunnel-access-device').first().click();
+    await frame.locator('#tunnelAccessEditor[data-scroll-settled=true]').waitFor({timeout:3000});
+    await page.waitForFunction(() => {
+        const doc = document.getElementById('admin-content').contentDocument;
+        const save = [...doc.querySelectorAll('#tunnelAccessEditor button')].find(button => button.textContent === '保存设备权限');
+        const rect = save?.getBoundingClientRect();
+        return rect && rect.top >= 0 && rect.bottom <= doc.documentElement.clientHeight;
+    },null,{timeout:3000});
+    const viewport = await page.locator('#admin-content').boundingBox();
+    await page.mouse.move(viewport.x+8,viewport.y+viewport.height/2);
+    await page.mouse.wheel(0,-1000);
+    await page.waitForFunction(() => {
+        const doc = document.getElementById('admin-content').contentDocument;
+        const select = doc.getElementById('accessTunnelSelect')?.getBoundingClientRect();
+        return select && select.top >= 0 && select.bottom <= doc.documentElement.clientHeight;
+    },null,{timeout:3000});
 });
 test('the device selection area shows at most three rows and scrolls independently of the permissions document',async t=>{
     const page=await open(t);await page.locator('.tunnel-access-device').first().waitFor();

@@ -30,6 +30,9 @@ test('发布脚本改写Worker及动态QRCode真实URL，补齐工坊、通知�
         + slice(build, 'function assetNameForScript(', 'function extractPageStyles('), context);
     const result = await context.buildScripts('/output', {});
     for (const source of ['client/cache-store-worker.js', 'client/disk-content-hash-worker.js', 'client/web-zip-runtime.js', 'client/web-workshop.js', 'client/notification-center.js', 'client/telegram-content.js', 'client/telegram-target-forward.js', 'client/s3-management.js']) assert.ok(result.assets[source]);
+    for (const source of ['client/browser-logs.js', 'client/admin-overview.js', 'client/admin-tunnel-permissions.js', 'client/tunnel-access-editor.js']) {
+        assert.ok(result.assets[source], `${source} must be present in the release`);
+    }
     const cacheScript = writes.get(path.join('/output', result.assets['client/cache-store.js'].slice(1)));
     assert.ok(cacheScript.includes(`new Worker('${result.assets['client/cache-store-worker.js']}')`));
     assert.ok(!cacheScript.includes("new Worker('/client/cache-store-worker.js')"));
@@ -47,10 +50,13 @@ test('构建SW同步改写网络优先脚本路径及CSS资源，S3管理资源�
     vm.runInContext(slice(build, 'const MARKDOWN_SUPPORT_ASSETS = [', 'const SCRIPT_SOURCES = [')
         + slice(build, 'function escapeRegExp(', 'function extractPageStyles(')
         + slice(build, 'async function buildServiceWorker(', 'function sizeStat('), context);
-    const scripts = { 'app.js': '/assets/app.0123456789.min.js', 'client/web-zip-runtime.js': '/assets/web-zip-runtime.0123456789.min.js', 'client/s3-management.js': '/assets/s3-management.0123456789.min.js' };
+    const scripts = { 'app.js': '/assets/app.0123456789.min.js', 'client/web-zip-runtime.js': '/assets/web-zip-runtime.0123456789.min.js', 'client/s3-management.js': '/assets/s3-management.0123456789.min.js',
+        'client/browser-logs.js': '/assets/browser-logs.0123456789.min.js', 'client/admin-tunnel-permissions.js': '/assets/admin-tunnel-permissions.0123456789.min.js' };
     const styles = { index: '/assets/index.0123456789.min.css', 's3-management': '/assets/s3-management.0123456789.min.css' };
     const result = await context.buildServiceWorker('/output', 'test-build', scripts, styles);
     assert.ok(result.appShell.includes(styles.index));
+    assert.ok(result.appShell.includes(scripts['client/browser-logs.js']));
+    assert.ok(!result.appShell.includes(scripts['client/admin-tunnel-permissions.js']));
     assert.ok(!result.appShell.includes(scripts['client/s3-management.js']));
     assert.ok(!result.appShell.includes(styles['s3-management']));
     assert.ok(!written.includes('/client/web-zip-runtime.js'));

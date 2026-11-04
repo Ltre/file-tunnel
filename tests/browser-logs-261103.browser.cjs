@@ -10,6 +10,28 @@ before(async()=>{
 });
 after(async()=>{await browser?.close();if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}});
 async function pageFor(t){const context=await browser.newContext({locale:'zh-CN'});t.after(()=>context.close());const page=await context.newPage();await page.goto(base+'/case');return page;}
+test('a foreground log burst persists in small transactions in the original order', async t => {
+    const page = await pageFor(t);
+    const result = await page.evaluate(async () => {
+        const batches = new Map(), add = IDBObjectStore.prototype.add;
+        IDBObjectStore.prototype.add = function (...args) {
+            if (this.name === 'entries' && this.transaction.db.name === 'TunnelBrowserLogs') {
+                batches.set(this.transaction, (batches.get(this.transaction) || 0) + 1);
+            }
+            return add.apply(this, args);
+        };
+        try {
+            for (let i = 0; i < 180; i++) BrowserLogs.record('operation', 'fixture-burst ' + i);
+            await BrowserLogs.flush();
+            const entries = await BrowserLogs.query({ kind:'operation', keyword:'fixture-burst' }, 200);
+            return { batches:[...batches.values()], messages:entries.sort((a,b)=>a.id-b.id).map(entry=>entry.message) };
+        } finally {
+            IDBObjectStore.prototype.add = add;
+        }
+    });
+    assert.ok(Math.max(...result.batches) <= 24, `largest foreground write transaction: ${Math.max(...result.batches)} entries`);
+    assert.deepEqual(result.messages, Array.from({length:180}, (_, i) => 'fixture-burst ' + i));
+});
 test('browser logs persist independently, separate types, paginate and redact credentials and binary bodies',async t=>{
     const page=await pageFor(t);
     await page.evaluate(async()=>{

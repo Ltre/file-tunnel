@@ -14,7 +14,7 @@ body{margin:0;min-width:260px;overflow-wrap:anywhere;background:#fff}
 .tunnel-access-picker>label,.tunnel-access-devices>label{flex:none;font-size:13px;font-weight:650;color:#52647e;white-space:nowrap}
 .tunnel-access-devices>label{align-self:flex-start;padding-top:12px}
 .tunnel-access-devices{display:flex;align-items:flex-start;gap:8px}
-.tunnel-access-device-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));grid-auto-rows:92px;flex:1;min-width:0;align-items:stretch;align-content:start;gap:8px;max-height:296px;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:2px}
+.tunnel-access-device-options{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));grid-auto-rows:92px;flex:1;min-width:0;align-items:stretch;align-content:start;gap:8px;max-height:296px;overflow-y:auto;scrollbar-gutter:stable;padding:2px}
 .tunnel-access-device-list{display:contents}.tunnel-access-device-options>textarea{width:100%;min-width:0;min-height:92px;resize:none;line-height:1.45;overflow-wrap:anywhere}
 .tunnel-access-page .tunnel-access-device{min-width:0;max-width:100%;min-height:92px;display:grid;gap:4px;text-align:left;border:2px solid transparent;background:#eef3fc;color:#305c99}
 .tunnel-access-device strong{display:flex;align-items:center;gap:4px;min-width:0}.tunnel-access-device strong>.tunnel-access-device-name{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:14px}

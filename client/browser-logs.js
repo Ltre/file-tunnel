@@ -2,7 +2,8 @@
     'use strict';
     const DB_NAME = 'TunnelBrowserLogs', MAX_BYTES = 64 * 1024 * 1024, MAX_ENTRIES = 100000, PAGE_SIZE = 100;
     const t = (key, ...args) => (global.TunnelI18n?.t(key) || key).replace(/\{(\d+)\}/g, (_m, i) => args[i] ?? _m);
-    const pending = [], original = {};
+    const pending = [], original = {}, encoder = new TextEncoder();
+    const FOREGROUND_BATCH_SIZE = 24;
     let dbPromise, timer, writer = Promise.resolve(), storageError = '', context = () => ({});
     const redact = value => String(value).replace(/\bBearer\s+[\w.\-]+/gi, 'Bearer [redacted]')
         .replace(/((?:auth_token|ct0|cookie|authorization|password|access[_-]?token|accessGrant|joinToken)\s*[:=]\s*)[^\s,;&]+/gi, '$1[redacted]')
@@ -50,26 +51,41 @@
             sessionId: String(identity.sessionId || ''), deviceId: String(identity.deviceId || '') });
         if (!timer) timer = setTimeout(() => { timer = null; flush(); }, 500);
     }
-    function flush() {
+    function writeBatch(db, batch) {
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(['entries', 'meta'], 'readwrite'), entries = tx.objectStore('entries'), meta = tx.objectStore('meta');
+            let full = false;
+            const request = meta.get('stats');
+            request.onsuccess = () => {
+                const stats = request.result || { count: 0, bytes: 0 };
+                for (const entry of batch) {
+                    entry.bytes = encoder.encode(JSON.stringify(entry)).byteLength;
+                    if (stats.count >= MAX_ENTRIES || stats.bytes + entry.bytes > MAX_BYTES) {
+                        full = true;
+                        storageError = 'LOG_STORAGE_FULL';
+                        break;
+                    }
+                    entries.add(entry); stats.count++; stats.bytes += entry.bytes;
+                }
+                meta.put(stats, 'stats');
+            };
+            tx.oncomplete = () => resolve(full);
+            tx.onabort = () => reject(tx.error || Error('LOG_WRITE_FAILED'));
+            tx.onerror = () => {};
+        });
+    }
+    function flush({ unloading = false } = {}) {
         clearTimeout(timer); timer = null;
         if (!pending.length) return writer;
         const batch = pending.splice(0);
         writer = writer.catch(() => {}).then(async () => {
             const db = await openDb();
-            await new Promise((resolve, reject) => {
-                const tx = db.transaction(['entries', 'meta'], 'readwrite'), entries = tx.objectStore('entries'), meta = tx.objectStore('meta');
-                const request = meta.get('stats');
-                request.onsuccess = () => {
-                    const stats = request.result || { count: 0, bytes: 0 };
-                    for (const entry of batch) {
-                        entry.bytes = new TextEncoder().encode(JSON.stringify(entry)).byteLength;
-                        if (stats.count >= MAX_ENTRIES || stats.bytes + entry.bytes > MAX_BYTES) { storageError = 'LOG_STORAGE_FULL'; break; }
-                        entries.add(entry); stats.count++; stats.bytes += entry.bytes;
-                    }
-                    meta.put(stats, 'stats');
-                };
-                tx.oncomplete = resolve; tx.onabort = () => reject(tx.error || Error('LOG_WRITE_FAILED')); tx.onerror = () => {};
-            });
+            for (let start = 0; start < batch.length;) {
+                // Await each foreground transaction so a log burst does not monopolize one callback.
+                const end = unloading || document.hidden ? batch.length : Math.min(batch.length, start + FOREGROUND_BATCH_SIZE);
+                if (await writeBatch(db, batch.slice(start, end))) break;
+                start = end;
+            }
         }).catch(error => { storageError = error.name || error.message; });
         return writer;
     }
@@ -202,7 +218,7 @@
     }
     global.addEventListener('error', event => record('error', event.error || event.message || 'Resource load failed', { file: event.filename || event.target?.src, line: event.lineno }), true);
     global.addEventListener('unhandledrejection', event => record('error', event.reason));
-    global.addEventListener('pagehide', () => { flush(); });
+    global.addEventListener('pagehide', () => { flush({ unloading: true }); });
     document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('viewErrorLogsBtn')?.addEventListener('click', () => open('error'));
         document.getElementById('viewOperationLogsBtn')?.addEventListener('click', () => open('operation'));

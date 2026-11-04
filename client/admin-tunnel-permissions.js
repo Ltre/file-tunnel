@@ -19,7 +19,12 @@
         const drafts=new Map();
         let sessionId='',deviceId='',tunnelRequest=0,deviceRequest=0,tunnelAbort,deviceAbort,saving=false,tunnelPayload;
         function selection(node,active){node.classList.toggle('is-selected',active);}
-        function clearEditor(){global.TunnelAccessEditor.reset(container);container.replaceChildren();}
+        function clearEditor(keepSpace=false){
+            const height=keepSpace?container.getBoundingClientRect().height:0;
+            container.style.minHeight=height?`${height}px`:'';
+            global.TunnelAccessEditor.reset(container);
+            container.replaceChildren();
+        }
         function setSaving(value){saving=value;for(const control of document.querySelectorAll('.tunnel-access-picker input,.tunnel-access-picker select,.tunnel-access-devices textarea,.tunnel-access-device'))control.disabled=value;}
         function renderDevices(payload){
             const roles=new Map((payload.adminDevices||[]).map(record=>[record.deviceId,'designated-administrator']));
@@ -60,15 +65,23 @@
             selection(manual,isManual);for(const button of list.children){const active=!isManual&&button.dataset.deviceId===target;selection(button,active);button.setAttribute('aria-pressed',String(active));}
             if(target===deviceId)return;
             deviceId=target;const version=++deviceRequest,scope=sessionId,key=scope+'\n'+target;
-            deviceAbort?.abort();deviceAbort=new AbortController();clearEditor();
+            deviceAbort?.abort();deviceAbort=new AbortController();clearEditor(Boolean(target));
             deviceStatus.textContent=target?t('正在验证设备并读取权限...'):t('请选择设备或输入有效设备 ID');
             if(!target)return;
             try{
                 const payload=await json('/api/sessions/'+encodeURIComponent(scope)+'/access/devices/'+encodeURIComponent(target),{signal:deviceAbort.signal});
                 if(version!==deviceRequest||scope!==sessionId)return;
                 mount(payload,key);deviceStatus.textContent='';
+                container.style.minHeight='';
+                const bounds=container.getBoundingClientRect();
+                const viewportHeight=document.documentElement.clientHeight;
+                const visibleHeight=Math.max(0,Math.min(bounds.bottom,viewportHeight)-Math.max(bounds.top,0));
+                if(visibleHeight<=Math.min(bounds.height,viewportHeight)/2){
+                    container.scrollIntoView({block:'start',behavior:'smooth'});
+                }
             }catch(error){
                 if(version!==deviceRequest||scope!==sessionId||error.name==='AbortError')return;
+                clearEditor();
                 deviceStatus.textContent=t(error.message==='device-not-found'?'当前选中设备不存在，请重新指定':error.message==='invalid-device'?'请选择设备或输入有效设备 ID':'权限读取失败')+(error.message==='device-not-found'||error.message==='invalid-device'?'':' ['+error.message+']');
                 deviceId='';
             }
