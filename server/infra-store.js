@@ -701,6 +701,11 @@ class InfraStore {
         return rows.map(hydrateTransferRecord);
     }
 
+    getHistoryMessage(sessionId, messageId) {
+        const [row] = this.query('SELECT payload_json FROM transfer_records WHERE session_id = ? AND message_id = ? AND deleted_at IS NULL', [sessionId, messageId]);
+        return hydrateTransferRecord(row)?.message || null;
+    }
+
     listDeletedHistoryIds(sessionId, { since = 0, limit = 1000 } = {}) {
         return this.query(`
             SELECT message_id, deleted_at

@@ -93,7 +93,7 @@ const { createTelegramForwardJobs } = require('./server/telegram-forward-jobs');
 const { createTelegramDriveStore } = require('./server/telegram-drive');
 const { createDiskAuth } = require('./server/disk-auth');
 const { createDiskAccountSessions } = require('./server/disk-account-sessions');
-const { editMarkdownRecord, recoverMarkdownRecord } = require('./server/markdown-records');
+const { editMarkdownRecord, recoverMarkdownRecord, mountMarkdownReferenceRoute } = require('./server/markdown-records');
 const { createDiskOperations } = require('./server/disk-operations');
 const { createDiskTelegram } = require('./server/disk-telegram');
 const { createDiskAPI } = require('./server/disk-api');
@@ -3721,6 +3721,25 @@ app.post('/api/tunnel-access',(req,res)=>{res.set('Cache-Control','no-store');co
     const admission=tunnelAccess.authorize(sessionId,deviceId,{grant,joinToken,shortCode:normalizeShortCode(shortCode),code,rejoin:rejoin===true});
     if(admission)return res.json({allowed:true,...admission});
     res.status(403).json({allowed:false});
+});
+mountMarkdownReferenceRoute(app, {
+    canRead(sessionId, deviceId, grant) {
+        if (!isValidSessionId(sessionId) || !isValidDeviceId(deviceId) || !tunnelAccess.verify(grant, sessionId, deviceId)) return false;
+        const live = sessions.get(sessionId);
+        if (live) return canUseTunnelCapability(live, deviceId, 'read');
+        const stored = infraStore?.getTunnel(sessionId);
+        return Boolean(stored && canUseTunnelCapability({
+            ...parseStoredTunnelAccess(stored.permissions_json), ownerDeviceId: stored.owner_device_id || ''
+        }, deviceId, 'read'));
+    },
+    file(sessionId, messageId, fileId) {
+        const live = sessions.get(sessionId);
+        if (messageId === 'editor-assets') return live?.editorAssets?.get(fileId)?.metadata;
+        if (live?.deletedMessageIds?.includes(messageId)) return null;
+        const record = (live && getHistoryMessageEntry(live, messageId)?.message) || infraStore?.getHistoryMessage(sessionId, messageId);
+        return record?.type === 'file' ? record.fileInfo : record?.collection?.files?.find(item => item.id === fileId);
+    },
+    serverAsset: resolveTelegramServerAsset
 });
 app.get('/api/short-codes/:shortCode',(req,res)=>{res.set('Cache-Control','no-store');if(!tunnelAccess.attempt(req.ip))return res.status(429).json({error:'短码尝试过于频繁，请稍后再试'});
     const shortCode=normalizeShortCode(req.params.shortCode);if(!shortCode)return res.status(400).json({error:'Invalid short code'});

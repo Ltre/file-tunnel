@@ -1,6 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs'), path = require('node:path');
 const { createFixture } = require('./support/streaming-console-fixture.cjs');
 async function setup(t) {
     const f = await createFixture(); t.after(() => f.close());
@@ -29,6 +30,38 @@ async function setup(t) {
     const activated = await call('device-A', '/stations/' + s.id + '/visibility', 'POST', { visibility: 'public', version: saved.body.playback.version }, true); assert.equal(activated.status, 200);
     return { ...f, headers, call, login, s, items, files, deviceCookies };
 }
+test('a persisted Markdown image preview can read the server copy before any browser supplies media', async t => {
+    const f = await createFixture();
+    t.after(() => f.close());
+    const source = { sessionId: 'fixture-tunnel', messageId: 'server-image-record', fileId: 'server-image-asset',
+        deviceId: 'device-A', grant: 'fixture-proof', maxBytes: 1024 };
+    const read = (data = source, headers = {}) => fetch(f.base + '/api/tunnel-markdown/reference', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(data)
+    });
+    const image = f.sourceFiles[0].body;
+    f.records.push({ id: source.messageId, type: 'file', fileInfo: {
+        id: source.fileId, name: 'sns-author-avatar.png', type: 'image/png', size: image.length,
+        isServerAsset: true, serverAssetUrl: '/api/server-assets/' + source.fileId
+    } });
+    const filePath = path.join(f.dataDir, source.fileId);
+    fs.writeFileSync(filePath, image);
+    f.serverAssets.set(source.fileId, { sessionId: source.sessionId, size: image.length, path: filePath });
+    const response = await read();
+    assert.equal(response.status, 200, response.status === 200 ? '' : await response.clone().text());
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), image);
+    const partial = await read(source, { Range: 'bytes=1-9' });
+    assert.equal(partial.status, 206);
+    assert.deepEqual(Buffer.from(await partial.arrayBuffer()), image.subarray(1, 10));
+    assert.equal((await read({ ...source, grant: 'invalid' })).status, 403);
+    assert.equal((await read({ ...source, deviceId: 'device-B' })).status, 403);
+    assert.equal((await read({ ...source, maxBytes: 1 })).status, 413);
+    f.serverAssets.get(source.fileId).sessionId = 'another-tunnel';
+    const mismatch = await read();
+    assert.equal((await mismatch.json()).error, 'TUNNEL_REFERENCE_MISSING', 'a copy registered in a different tunnel must not be served directly');
+    f.records.pop();
+    const deleted = await read();
+    assert.equal((await deleted.json()).error, 'TUNNEL_REFERENCE_MISSING');
+});
 test('program source location requires station management and current playlist version, without source secrets', async t => {
     const f = await setup(t), station = f.streaming.service.station(f.s.id);
     const route = '/stations/' + f.s.id + '/items/' + f.items[0].id + '/source-location?configVersion=' + station.configVersion;

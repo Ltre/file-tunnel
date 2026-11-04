@@ -13,6 +13,13 @@ async function createFixture({ media = false, serviceWorker = false } = {}) {
         size: 68, data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aVioAAAAASUVORK5CYII=' } },
         { id: 'text-record', type: 'text', text: '隧道正文\n这是一个独立静态节目。' } ];
     const session = { devices: new Map([['device-A', {}], ['device-B', {}]]), fileAssets: new Map() };
+    const serverAssets = new Map();
+    require('../../server/markdown-records').mountMarkdownReferenceRoute(f.app, {
+        canRead: (sessionId, deviceId, grant) => sessionId === 'fixture-tunnel' &&
+            ['device-A', 'markdown-browser-device'].includes(deviceId) && grant === 'fixture-proof',
+        file: (_sessionId, messageId) => records.find(record => record.id === messageId)?.fileInfo,
+        serverAsset: id => serverAssets.get(id)
+    });
     const tunnel = createStreamingTunnels({ session: () => session, messages: () => records,
         admitted: (s, _d, grant) => s === 'fixture-tunnel' && grant === 'fixture-proof', capability: () => true,
         publish: (_s, _session, message) => records.push(message) });
@@ -49,7 +56,10 @@ async function createFixture({ media = false, serviceWorker = false } = {}) {
         <script src="/client/folder-archive.js"></script><script src="/client/tunnel-markdown.js"></script><script src="/client/streaming-player.js"></script><script src="/client/streaming-console.js"></script><script src="/client/streaming-app-adapter.js"></script>
         <script>const fixtureDevice='markdown-browser-device';localStorage.setItem('deviceId',fixtureDevice);
         window.DiskClient={getAccount:()=>''};
-        const fixtureRequest=StreamingConsole.request;StreamingConsole.request=async(...args)=>{if(args[0]==='/blob-preview'&&${req.query.delay === '1'})await new Promise(resolve=>setTimeout(resolve,3000));return fixtureRequest(...args);};
+        const cachedRecords=${JSON.stringify(records)};
+        TunnelMarkdown.configureReferences({authorization:()=>({grant:'fixture-proof',deviceId:fixtureDevice}),
+            canReadLocal:()=>Boolean(window.fixtureMarkdownCache), message:async id=>cachedRecords.find(item=>item.id===id),
+            file:id=>window.fixtureMarkdownCache.get(id), complete:(file,info)=>file.data.size===info.size});
         StreamingConsole.init(StreamingAppAdapter.create({state:{deviceId:fixtureDevice,deviceName:'Markdown 验收设备',sessionId:'fixture-tunnel',devices:new Map(),contacts:new Map()},
             listSessions:async()=>[{sessionId:'fixture-tunnel',shortCode:'ABCDE',remark:'隔离隧道'}],authorization:()=>({grant:'fixture-proof',deviceId:fixtureDevice}),home:()=>{},toast:text=>document.getElementById('fixture-status').textContent=text,
             message:async id=>(await (await fetch('/api/stream-fixture')).json()).records.find(item=>item.id===id),
@@ -105,7 +115,7 @@ async function createFixture({ media = false, serviceWorker = false } = {}) {
     `));
     f.app.get(['/console', '/'], (_req, res) => res.type('html').send(fs.readFileSync(path.join(root, 'pages/index.html'), 'utf8')
         .replace('<head>', '<head><script src="/fixture-bootstrap.js"></script>')));
-    return { ...f, sources, streaming, records, sourceFiles,
+    return { ...f, sources, streaming, records, sourceFiles, serverAssets,
         async close() { streaming.close(); await f.close(); } };
 }
 module.exports = { createFixture };

@@ -1,4 +1,5 @@
 'use strict';
+const fs = require('node:fs/promises');
 // Versioned Markdown records share the tunnel's existing history and ACLs.
 function editMarkdownRecord(message, { content, baseVersion, deviceId, deviceName, now = Date.now(), maxBytes }) {
     if (typeof content !== 'string' || Buffer.byteLength(content, 'utf8') > maxBytes) return { ok: false, error: 'content-too-large' };
@@ -23,4 +24,46 @@ function recoverMarkdownRecord(previous, incoming) {
         markdownHistory: history.map(({ version, content, editorDeviceId, editorDeviceName, editedAt }) => ({ version, content, editorDeviceId, editorDeviceName, editedAt })),
         updatedAt: incoming.updatedAt, updatedBy: incoming.updatedBy };
 }
-module.exports = { editMarkdownRecord, recoverMarkdownRecord };
+function mountMarkdownReferenceRoute(app, { canRead, file, serverAsset }) {
+    app.post('/api/tunnel-markdown/reference', async (req, res, next) => {
+        res.set({ 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff' });
+        const { sessionId, messageId, fileId, deviceId, grant, maxBytes } = req.body || {};
+        if (![messageId, fileId].every(value => typeof value === 'string' && /^[\w.-]{1,128}$/.test(value)) ||
+            !Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+            return res.status(400).json({ error: 'TUNNEL_REFERENCE_INVALID' });
+        }
+        try {
+            if (!canRead(sessionId, deviceId, grant)) return res.status(403).json({ error: 'TUNNEL_REFERENCE_DENIED' });
+            const info = file(sessionId, messageId, fileId);
+            if (info?.id !== fileId) return res.status(404).json({ error: 'TUNNEL_REFERENCE_MISSING' });
+            const size = Number(info.size);
+            if (!Number.isSafeInteger(size) || size < 0 || size > Math.min(maxBytes, 256 * 1024 * 1024)) {
+                return res.status(413).json({ error: 'TUNNEL_REFERENCE_LIMIT' });
+            }
+            const type = String(info.type || '').toLowerCase();
+            const mime = /^(image|audio|video)\//.test(type) && !type.startsWith('image/svg+xml') ? type : 'text/plain; charset=utf-8';
+            const sendHeaders = () => res.set({ 'Content-Type': mime, 'X-Tunnel-Reference-Name': encodeURIComponent(info.name || fileId) });
+            if (typeof info.data === 'string' && /^data:[^,]*;base64,/.test(info.data)) {
+                const bytes = Buffer.from(info.data.slice(info.data.indexOf(',') + 1), 'base64');
+                if (bytes.length === size) return sendHeaders().send(bytes);
+            }
+            if (info.isServerAsset && info.serverAssetUrl === '/api/server-assets/' + fileId) {
+                const asset = serverAsset(fileId);
+                if (asset?.sessionId === sessionId && Number(asset.size) === size) {
+                    const stat = await fs.stat(asset.path).catch(error => { if (error.code !== 'ENOENT') throw error; });
+                    if (stat?.isFile() && stat.size === size) {
+                        if (!canRead(sessionId, deviceId, grant)) return res.status(403).json({ error: 'TUNNEL_REFERENCE_DENIED' });
+                        if (file(sessionId, messageId, fileId)?.id !== fileId) return res.status(404).json({ error: 'TUNNEL_REFERENCE_MISSING' });
+                        return sendHeaders().sendFile(asset.path, { cacheControl: false }, error => {
+                            if (!error) return;
+                            if (error.code === 'ENOENT' && !res.headersSent) return res.status(404).json({ error: 'TUNNEL_REFERENCE_MISSING' });
+                            next(error);
+                        });
+                    }
+                }
+            }
+            return res.status(404).json({ error: 'TUNNEL_REFERENCE_MISSING' });
+        } catch (error) { next(error); }
+    });
+}
+module.exports = { editMarkdownRecord, recoverMarkdownRecord, mountMarkdownReferenceRoute };

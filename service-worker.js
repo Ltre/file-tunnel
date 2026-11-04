@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v120-content-v8-permission-scroll-log-batches-261104-1';
+const CACHE_NAME = 'instant-tunnel-v121-content-v8-markdown-cache-first-261104-2';
 const APP_SHELL = [
     '/',
     '/index.html',

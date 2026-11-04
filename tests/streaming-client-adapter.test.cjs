@@ -8,14 +8,25 @@ function fixture(deps = {}) {
     const window = { TunnelMarkdown: { init(value) { markdown = value; } },
         DiskUI: { chooseAccount: async () => ({ id: 'alice' }), chooseSaveDestination: async () => { selectedAccount = 'bob'; return target; } },
         DiskClient: { context: () => ({ accountId: selectedAccount }), upload: async (...args) => { calls.push(args); return { items: [{ id: 'saved' }] }; } },
-        StreamingConsole: { whenReady: async () => {}, request: async route => route === '/tunnel-resources' ? { candidates: [{ name: 'a/b.png', source: { sessionId: 'tunnel1', messageId: 'message1', fileId: 'asset1' } }] } : { url: '/media/reference' } } };
+        StreamingConsole: {} };
     let cancelled = false;
     const context = { window, localStorage: { getItem: () => 'device1' }, Blob,
-        fetch: async () => ({ ok: true, headers: new Map([['Content-Length', '100']]), body: { cancel: async () => { cancelled = true; } }, blob: async () => new Blob(['x']) }) };
+        fetch: async (route, options) => {
+            assert.equal(route, '/api/tunnel-markdown/reference');
+            assert.equal(JSON.parse(options.body).grant, 'proof');
+            assert.equal(JSON.parse(options.body).messageId, 'message1');
+            return { ok: true, headers: new Map([['Content-Length', '100'], ['X-Tunnel-Reference-Name', 'a%2Fb.png']]),
+                body: { cancel: async () => { cancelled = true; } }, blob: async () => new Blob(['x']) };
+        } };
     vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../client/streaming-app-adapter.js'), 'utf8'), context);
     const adapter = window.StreamingAppAdapter.create({ state: { devices: new Map(), contacts: new Map() },
         listSessions: async () => [{ sessionId: 'tunnel1' }], authorization: () => ({ grant: 'proof' }), ...deps });
-    return { markdown, window, calls, target, adapter, runtime: context, cancelled: () => cancelled };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../client/tunnel-markdown.js'), 'utf8'), context);
+    const reader = window.TunnelMarkdown.configureReferences({
+        authorization: sessionId => ({ deviceId: 'device1', grant: sessionId === 'tunnel1' ? 'proof' : '' }),
+        canReadLocal: () => false, ...deps.references
+    });
+    return { markdown: { ...markdown, ...reader }, window, calls, target, adapter, runtime: context, cancelled: () => cancelled };
 }
 test('Markdown save keeps the selected destination identity when the active account changes', async () => {
     const f = fixture(), zip = new Blob(['zip']); await f.markdown.upload(zip);
@@ -38,11 +49,26 @@ test('tunnel provider slices cached bytes and consumes only an existing selected
 });
 test('Markdown resources require a local tunnel grant and enforce the remaining archive byte budget', async () => {
     const f = fixture();
-    await assert.rejects(f.markdown.readReference('tunnel-blob:other/message1/asset1'), /TUNNEL_DENIED/);
+    await assert.rejects(f.markdown.readReference('tunnel-blob:other/message1/asset1'), /REFERENCE_DENIED/);
     await assert.rejects(f.markdown.readReference('tunnel-blob:tunnel1/message1/asset1', { maxBytes: 50 }), /REFERENCE_LIMIT/);
     assert.equal(f.cancelled(), true);
     assert.equal((await f.markdown.readReference('tunnel-blob:tunnel1/message1/asset1')).size, 1);
     assert.equal(f.markdown.referenceName('tunnel-blob:tunnel1/message1/asset1'), 'a_b.png');
+});
+
+test('an anchored Markdown image in the active tunnel uses complete browser cache without contacting the server', async () => {
+    const fileInfo = { id: 'asset1', name: 'avatar.png', size: 5, type: 'image/png' };
+    const f = fixture({ references: {
+        canReadLocal: () => true,
+        message: async () => ({ sessionId: 'tunnel1', type: 'file', fileInfo }),
+        file: async () => ({ data: new Blob(['image'], { type: fileInfo.type }) }),
+        complete: (cached, record) => cached.data.size === record.size } });
+    delete f.window.StreamingConsole;
+    f.runtime.fetch = async () => { throw Error('the server must not be needed for a local cache hit'); };
+    const url = 'tunnel-blob:tunnel1/message1/asset1';
+    assert.equal(await (await f.markdown.readReference(url)).text(), 'image');
+    assert.equal(f.markdown.referenceName(url), fileInfo.name);
+    await assert.rejects(f.markdown.readReference(url, { maxBytes: 4 }), /REFERENCE_LIMIT/);
 });
 
 test('current tunnel remains discoverable before its session directory has been persisted', async () => {

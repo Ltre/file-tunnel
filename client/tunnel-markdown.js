@@ -3,7 +3,65 @@
     const refs = body => [...new Set([...String(body).matchAll(/tunnel-blob:([\w-]+)\/([\w.-]+)\/([\w.-]+)/g)].map(match => match[0]))];
     const t = value => global.TunnelI18n?.t(value) || value;
     let options = {};
+    let referenceReader = {};
     const inlineReferences = new WeakMap();
+    function configureReferences({ authorization, canReadLocal, message, file, complete }) {
+        const names = new Map(), flights = new Map();
+        const rememberName = (url, name) => names.set(url, name.replace(/[\\/:*?"<>|]/g, '_'));
+        async function readLocal(sessionId, messageId, fileId) {
+            if (!canReadLocal(sessionId, messageId)) return null;
+            const record = messageId === 'editor-assets' ? null : await message(messageId);
+            if (messageId !== 'editor-assets' && record?.sessionId !== sessionId) return null;
+            const cached = await file(fileId);
+            const original = messageId === 'editor-assets'
+                ? (cached?.isEditorAsset && cached.sessionId === sessionId ? cached : null)
+                : record.type === 'file' ? record.fileInfo : record.collection?.files?.find(item => item.id === fileId);
+            if (original?.id !== fileId || !cached?.data || cached.cacheCleared || cached.isPartial || !complete(cached, original) || !canReadLocal(sessionId, messageId)) return null;
+            const type = String(original.type || cached.type || '').toLowerCase();
+            const mime = /^(image|audio|video)\//.test(type) && !type.startsWith('image/svg+xml') ? type : 'text/plain; charset=utf-8';
+            const blob = cached.data instanceof Blob ? cached.data.slice(0, cached.data.size, mime) : new Blob([cached.data], { type: mime });
+            return { blob, name: original.name || fileId };
+        }
+        async function readReference(url, { maxBytes = 256 * 1024 * 1024 } = {}) {
+            const match = /^tunnel-blob:([\w-]+)\/([\w.-]+)\/([\w.-]+)$/.exec(url);
+            if (!match) throw Error('TUNNEL_REFERENCE_INVALID');
+            const [, sessionId, messageId, fileId] = match;
+            const { deviceId, grant } = authorization(sessionId);
+            if (!grant) throw Error('TUNNEL_REFERENCE_DENIED');
+            const local = await readLocal(sessionId, messageId, fileId).catch(() => null);
+            if (local) {
+                if (local.blob.size > maxBytes) throw Error('TUNNEL_REFERENCE_LIMIT');
+                rememberName(url, local.name);
+                return local.blob;
+            }
+            const key = JSON.stringify([url, deviceId, grant, maxBytes]);
+            let flight = flights.get(key);
+            if (!flight) {
+                flight = (async () => {
+                    const response = await fetch('/api/tunnel-markdown/reference', {
+                        method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sessionId, messageId, fileId, deviceId, grant, maxBytes })
+                    });
+                    if (!response.ok) {
+                        const data = await response.json().catch(() => ({}));
+                        throw Error(data.error || 'TUNNEL_REFERENCE_UNAVAILABLE');
+                    }
+                    if (Number(response.headers.get('Content-Length')) > maxBytes) {
+                        await response.body?.cancel();
+                        throw Error('TUNNEL_REFERENCE_LIMIT');
+                    }
+                    const blob = await response.blob();
+                    if (blob.size > maxBytes) throw Error('TUNNEL_REFERENCE_LIMIT');
+                    rememberName(url, decodeURIComponent(response.headers.get('X-Tunnel-Reference-Name') || fileId));
+                    return blob;
+                })().finally(() => flights.delete(key));
+                flights.set(key, flight);
+            }
+            return flight;
+        }
+        referenceReader = { readReference, referenceName: url => names.get(url) || url.split('/').at(-1) };
+        return referenceReader;
+    }
     const invitationImage = (value, limit = 150000) => typeof value === 'string' && value.length <= limit && /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value) ? value : '';
     function invitationImages(message) {
         if (message.purpose !== 'stream-invitation') return [];
@@ -240,7 +298,7 @@
             if (refs(body).length > 100) throw Error('STREAM_REFERENCE_LIMIT');
             let bytes = 0;
             for (const url of refs(body)) {
-                const blob = await options.readReference(url, { maxBytes: 256 * 1024 * 1024 - bytes }); bytes += blob.size;
+                const blob = await (options.readReference || referenceReader.readReference)(url, { maxBytes: 256 * 1024 * 1024 - bytes }); bytes += blob.size;
                 if (bytes > 256 * 1024 * 1024) throw Error('STREAM_REFERENCE_LIMIT');
                 const objectUrl = URL.createObjectURL(blob); mapping.set(url, objectUrl); blobs.push({ url, blob });
             }
@@ -264,7 +322,7 @@
         try {
             let body = content;
             const files = resolved.blobs.map(({ url, blob }, index) => {
-                const name = 'resources/' + String(index + 1) + '-' + (options.referenceName?.(url) || 'resource');
+                const name = 'resources/' + String(index + 1) + '-' + ((options.referenceName || referenceReader.referenceName)?.(url) || 'resource');
                 body = body.split(url).join(name);
                 return new File([blob], name, { type: blob.type });
             });
@@ -320,5 +378,5 @@
         else { const url = URL.createObjectURL(file), link = document.createElement('a'); link.href = url; link.download = file.name; link.click(); setTimeout(() => URL.revokeObjectURL(url), 60000); }
     }
     function init(config) { options = config; }
-    global.TunnelMarkdown = { init, render, refs, archive, mount, fromHtml, menuActions, save: message => exportRecord(message, true), preview: previewRecord };
+    global.TunnelMarkdown = { init, configureReferences, render, refs, archive, mount, fromHtml, menuActions, save: message => exportRecord(message, true), preview: previewRecord };
 })(window);

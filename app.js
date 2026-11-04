@@ -706,6 +706,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         await runStartupStage('cache-store-create', initFileCacheStore);
         registerServiceWorker();
         const restoredSession = await runStartupStage('session-restore', initSession);
+        window.TunnelMarkdown?.configureReferences({
+            authorization: sessionId => ({ deviceId: tunnelDeviceId(sessionId), grant: savedTunnelGrant(sessionId) }),
+            canReadLocal: (sessionId, messageId) => sessionId === state.sessionId && hasTunnelPermission('read') && !isHistoryMessageDeleted(messageId, sessionId),
+            message: messageId => getFromStore('messages', messageId),
+            file: async fileId => materializeExternalFileRecord(await materializeCachedFileRecord(await getFromStore('files', fileId)), { requestPermission: false }),
+            complete: hasCompleteFileCache
+        });
         initStreamingConsoleIntegration();
         if (!restoredSession || !await runStartupStage('tunnel-access', ensureTunnelAccess)) {
             const entry = new URL(window.location.href);
