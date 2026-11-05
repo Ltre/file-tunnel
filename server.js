@@ -10218,6 +10218,10 @@ io.on('connection', (socket) => {
             delete message.markdownAttachments;
             delete message.snsMarkdownProgress;
             delete message.snsMarkdownRevision;
+            if (existingMessage.type === 'text' && (message.type !== 'text' || message.text !== existingMessage.text)) return;
+            if (existingMessage.type === 'text') for (const field of ['textVersion', 'textEditedAt', 'textEditorDeviceId']) {
+                if (existingMessage[field] !== undefined) message[field] = existingMessage[field];
+            }
             const requiredCapability = tunnelMessageCapabilities(message).find(capability => !canUseTunnelCapability(session, currentDevice, capability));
             if (requiredCapability) {
                 return socket.emit('permission-denied', { capability: requiredCapability });
@@ -10683,6 +10687,29 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('text-message-edit', (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            const session = sessions.get(currentSession);
+            if (data?.sessionId !== currentSession || !session?.devices.has(currentDevice)) return respond({ ok: false, error: 'invalid-session' });
+            if (!canUseTunnelCapability(session, currentDevice, 'read') || !canUseTunnelCapability(session, currentDevice, 'sendText')) return respond({ ok: false, error: 'permission-denied' });
+            if (!checkMessageRate()) return respond({ ok: false, error: 'rate-limited' });
+            if (typeof data.text !== 'string' || !data.text.trim() || Buffer.byteLength(data.text, 'utf8') > MAX_MESSAGE_SIZE) return respond({ ok: false, error: 'invalid-text' });
+            const index = session.history.findIndex(entry => entry.message.id === data.messageId && entry.message.type === 'text');
+            if (index < 0) return respond({ ok: false, error: 'message-not-found' });
+            const previous = session.history[index];
+            if (previous.message.text === data.text) return respond({ ok: true, message: previous.message });
+            if (previous.message.text !== data.baseText) return respond({ ok: false, error: 'text-conflict' });
+            const updated = createHistoryMessage({ ...previous.message, text: data.text, textVersion: (Number(previous.message.textVersion) || 1) + 1,
+                textEditedAt: Date.now(), textEditorDeviceId: currentDevice });
+            const size = Buffer.byteLength(JSON.stringify(updated), 'utf8');
+            if (size > MAX_MESSAGE_SIZE || session.historySize - previous.size + size > MAX_HISTORY_SIZE) return respond({ ok: false, error: 'history-too-large' });
+            session.history[index] = { message: updated, size }; session.historySize += size - previous.size; session.lastActivity = Date.now();
+            persistHistoryAudit(currentSession, session, updated, 'text-message-edited');
+            emitToReadableSessionDevices(session, 'message-updated', { message: updated }); scheduleSessionHistoryBroadcast(currentSession, 'text-message-edited');
+            respond({ ok: true, message: updated });
+        } catch (error) { console.error('text-message-edit error:', error); respond({ ok: false, error: 'internal-error' }); }
+    });
     socket.on('markdown-message-edit', (data, ack) => {
         const respond = typeof ack === 'function' ? ack : () => {};
         try {

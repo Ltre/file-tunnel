@@ -22,7 +22,7 @@ class Element {
     load() {}
     remove() {}
 }
-function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', reportStarts = false, pendingPlayback = false, controlledTimeouts = false, onReport, onSeek, onItemChange, onPlaybackChange, mediaUrl, size = 0, fetchBytes, clockDate = false, duration = 120 } = {}) {
+function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', reportStarts = false, pendingPlayback = false, controlledTimeouts = false, onReport, onSeek, onItemChange, onPlaybackChange, onTicket, mediaUrl, size = 0, fetchBytes, clockDate = false, duration = 120 } = {}) {
     let time = 0, resolveTicket; const calls = [], timers = [], elements = [], recoveries = [];
     const epoch=Date.now(),clockNow=()=>clockDate?epoch+time:Date.now();
     const timeouts = new Map(); let timeoutId = 0, reportAttempt = 0;
@@ -40,6 +40,7 @@ function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', r
     const player = window.StreamingPlayer.create({ stationId: 'station', watchId: 'watch', onSeek, onItemChange, onPlaybackChange, mediaUrl, onRecovery:code=>recoveries.push(code),
         request: async (route, method, body, options) => { calls.push({ route, body }); if (onReport && route.endsWith('/report')) return onReport({attempt:++reportAttempt, state, options}); if (route.endsWith('/ticket')) {
             if (deferredTicket && body.itemId === 'a') return new Promise(resolve => { resolveTicket = resolve; });
+            if (onTicket) await onTicket(body);
             return { url: '/media/' + body.itemId, expiresAt: clockNow() + 600000, size, type: 'audio/wav' };
         } return reportStarts && route.endsWith('/report') ? { station: { ...state, serverTime: 2, playback: { ...state.playback, status: 'playing', version: 2 } } } : {}; }, subscribe: () => () => {} });
     player.apply(state);
@@ -51,6 +52,28 @@ function fixture({ deferredTicket = false, kind = 'image', nextKind = 'image', r
         page(name, event = {}) { events.get(name)?.(event); },
         release() { resolveTicket({ url: '/media/a', expiresAt: Date.now() + 600000 }); } };
 }
+
+test('an invalid upcoming programme is marked locally and checking continues to the first readable programme', async t => {
+    const f = fixture({ kind: 'text', nextKind: 'text', onTicket: body => { if (body.itemId === 'b') throw Error('STREAM_SOURCE_MISSING'); } });
+    t.after(() => f.player.close());
+    f.state.items.push({ id: 'c', name: 'c', kind: 'text', stay: 10 });
+    await f.flush(); f.tick(6000); await f.flush(); await f.flush();
+    assert.ok(f.calls.some(call => call.route.endsWith('/ticket') && call.body.itemId === 'c'));
+    assert.equal(f.player.snapshot().items.find(item => item.id === 'b').unavailable, 'STREAM_SOURCE_MISSING');
+    assert.equal(f.player.currentItemId(), 'a');
+});
+
+test('a whole invalid cycle is checked once and late checks cannot change a closed player', async t => {
+    const f = fixture({ kind: 'text', nextKind: 'text', onTicket: body => { if (body.itemId !== 'a') throw Error('STREAM_SOURCE_MISSING'); } });
+    t.after(() => f.player.close());
+    f.state.items.push({ id: 'c', name: 'c', kind: 'text', stay: 10 });
+    await f.flush(); f.tick(6000); await f.flush(); await f.flush();
+    assert.equal(f.player.snapshot().items.filter(item => item.unavailable).length, 2);
+    const requests = f.calls.length; for (let i = 0; i < 10; i++) f.tick(100); await f.flush();
+    assert.equal(f.calls.length, requests);
+    assert.equal(f.player.currentItemId(), 'a');
+    f.player.close(); f.tick(1000); await f.flush(); assert.equal(f.calls.length, requests + 1, 'only the unwatch request is added');
+});
 test('audio starts audible and mute is visibly reported', async () => {
     const f = fixture({ kind: 'audio' }); await f.flush(); const audio = f.elements.find(el => el.tagName === 'AUDIO');
     assert.equal(audio.muted, false);

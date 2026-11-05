@@ -13,9 +13,7 @@ function sourceUrl(value, base) {
     try { return new URL(value, base); } catch (_) { return null; }
 }
 
-function startTime(value) {
-    const start = String(value || '').trim().replace(/^\*/, '').split('-')[0];
-    if (!String(value || '').includes('-')) return '';
+function compactTime(start) {
     let seconds;
     try { seconds = timestamp(start); }
     catch (_) {
@@ -27,6 +25,13 @@ function startTime(value) {
     const hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
     const remainder = Number((seconds % 60).toFixed(3));
     return (hours ? `${hours}h${minutes}m` : minutes ? `${minutes}m` : '') + remainder + (hours || minutes ? '' : 's');
+}
+
+function clipRange(value) {
+    const parts = String(value || '').trim().replace(/^\*/, '').split('-');
+    if (parts.length !== 2) return '';
+    const range = parts.map(compactTime);
+    return range.every(Boolean) ? range.join('-') : '';
 }
 
 function downloadFileName(task, platform = task.platform) {
@@ -71,7 +76,7 @@ function downloadFileName(task, platform = task.platform) {
     uploader ||= profile?.searchParams.get('id') || (profileParts.at(-1)?.includes('.') ? '' : profileParts.at(-1)) || '';
     uploader = clean(uploader).replace(/^[@＠]+/, '').slice(0, 64);
     id = clean(id).slice(0, 80);
-    const clip = startTime(task.downloadSections);
+    const clip = clipRange(task.downloadSections);
     const extension = path.extname(storedName);
     const suffix = (clip ? ` [${clip}]` : '') + (uploader ? `[＠${uploader}]` : '') +
         (platforms[platform] ? `[${platforms[platform]}]` : '') + (id ? `[${id}]` : '');

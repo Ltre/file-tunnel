@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v126-content-v8-save-errors-download-name-261105-2';
+const CACHE_NAME = 'instant-tunnel-v127-content-v8-stream-source-text-edit-261105-3';
 const APP_SHELL = [
     '/',
     '/index.html',

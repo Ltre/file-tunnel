@@ -32,7 +32,20 @@ test('unchanged verified configuration saves without another PUT; changed config
 
 test('reselected sources are not treated as verified merely because their visible metadata matches',async()=>{
  const item={id:'i',name:'same.png',kind:'image',size:10,type:'image/png',source:{kind:'local',fileId:'same',size:10}},baseline={name:'s',configVersion:3,items:[{...item,sourceSaved:true}]},d={...baseline,items:[item]},ui={stationId:'s',drafts:{s:d}};let puts=0;
- const c={ui,account:()=> 'actor',localConfig:()=>baseline,structuredClone,t:x=>x,checkSaveDurations:async()=>{},reconcileRevision:async()=>({matches:true,configVersion:3}),syncSourceCache:async()=>{},saveUi(){},notice(){},saveConfig(){},request:async()=>{puts++;return {configVersion:4};},pendingCovers:new Map()};
+ const c={ui,account:()=> 'actor',localConfig:()=>baseline,localBlob:async()=>new Blob([Buffer.alloc(10)]),structuredClone,t:x=>x,checkSaveDurations:async()=>{},reconcileRevision:async()=>({matches:true,configVersion:3}),syncSourceCache:async()=>{},saveUi(){},notice(){},saveConfig(){},request:async()=>{puts++;return {configVersion:4};},pendingCovers:new Map()};
  vm.createContext(c);vm.runInContext(section('    const saveFlights =','    async function reconcileRevision(')+section('    async function persistDraft(','    function editor('),c);
  await c.persistDraft('s',()=>{});assert.equal(puts,1);
+});
+
+test('an unchanged saved playlist checks readability and retains the draft if its bytes are unavailable', async () => {
+ const item={id:'i',name:'same.png',kind:'image',size:10,type:'image/png',sourceSaved:true,source:{kind:'local',fileId:'same',size:10}};
+ const d={name:'s',configVersion:3,items:[item]},ui={stationId:'s',drafts:{s:d}};let checks=0;
+ const c={ui,account:()=> 'actor',localConfig:()=>d,localBlob:async()=>new Blob([Buffer.alloc(10)]),structuredClone,t:x=>x,checkSaveDurations:async()=>{},reconcileRevision:async()=>({matches:true,configVersion:3}),syncSourceCache:async()=>{},saveUi(){},notice(){},saveConfig(){throw Error('must not save');},pendingCovers:new Map(),
+ request:async(route,method)=>{assert.equal(route,'/stations/s/check-sources');assert.equal(method,'POST');checks++;throw Object.assign(Error('STREAM_SOURCE_MISSING'),{confirmedFailure:true,itemErrors:[{id:'i',error:'STREAM_SOURCE_MISSING'}]});}};
+ vm.createContext(c);vm.runInContext(section('    const saveFlights =','    async function reconcileRevision(')+section('    async function persistDraft(','    function editor('),c);
+ await assert.rejects(c.persistDraft('s',()=>{}),error=>error.message==='STREAM_SOURCE_MISSING'&&error.itemErrors[0].id==='i');
+ assert.equal(checks,1);assert.equal(ui.drafts.s,d);
+ checks=0;c.localBlob=async()=>{throw Error('missing');};
+ await assert.rejects(c.persistDraft('s',()=>{}),error=>error.message==='STREAM_SOURCE_MISSING'&&error.itemErrors[0].id==='i');
+ assert.equal(checks,0,'missing creator bytes are detected in the browser without a provider request');
 });

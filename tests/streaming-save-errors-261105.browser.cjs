@@ -19,7 +19,8 @@ test('source errors mark all affected programmes and persist until repaired or t
     await f.streaming.service.edit(station.id, actor, { configVersion: 1, items });
     const saved = f.streaming.service.station(station.id);
     const initial = { name: saved.name, configVersion: saved.configVersion, loop: true, countdown: 'bottom-right',
-        items: saved.items.map((item, index) => ({ ...item, source: items[index].source, sourceSaved: true })) };
+        items: saved.items.map(item => ({ ...item, source: { kind: 'tunnel', sessionId: item.source.sessionId,
+            messageId: item.source.messageId, fileId: item.source.fileId }, sourceSaved: true })) };
     f.app.get('/save-errors-check', (_req, res) => res.type('html').send(`<!doctype html><meta charset="utf-8">
         <link rel="stylesheet" href="/client/streaming-console.css"><script src="/client/streaming-player.js"></script>
         <script src="/client/streaming-console.js"></script><script>

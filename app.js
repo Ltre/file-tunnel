@@ -8269,6 +8269,9 @@ function renderMessageRecordActions(messageEl, message) {
     menuItems.push(createRecordActionButton('ℹ', '详情', '查看这条传输记录的完整信息', () => {
         showTransferRecordDetails(message.id).catch(err => showAppToast(`详情加载失败：${err.message}`));
     }));
+    if (message.type === 'text') menuItems.push(createRecordActionButton('✎', '编辑文本', '编辑这条纯文本记录', () => {
+        editTransferRecordText(message.id).catch(error => showAppToast(error.message));
+    }));
     menuItems.push(createRecordActionButton('🔗', '复制此锚点', '复制可直接定位到此记录的链接', () => {
         copyTransferRecordLink(message.id);
     }));
@@ -8351,7 +8354,7 @@ function initHistoryRecordSelection() {
     if (!chat || !toolbar || toolbar.dataset.bound) return;
     toolbar.dataset.bound = '1';
     const panel = toolbar.parentElement;
-    let choosing = false, busy = false, gesture, suppressClick = 0;
+    let choosing = false, busy = false, gesture, heldTouch, suppressClick = 0;
     const t = text => window.TunnelI18n?.t(text) || text;
     toolbar.setAttribute('aria-label', t('传输记录批量操作'));
     const rowFor = target => target.closest?.('.message[data-message-id]');
@@ -8368,8 +8371,8 @@ function initHistoryRecordSelection() {
             button.disabled = true;
             const scope = state.sessionId;
             try {
-                const records = await Promise.all(rows().filter(row => selectedHistoryIds.has(row.dataset.messageId))
-                    .map(row => getFromStore('messages', row.dataset.messageId)));
+                const ids = [...new Set(rows().filter(row => selectedHistoryIds.has(row.dataset.messageId)).map(row => row.dataset.messageId))];
+                const records = await Promise.all(ids.map(id => getFromStore('messages', id)));
                 const selected = records.filter(record => record?.sessionId === scope);
                 if (!selected.length || state.sessionId !== scope || !allowUnfinished && selected.some(record => record.snsMarkdownProgress)) return;
                 await run(selected, scope);
@@ -8385,15 +8388,18 @@ function initHistoryRecordSelection() {
         panel.classList.remove('history-selection-active');
         toolbar.hidden = true;
     }
-    async function copy(text) {
+    async function copy(text, message) {
         if (!await copyTextToClipboard(text)) throw Error(t('复制失败，请检查浏览器剪贴板权限'));
-        showAppToast(t('已复制'));
+        showAppToast(t(message));
     }
     const save = action('保存到网盘', records => window.DiskTunnelAdapter.saveRecords(records, window.TunnelMarkdown.archive));
-    const count = document.createElement('span');
-    toolbar.append(
-        action('复制所有文本', records => copy(records.map(record => recordTextPayload(record).text.trim()).filter(Boolean).join('\n\n'))),
-        action('复制所有锚点', (records, scope) => copy(records.map(record => getTransferRecordAnchorUrl(record.id, scope)).join('\n\n')), true),
+    const count = document.createElement('span'); count.className = 'history-selection-count';
+    const scrolling = document.createElement('div'); scrolling.className = 'history-selection-scroll';
+    const fixed = document.createElement('div'); fixed.className = 'history-selection-fixed';
+    toolbar.append(scrolling, fixed);
+    scrolling.append(
+        action('复制所有文本', records => copy(records.map(record => recordTextPayload(record).text.trim()).filter(Boolean).join('\n\n'), '已复制文本')),
+        action('复制所有锚点', (records, scope) => copy(records.map(record => getTransferRecordAnchorUrl(record.id, scope)).join('\n\n'), '已复制锚点'), true),
         action('收藏', async records => { for (const record of records) if (!record.favorite) await toggleTransferRecordFavorite(record.id); }, true),
         action('发送到其他隧道', async (records, scope) => {
             const target = await chooseForwardTargetSession();
@@ -8406,19 +8412,20 @@ function initHistoryRecordSelection() {
         action('创建串流台', records => window.StreamingConsole.importRecords(records, true)),
         action('添加到串流台', records => window.StreamingConsole.importRecords(records)),
         save,
-        action('删除', async records => { if (await deleteHistoryMessage(records.map(record => record.id))) exit(); }, true),
-        count
+        action('删除', async records => { if (await deleteHistoryMessage(records.map(record => record.id))) exit(); }, true)
     );
     const cancel = document.createElement('button');
-    cancel.type = 'button'; cancel.className = 'btn btn-secondary'; cancel.textContent = t('退出多选'); cancel.onclick = exit;
-    toolbar.append(cancel);
+    cancel.type = 'button'; cancel.className = 'btn btn-secondary history-selection-cancel'; cancel.textContent = t('取消'); cancel.onclick = exit;
+    fixed.append(count, cancel);
     function update() {
-        const selected = rows().filter(row => selectedHistoryIds.has(row.dataset.messageId));
+        const currentRows = rows();
+        const selected = [...new Map(currentRows.filter(row => selectedHistoryIds.has(row.dataset.messageId)).map(row => [row.dataset.messageId, row])).values()];
         for (const id of selectedHistoryIds) if (!selected.some(row => row.dataset.messageId === id)) selectedHistoryIds.delete(id);
+        for (const row of currentRows) if (row.classList.contains('history-selected') !== selectedHistoryIds.has(row.dataset.messageId) || Boolean(row.querySelector('.history-selection-check')) !== selectedHistoryIds.has(row.dataset.messageId)) markSelectedHistoryRow(row);
         const unfinished = selected.some(row => row.hasAttribute('data-markdown-unfinished'));
         save.hidden = unfinished || selected.length === 0 || selected.some(row => ['text', 'rich'].includes(row.dataset.type));
         for (const button of toolbar.querySelectorAll('button')) if (button !== cancel) button.disabled = !selected.length || unfinished && Boolean(button.dataset.requiresCompleteRecord);
-        count.textContent = t('已选择') + ' ' + selected.length;
+        count.textContent = selected.length + ' ✓';
     }
     function toggle(row) {
         const id = row.dataset.messageId;
@@ -8447,7 +8454,7 @@ function initHistoryRecordSelection() {
         const row = rowFor(event.target);
         if (!row) return;
         event.preventDefault();
-        if ((!event.pointerType || event.pointerType === 'touch') && Date.now() < suppressClick) return;
+        if ((!event.pointerType || event.pointerType === 'touch') && (heldTouch !== undefined || Date.now() < suppressClick)) return;
         clearGesture();
         if (event.pointerType === 'touch') suppressClick = Date.now() + 700;
         const anchor = event.pointerType || event.button === 2 ? { x: event.clientX, y: event.clientY } : null;
@@ -8460,6 +8467,7 @@ function initHistoryRecordSelection() {
         const origin = { x: event.clientX, y: event.clientY };
         gesture = { id: event.pointerId, origin, anchor: origin, timer: setTimeout(() => {
             const anchor = gesture.anchor;
+            heldTouch = event.pointerId;
             suppressClick = Date.now() + 700;
             clearGesture();
             activate(row, event.target, anchor);
@@ -8470,7 +8478,10 @@ function initHistoryRecordSelection() {
         if (Math.hypot(event.clientX - gesture.origin.x, event.clientY - gesture.origin.y) > 12) clearGesture();
         else gesture.anchor = { x: event.clientX, y: event.clientY };
     }, true);
-    for (const name of ['pointerup', 'pointercancel', 'pointerleave']) chat.addEventListener(name, clearGesture, true);
+    for (const name of ['pointerup', 'pointercancel', 'pointerleave']) chat.addEventListener(name, event => {
+        if (event.pointerId === heldTouch) { suppressClick = Date.now() + 700; heldTouch = undefined; }
+        clearGesture();
+    }, true);
     chat.addEventListener('selectstart', event => {
         if (gesture || Date.now() < suppressClick) event.preventDefault();
     }, true);
@@ -8674,6 +8685,25 @@ function openMessageRecordActionMenu(trigger, menuItems, anchor) {
     handle.addEventListener('pointercancel', finishDrag);
 }
 
+async function editTransferRecordText(messageId) {
+    const message = await getFromStore('messages', messageId), scope = state.sessionId;
+    if (message?.type !== 'text' || message.sessionId !== scope) return;
+    const t = text => window.TunnelI18n?.t(text) || text;
+    await openTransferRecordRemarkEditor(message.text || '', {
+        title: '编辑文本', hint: '修改会同步到当前隧道中的这条文本记录。', placeholder: '输入文本内容', maxLength: 262144,
+        onSave: async text => {
+            if (!text.trim()) throw Error(t('文本内容不能为空'));
+            if (state.sessionId !== scope || !state.socket?.connected) throw Error(t('当前隧道连接已失效，请重新进入后再试'));
+            const result = await new Promise((resolve, reject) => state.socket.timeout(10000).emit('text-message-edit', {
+                sessionId: scope, messageId, baseText: message.text || '', text
+            }, (error, response) => error ? reject(Error(t('服务端响应超时'))) : resolve(response || {})));
+            if (!result.ok) throw Error(t(result.error === 'text-conflict' ? '文本已被修改，请重新打开编辑；当前输入未保存' : '文本保存失败') + ' [' + (result.error || 'unknown') + ']');
+            if (state.sessionId === scope) await applyHistoryMessageUpdate(result.message, { remote: true });
+            showAppToast(t('已保存文本'));
+        }
+    });
+}
+
 async function editTransferRecordRemark(messageId) {
     const message = await getFromStore('messages', messageId);
     if (!message || !['file', 'collection'].includes(message.type)) return;
@@ -8686,16 +8716,19 @@ async function editTransferRecordRemark(messageId) {
     await updateHistoryMessage(updated);
 }
 
-function openTransferRecordRemarkEditor(current = '') {
+function openTransferRecordRemarkEditor(current = '', options = {}) {
     return new Promise(resolve => {
+        const t = text => window.TunnelI18n?.t(text) || text;
+        const maxLength = options.maxLength || RECORD_REMARK_MAX_LENGTH;
         const overlay = document.createElement('div');
         overlay.className = 'send-mode-overlay record-remark-editor-layer';
         overlay.innerHTML = `
             <section class="send-mode-dialog record-remark-editor" role="dialog" aria-modal="true" aria-labelledby="recordRemarkEditorTitle">
-                <h3 id="recordRemarkEditorTitle">传输记录备注</h3>
-                <p>备注会随这条文件记录同步；留空保存即可删除备注。</p>
-                <textarea maxlength="${RECORD_REMARK_MAX_LENGTH}" rows="5" placeholder="填写备注内容"></textarea>
-                <div class="record-remark-editor-count">0 / ${RECORD_REMARK_MAX_LENGTH}</div>
+                <h3 id="recordRemarkEditorTitle">${escapeHtml(t(options.title || '传输记录备注'))}</h3>
+                <p>${escapeHtml(t(options.hint || '备注会随这条文件记录同步；留空保存即可删除备注。'))}</p>
+                <textarea maxlength="${maxLength}" rows="5" placeholder="${escapeHtml(t(options.placeholder || '填写备注内容'))}"></textarea>
+                <div class="record-remark-editor-count">0 / ${maxLength}</div>
+                <p class="record-edit-status" role="status" hidden></p>
                 <div class="send-mode-actions">
                     <button class="btn btn-secondary" type="button" data-remark-cancel>取消</button>
                     <button class="btn btn-primary" type="button" data-remark-save>保存</button>
@@ -8704,10 +8737,18 @@ function openTransferRecordRemarkEditor(current = '') {
         const input = overlay.querySelector('textarea');
         const count = overlay.querySelector('.record-remark-editor-count');
         input.value = current;
-        const syncCount = () => { count.textContent = `${input.value.length} / ${RECORD_REMARK_MAX_LENGTH}`; };
+        const syncCount = () => { count.textContent = `${input.value.length} / ${maxLength}`; };
         syncCount();
         input.addEventListener('input', syncCount);
-        const finish = value => {
+        let saving = false;
+        const finish = async value => {
+            if (saving) return;
+            if (value !== null && options.onSave) {
+                saving = true; const save = overlay.querySelector('[data-remark-save]'); save.disabled = true; input.readOnly = true;
+                try { await options.onSave(value); }
+                catch (error) { const status = overlay.querySelector('.record-edit-status'); status.hidden = false; status.textContent = error.message; return; }
+                finally { saving = false; save.disabled = false; input.readOnly = false; }
+            }
             overlay.remove();
             resolve(value);
         };
@@ -13794,6 +13835,7 @@ async function applyHistoryMessageUpdate(message, options = {}) {
     if (!canUpdate()) return;
     if ((Number(message.snsMarkdownRevision) || 0) < (Number(previous?.snsMarkdownRevision) || 0)) return;
     if (message.type === 'markdown' && previous?.type === 'markdown' && (Number(message.markdownVersion) || 1) < (Number(previous.markdownVersion) || 1)) return;
+    if (message.type === 'text' && previous?.type === 'text' && (Number(message.textVersion) || 1) < (Number(previous.textVersion) || 1)) return;
     if (previous) {
         const files = entry => entry.type === 'collection' ? getCollectionFiles(entry) : entry.fileInfo ? [entry.fileInfo] : [];
         const known = new Map(files(previous).map(file => [file.id, file]));

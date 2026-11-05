@@ -39,6 +39,8 @@
                 active.ids = [...formatList.querySelectorAll('input:checked')].map(input => input.value);
             }
             Object.assign(active, values);
+            const tab = tabs.querySelector('[aria-pressed="true"]');
+            if (tab) tab.textContent = active.remark?.trim() || String(active.id);
             persist();
             return active;
         }
@@ -61,7 +63,7 @@
         function renderTabs() {
             tabs.replaceChildren(makeButton('+', () => insert(), '新建任务表单'));
             for (const draft of drafts) {
-                const button = makeButton(String(draft.id), () => select(draft), '表单 ' + draft.id);
+                const button = makeButton(draft.remark?.trim() || String(draft.id), () => select(draft), '表单 ' + draft.id);
                 button.setAttribute('aria-pressed', String(draft === active));
                 tabs.append(button);
             }

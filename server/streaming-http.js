@@ -70,6 +70,10 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         const get = async () => {
             if (ticket.preview) {
                 if (ticket.userId && a.userId !== ticket.userId) throw new Error('LOGIN_REQUIRED');
+                if (ticket.stationId) {
+                    const station = service.station(ticket.stationId); service.authority(station, a, 'edit');
+                    if (station.configVersion !== ticket.configVersion) throw Error('STREAM_CONFLICT');
+                }
                 sources.stat(ticket.source); return { source: ticket.source, deviceId: ticket.deviceId, epoch: 0 };
             }
             const value = await service.resource(ticket.stationId, ticket.itemId, a, ticket.reference);
@@ -160,6 +164,7 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         res.json({name:s.name,coverId:s.coverId || '',configVersion:s.configVersion,loop:s.loop,countdown:s.countdown,items});
     }));
     router.post('/stations/:id/revision', wrap((req, res) => res.json(service.revision(req.params.id, req.streamActor, req.body))));
+    router.post('/stations/:id/check-sources', wrap(async (req, res) => res.json(await service.checkSources(req.params.id, req.streamActor, req.body?.configVersion))));
     router.get('/stations/:id/items/:itemId/source-location', wrap((req, res) => {
         const station = service.station(req.params.id);
         service.authority(station, req.streamActor);
@@ -224,6 +229,19 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         tickets.set(token, { stationId: req.params.id, itemId, reference, epoch: resource.epoch, sourceVersion: resource.sourceVersion, deviceId: a.deviceId, userId: a.userId, expiresAt });
         const metadata = sources.stat(resource.source);
         res.json({ url: '/api/streaming/media/' + token, expiresAt, size: metadata.size, type: metadata.type, references: service.references(req.params.id, itemId, a) });
+    }));
+    router.post('/stations/:id/items/:itemId/preview', wrap((req, res) => {
+        const station = service.station(req.params.id), a = req.streamActor; service.authority(station, a, 'edit');
+        if (station.configVersion !== req.body?.configVersion) throw Error('STREAM_CONFLICT');
+        const item = station.items.find(value => value.id === req.params.itemId);
+        if (!item) throw Error('STREAM_SOURCE_DELETED');
+        const metadata = sources.stat(item.source);
+        for (const [key, ticket] of tickets) if (ticket.expiresAt <= now()) tickets.delete(key);
+        if (tickets.size >= 4096) throw Error('STREAM_LIMIT');
+        const token = crypto.randomBytes(24).toString('base64url'), expiresAt = now() + 600000;
+        tickets.set(token, { preview: true, stationId: station.id, configVersion: station.configVersion,
+            source: item.source, deviceId: a.deviceId, userId: a.userId, epoch: 0, expiresAt });
+        res.json({ url: '/api/streaming/media/' + token, expiresAt, name: metadata.name, type: metadata.type, size: metadata.size });
     }));
     router.post(['/preview', '/blob-preview'], wrap(async (req, res) => {
         const allFiles = req.path === '/blob-preview';

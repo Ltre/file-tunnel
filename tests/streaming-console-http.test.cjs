@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path');
 const { createFixture } = require('./support/streaming-console-fixture.cjs');
-async function setup(t) {
+async function setup(t, { coldCache = false } = {}) {
     const f = await createFixture(); t.after(() => f.close());
     const cookies = new Map(), deviceCookies = new Map();
     async function login(name) {
@@ -25,11 +25,43 @@ async function setup(t) {
     const files = f.store.list('alice', '').files;
     const items = files.map((file, index) => ({ id: 'item' + index, source: { kind: 'disk', accountId: 'alice', fileId: file.id,
         ...(file.name.endsWith('.md') ? { tunnelGrants: { 'fixture-tunnel': 'fixture-proof' } } : {}) } }));
+    const check = f.sources.check;
+    if (coldCache) f.sources.check = async () => {}; // Restore a metadata-only legacy save for the cold-cache reader test.
     const saved = await call('device-A', '/stations/' + s.id, 'PUT', { configVersion: 1, items, loop: true, countdown: 'edge' }, true);
+    f.sources.check = check;
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     const activated = await call('device-A', '/stations/' + s.id + '/visibility', 'POST', { visibility: 'public', version: saved.body.playback.version }, true); assert.equal(activated.status, 200);
     return { ...f, headers, call, login, s, items, files, deviceCookies };
 }
+
+test('save detects unreadable bytes even when the recorded metadata still exists', async t => {
+    const f = await setup(t), station = f.streaming.service.station(f.s.id), version = station.configVersion;
+    const open = f.api.objectStorage.open;
+    f.api.objectStorage.open = async () => { throw Error('STREAM_SOURCE_MISSING'); };
+    t.after(() => { f.api.objectStorage.open = open; });
+    const result = await f.call('device-A', '/stations/' + station.id, 'PUT', {
+        configVersion: version, items: station.items.map(item => ({ id: item.id, stay: 10 }))
+    }, true);
+    assert.equal(result.status, 422, JSON.stringify(result.body));
+    assert.equal(result.body.itemErrors.length, station.items.length);
+    assert.equal(station.configVersion, version);
+});
+
+test('saved source previews use station authorization and never grant source-tunnel membership', async t => {
+    const f = await setup(t), station = f.streaming.service.station(f.s.id);
+    await f.call('device-A', '/stations/' + station.id, 'PUT', { configVersion: station.configVersion,
+        items: [{ id: 'tunnel-item', stay: 10, source: { kind: 'tunnel', sessionId: 'fixture-tunnel',
+            messageId: 'image-record', fileId: 'image-asset', accessGrant: 'fixture-proof' } }] }, true);
+    const route = '/stations/' + station.id + '/items/tunnel-item/preview';
+    const preview = await f.call('device-A', route, 'POST', { configVersion: station.configVersion }, true);
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    const media = await fetch(f.base + preview.body.url, { headers: f.headers('device-A', true) });
+    assert.equal(media.status, 200, media.ok ? '' : await media.text());
+    assert.equal((await f.call('device-C', route, 'POST', { configVersion: station.configVersion })).status, 403);
+    assert.equal((await f.call('device-A', '/preview', 'POST', { source: { kind: 'tunnel', sessionId: 'fixture-tunnel',
+        messageId: 'image-record', fileId: 'image-asset' } }, true)).status, 403);
+    assert.equal((await f.call('device-A', route, 'POST', { configVersion: -1 }, true)).status, 409);
+});
 test('a persisted Markdown image preview can read the server copy before any browser supplies media', async t => {
     const f = await createFixture();
     t.after(() => f.close());
@@ -150,7 +182,7 @@ test('consecutive complete and Range reads remain available after each response 
 });
 
 test('a drive Range reader can open while a cache fill is renamed to its completed file',{timeout:15000},async t=>{
-    const f=await setup(t),item=f.items.find((entry,index)=>f.files[index].name.endsWith('.txt'));
+    const f=await setup(t, {coldCache:true}),item=f.items.find((entry,index)=>f.files[index].name.endsWith('.txt'));
     const fsp=require('node:fs/promises'),path=require('node:path'),originalOpen=fsp.open,originalRename=fsp.rename,errors=[];
     const completed=new Set(),waiting=new Map();let intercepted=0;
     const root=path.join(f.dataDir,'telegram-part-cache')+path.sep;

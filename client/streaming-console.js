@@ -742,6 +742,18 @@
         const fingerprint = JSON.stringify({ ...d, configVersion: 0 }), submitted = structuredClone(d), coverToken = d.coverPending;
         const payload = { ...submitted, items: submitted.items.map(item => { const value = { ...item }; if (value.sourceSaved) delete value.source; delete value.sourceSaved; delete value.durationError; return value; }) };
         const flight = (async () => {
+            const itemErrors = [];
+            for (const item of submitted.items.filter(item => item.source.kind === 'local')) {
+                saving(t('正在校验节目来源…') + '\n' + item.name);
+                try {
+                    const size = Math.min(item.size, 65536);
+                    const blob = await localBlob(item.source, size ? { start: 0, end: size - 1 } : undefined);
+                    if (blob.size !== size || !size && ['image','audio','video'].includes(item.kind)) throw Error('missing');
+                    await blob.arrayBuffer();
+                } catch (_) { itemErrors.push({ id: item.id, error: 'STREAM_SOURCE_MISSING' }); }
+                if (account() !== actor || ui.stationId !== stationId) throw Error('STREAM_SAVE_CONTEXT_CHANGED');
+            }
+            if (itemErrors.length) throw Object.assign(Error('STREAM_SOURCE_MISSING'), { itemErrors, confirmedFailure: true });
             saving(t('正在保存节目单…'));
             if (submitted.coverPending) {
                 const cover = pendingCovers.get(stationId);
@@ -753,6 +765,10 @@
             const revision=await reconcileRevision(stationId); payload.configVersion = d.configVersion; submitted.configVersion = d.configVersion;
             if (account() !== actor || ui.stationId !== stationId) throw Error('STREAM_SAVE_CONTEXT_CHANGED');
             const same=revision?.matches && !submitted.coverPending && submitted.items.every(item => item.sourceSaved) && JSON.stringify(revisionInput(submitted))===JSON.stringify(revisionInput(localConfig(stationId)));
+            if (same && submitted.items.length) {
+                saving(t('正在校验节目来源…'));
+                await request('/stations/' + stationId + '/check-sources', 'POST', { configVersion: revision.configVersion }, { accountId: actor });
+            }
             let result=same ? revision : null;
             for (let attempt = 0; !result && attempt < 3; attempt++) {
                 if (account() !== actor || ui.stationId !== stationId) throw Error('STREAM_SAVE_CONTEXT_CHANGED');
@@ -1176,7 +1192,7 @@
         const identity = durationKey(item), jobKey = account() + ':' + identity; let job = durationJobs.get(jobKey);
         if (!job || job.failed) {
             let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; });
-            job = { item: structuredClone(item), actor: account(), promise, resolve, reject }; durationJobs.set(jobKey, job); durationQueue.push(job);
+            job = { item: structuredClone(item), actor: account(), stationId: ui.stationId, promise, resolve, reject }; durationJobs.set(jobKey, job); durationQueue.push(job);
         }
         const previousError = item.durationError, stationId = ui.stationId;
         item.durationError = '';
@@ -1187,23 +1203,28 @@
     function pumpDurations() {
         while (durationActive < 2 && durationQueue.length) {
             const job = durationQueue.shift(); durationActive++;
-            duration(job.item, job.actor).then(job.resolve, job.reject).finally(() => { durationActive--; pumpDurations(); });
+            duration(job.item, job.actor, job.stationId).then(job.resolve, job.reject).finally(() => { durationActive--; pumpDurations(); });
         }
     }
-    async function sourceUrl(item, signal, actor = account()) {
-        const stationId = ui.stationId;
+    async function sourceUrl(item, signal, actor = account(), stationId = ui.stationId) {
         const cacheKey = actor + ':' + durationKey(item), cached = previewTickets.get(cacheKey);
         const marked = ui.saveErrors?.[stationId]?.some(error => error.id === item.id);
-        if (!marked && cached?.expiresAt > Date.now() + 30000) return cached.url;
-        const source = structuredClone(item.source); source.tunnelGrants = Object.fromEntries((await config.tunnels()).map(entry => [entry.sessionId, entry.accessGrant]));
-        const ticket = await request('/preview', 'POST', { source }, { signal, accountId: actor });
+        const saved = item.sourceSaved && stationId;
+        const configVersion = (ui.drafts[stationId] || localConfig(stationId))?.configVersion;
+        if (!marked && cached?.expiresAt > Date.now() + 30000 && (saved
+            ? cached.stationId === stationId && cached.configVersion === configVersion : !cached.stationId)) return cached.url;
+        const source = saved ? null : structuredClone(item.source);
+        if (source) source.tunnelGrants = Object.fromEntries((await config.tunnels()).map(entry => [entry.sessionId, entry.accessGrant]));
+        const ticket = await request(saved ? '/stations/' + stationId + '/items/' + item.id + '/preview' : '/preview', 'POST',
+            saved ? { configVersion } : { source }, { signal, accountId: actor });
+        if (saved) Object.assign(ticket, { stationId, configVersion });
         const mime = value => String(value || 'application/octet-stream').split(';')[0].trim().toLowerCase();
         if (actor === account() && ticket.size === item.size && mime(ticket.type) === mime(item.type) && kindOf({ name: ticket.name, type: ticket.type }) === item.kind) {
             clearSaveError(stationId, item, ['STREAM_SOURCE_CHANGED', 'STREAM_SOURCE_INVALID', 'STREAM_SOURCE_DELETED', 'STREAM_SOURCE_REVOKED', 'STREAM_TUNNEL_DENIED']);
         }
         previewTickets.set(cacheKey, ticket); return ticket.url;
     }
-    async function duration(item, actor) {
+    async function duration(item, actor, stationId = ui.stationId) {
         return new Promise((resolve, reject) => {
             const controller = new AbortController(); let media, local, url, done = false;
             const timer = setTimeout(() => finish(Error('STREAM_DURATION_REQUIRED')), 30000);
@@ -1215,7 +1236,7 @@
             }
             (async () => {
                 local = item.source.kind === 'local' ? await localBlob(item.source) : null; if (done) return;
-                url = local ? URL.createObjectURL(local) : await sourceUrl(item, controller.signal, actor); if (done) { if (local) URL.revokeObjectURL(url); return; }
+                url = local ? URL.createObjectURL(local) : await sourceUrl(item, controller.signal, actor, stationId); if (done) { if (local) URL.revokeObjectURL(url); return; }
                 media = document.createElement(item.kind); media.preload = 'metadata';
                 media.onloadedmetadata = media.ondurationchange = () => { if (Number.isFinite(media.duration) && media.duration > 0) finish(); };
                 media.onerror = () => finish(Error('STREAM_MEDIA_METADATA_ERROR')); media.src = url;

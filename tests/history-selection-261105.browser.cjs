@@ -12,7 +12,7 @@ test('the wide record menu anchors to the gesture and stays within the viewport'
     page.setDefaultTimeout(4500);
     await page.setContent(`<main><div id="chatMessages"><article class="message" data-message-id="row" style="animation:none">
         <div class="message-bubble" style="position:fixed;inset:0;width:100%;max-width:none">Attachment</div>
-        </article></div><div id="historySelectionActions" hidden></div></main>`);
+        </article></div><div id="historySelectionActions" class="history-selection-actions" hidden></div></main>`);
     await page.addStyleTag({ path: 'client/index.css' });
     const section = (start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
     await page.addScriptTag({ content: `
@@ -69,7 +69,7 @@ test('right click and touch long press distinguish the record bubble from its ro
         <article class="message" data-message-id="file1" data-type="file"><div class="message-bubble">Attachment</div><button class="message-record-menu-trigger">☰</button></article>
         <article class="message" data-message-id="text1" data-type="text"><div class="message-bubble">Text</div><button class="message-record-menu-trigger">☰</button></article>
         </div><div id="fileUploadComposer">Upload</div><div class="input-area"><textarea id="textInput">draft message</textarea></div>
-        <div id="historySelectionActions" hidden></div></main>`);
+        <div id="historySelectionActions" class="history-selection-actions" hidden></div></main>`);
     await page.addStyleTag({ path: 'client/index.css' });
     const start = source.indexOf('const selectedHistoryIds =');
     const end = source.indexOf('async function toggleTransferRecordFavorite(', start);
@@ -105,13 +105,35 @@ test('right click and touch long press distinguish the record bubble from its ro
     assert.equal(await toolbar.getByText('保存到网盘').isVisible(), false);
     await toolbar.getByText('复制所有文本').click();
     assert.equal(await page.evaluate(() => copied), 'file text\n\nordinary text');
+    assert.equal(await page.evaluate(() => toast), '已复制文本');
     await toolbar.getByText('复制所有锚点').click();
     assert.equal(await page.evaluate(() => copied), 'https://fixture.example/?record=file1\n\nhttps://fixture.example/?record=text1');
-    await toolbar.getByText('退出多选').click();
+    assert.equal(await page.evaluate(() => toast), '已复制锚点');
+    const fixed = toolbar.locator('.history-selection-fixed');
+    assert.equal(await fixed.locator('span').textContent(), '2 ✓');
+    await file.evaluate(node => { const clone = node.cloneNode(true); clone.dataset.testClone = 'true'; node.after(clone); });
+    assert.equal(await fixed.locator('span').textContent(), '2 ✓', 'duplicate rendered rows count as one record');
+    await page.locator('[data-test-clone]').click();
+    assert.equal(await fixed.locator('span').textContent(), '1 ✓');
+    assert.equal(await page.locator('[data-message-id="file1"] .history-selection-check').count(), 0);
+    await page.locator('[data-test-clone]').evaluate(node => node.remove());
+    await file.click();
+    const x = (await fixed.boundingBox()).x;
+    await toolbar.locator('.history-selection-scroll').evaluate(node => node.scrollLeft = node.scrollWidth);
+    assert.equal((await fixed.boundingBox()).x, x);
+    assert.equal(await toolbar.getByText('取消').evaluate(node => getComputedStyle(node).userSelect), 'none');
+    await page.locator('[data-message-id="text1"]').click();
+    await page.locator('[data-message-id="file1"]').click();
+    assert.equal(await fixed.locator('span').textContent(), '0 ✓');
+    assert.equal(await page.locator('.history-selection-check').count(), 0);
+    await toolbar.getByText('取消').click();
     assert.equal(await page.locator('#textInput').inputValue(), 'draft message');
     assert.equal(await toolbar.isVisible(), false);
     await file.dispatchEvent('pointerdown', { pointerType: 'touch', pointerId: 10, clientX: 400, clientY: 15 });
     await file.locator('.history-selection-check').waitFor();
+    await page.waitForTimeout(800);
+    await file.dispatchEvent('contextmenu', { pointerType: 'touch' });
+    assert.equal(await file.locator('.history-selection-check').count(), 1, 'a held finger cannot toggle selection again after the initial suppression window');
     await file.dispatchEvent('pointerup', { pointerType: 'touch', pointerId: 10 });
     await file.dispatchEvent('contextmenu', { pointerType: 'touch' });
     assert.equal(await file.locator('.history-selection-check').count(), 1, 'native context menu after a long press does not undo selection');

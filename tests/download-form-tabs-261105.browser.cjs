@@ -62,6 +62,7 @@ for (const [pagePath, apiPath] of [['sns-dl', 'sns-dl'], ['youtube-premium-dl', 
         await tab(1).click();
         await page.locator('#formatList input[value="one"]:checked').waitFor();
         await page.locator('#preDownloadRemarkInput').fill('draft one');
+        assert.equal(await tab(1).textContent(), 'draft one');
         await tab(2).click();
         assert.equal(await url.inputValue(), second);
         await page.locator('#startBtn').click();

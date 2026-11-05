@@ -104,6 +104,33 @@ function createStreamingSources({ disk, tunnel, broker = createStreamingBroker()
         }
         return Buffer.concat(chunks).toString('utf8');
     }
+    async function check(source, sourceDeviceId) {
+        const metadata = stat(source), size = Number(metadata.size);
+        if (!Number.isSafeInteger(size) || size < 0) throw sourceError('STREAM_SOURCE_INVALID');
+        if (!size) {
+            if (['image', 'audio', 'video'].includes(mediaKind(metadata.name, metadata.type))) throw sourceError('STREAM_MEDIA_UNAVAILABLE');
+            return;
+        }
+        const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 8000);
+        try {
+            const samples = [[0, Math.min(size, 65536) - 1]];
+            if (size > 65536) samples.push([Math.max(65536, size - 65536), size - 1]);
+            for (const [start, end] of samples) {
+                const stream = await read(source, start, end, controller.signal, sourceDeviceId);
+                try {
+                    let received = 0;
+                    for await (const chunk of stream) {
+                        received += chunk.length;
+                        if (received > end - start + 1) throw sourceError('STREAM_READ_INVALID');
+                    }
+                    if (received !== end - start + 1) throw sourceError('STREAM_READ_INVALID');
+                } finally { stream.destroy(); }
+            }
+        } catch (error) {
+            if (controller.signal.aborted) throw sourceError('STREAM_PROVIDER_TIMEOUT');
+            throw /^STREAM_[A-Z_]+$/.test(error.message) ? error : sourceError('STREAM_SOURCE_UNAVAILABLE');
+        } finally { clearTimeout(timer); controller.abort(); }
+    }
     async function resolve(input, actor, req, allowAnyFile = false) {
         let resolved;
         if (input.kind === 'disk') resolved = disk.resolve(req, input);
@@ -135,7 +162,7 @@ function createStreamingSources({ disk, tunnel, broker = createStreamingBroker()
     }
     const peerProviders = resource => resource.source.kind === 'tunnel' ? [resource.deviceId, ...tunnel.providers(resource.source)].filter(Boolean)
         : resource.source.kind === 'local' ? [resource.deviceId || resource.source.deviceId] : [];
-    return { resolve, stat, read, text, broker, MAX_CHUNK, peerProviders,
+    return { resolve, stat, read, text, check, broker, MAX_CHUNK, peerProviders,
         describe: source => source.kind === 'disk' ? disk.describe(source) : source.kind === 'tunnel' ? tunnel.describe(source) : null };
 }
 module.exports = { createStreamingSources, createStreamingBroker, MAX_CHUNK };

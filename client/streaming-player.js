@@ -29,6 +29,9 @@
             try { if (snapshot?.manageable && onSeek) await onSeek(id, position); } catch (error) { onError?.(error); }
             finally { dragging = false; seek.disabled = false; update(); } };
         let snapshot, receivedAt = 0, currentId = '', media, active, next, generation = 0, paused = false, muted = false, volume = 1;
+        const invalidUpcoming = new Map(); let scanKey = '', scanRevision = 0;
+        const viewState = () => !snapshot || !invalidUpcoming.size ? snapshot : ({ ...snapshot, items: snapshot.items.map(item => !item.unavailable && invalidUpcoming.has(item.id)
+            ? { ...item, unavailable: invalidUpcoming.get(item.id) } : item) });
         let actual = 'waiting', failure = '', lastMediaError = '', alive = true, denied = false, localPosition = 0, lastTick = performance.now(), delay = 0, loadCost = 1, tail = false;
         let polling = false, reporting = false, reportGeneration = 0, pageSuspended = false, accessGeneration = 0, lastStateAt = 0, unsubscribe;
         let reportController, reportRetryTimer, reportRetries = 0, lastReportError = '';
@@ -161,7 +164,30 @@
             if (task.clientUrl) URL.revokeObjectURL(task.clientUrl); task.clientChunks = null;
             if(task.url?.startsWith('blob:'))URL.revokeObjectURL(task.url);
         }
-        function clearNext() { dispose(next); next = null; }
+        function clearNext() { scanRevision++; scanKey = ''; dispose(next); next = null; }
+        async function checkFollowing() {
+            const key = JSON.stringify([snapshot?.configVersion, snapshot?.epoch, currentId]);
+            if (!alive || denied || pageSuspended || locallyPaused() || !running() || !active?.ready || scanKey === key) return;
+            const item = current();
+            if (length(item) - localPosition > Math.min(length(item), Math.max(5, loadCost + 2))) return;
+            scanKey = key; const revision = ++scanRevision, currentGeneration = generation;
+            const items = snapshot.items, index = items.findIndex(item => item.id === currentId);
+            const pending = [...items.slice(index + 1), ...(snapshot.loop ? items.slice(0, index) : [])];
+            for (const item of pending) {
+                if (revision !== scanRevision || currentGeneration !== generation || !alive || denied || pageSuspended) return;
+                if (item.unavailable || invalidUpcoming.has(item.id)) continue;
+                const task = next = prepare(item);
+                try {
+                    await task.promise;
+                    return;
+                } catch (error) {
+                    if (revision !== scanRevision || currentGeneration !== generation || next !== task || task.disposed || !alive || pageSuspended) return;
+                    if (accessError(error)) return;
+                    invalidUpcoming.set(item.id, error.message);
+                    dispose(task); next = null; onState?.(viewState());
+                }
+            }
+        }
         function accessError(error) {
             if (!['STREAM_KICKED', 'STREAM_INVITATION_REQUIRED', 'STREAM_OFFLINE', 'STREAM_NOT_FOUND', 'STREAM_DEVICE_DENIED'].includes(error.message)) return false;
             denied = true; accessGeneration++; generation++; dispose(active); clearNext(); media = null; active = null; currentId = ''; content.replaceChildren(); tail = false; actual = 'waiting'; failure = t('访问已结束') + ' [' + error.message + ']'; unsubscribe?.();
@@ -291,8 +317,9 @@
             } catch (error) { if (revision !== generation || !alive || task.disposed) return; failMedia(task, error); }
         }
         function following() {
-            const items = (snapshot?.items || []).filter(item => !item.unavailable), index = items.findIndex(item => item.id === currentId);
-            return index < 0 || !items.length || index === items.length - 1 && !snapshot.loop ? null : items[(index + 1) % items.length];
+            const items = snapshot?.items || [], index = items.findIndex(item => item.id === currentId);
+            if (index < 0) return null;
+            return [...items.slice(index + 1), ...(snapshot.loop ? items.slice(0, index + 1) : [])].find(item => !item.unavailable && !invalidUpcoming.has(item.id)) || null;
         }
         function recoverBuffered(task) {
             if (active !== task || task.disposed || !task.clientUrl || task.usingClient) return false;
@@ -345,8 +372,8 @@
                     else if (now - active.progressAt >= 30000) { if(active.retries<3)load(item,localPosition,active.retries+1);else failMedia(active,Error('STREAM_MEDIA_STALLED')); return; }
                 }
                 if (localPosition >= length(item)) { const followingItem = following(); if (followingItem) { load(followingItem); return; } tail = false; media?.pause(); actual = 'waiting'; update(); return; }
-                const upcoming = following();
-                if (upcoming && length(item) - localPosition <= Math.min(length(item), Math.max(5, loadCost + 2)) && !next) next = prepare(upcoming);
+                if (next?.expiresAt && next.expiresAt < Date.now() + 10000) clearNext();
+                checkFollowing();
             }
             if (active?.expiresAt && active.expiresAt < Date.now() + 5000) { load(item, localPosition); return; }
             if (media && active?.ready) {
@@ -362,10 +389,11 @@
             const previous = snapshot; snapshot = value; receivedAt = performance.now(); lastStateAt = Date.now();
             if (['offline', 'restricted'].includes(value.visibility)) { accessError(Error(value.visibility === 'offline' ? 'STREAM_OFFLINE' : 'STREAM_INVITATION_REQUIRED')); return; }
             const explicit = previous && ((value.playback.controlVersion || 0) !== (previous.playback.controlVersion || 0) || value.configVersion !== previous.configVersion || value.epoch !== previous.epoch);
+            if (explicit) { invalidUpcoming.clear(); clearNext(); }
             if (!previous || explicit || !current() || current()?.unavailable) align();
             else if (previous.playback.status === 'playing' && value.playback.status === 'stopped') tail = true;
             else if (value.playback.status === 'playing') tail = false;
-            sync(); update(); onState?.(value);
+            sync(); update(); onState?.(viewState());
         }
         async function poll() {
             if (!alive || denied || pageSuspended || polling) return; polling = true; const revision = accessGeneration;
@@ -376,7 +404,7 @@
         const timer = setInterval(() => { sync(); update(); warmCurrent(); }, 250);
         const pollTimer = setInterval(() => { if (Date.now() - lastStateAt > 25000) poll(); }, 10000);
         const reportTimer = setInterval(report, 15000); report();
-        return { element: host, apply, poll, snapshot: () => snapshot, currentItemId: () => currentId, isPlaying, exitFullscreen, setBackground,
+        return { element: host, apply, poll, snapshot: viewState, currentItemId: () => currentId, isPlaying, exitFullscreen, setBackground,
             setForeground(value) { foreground = Boolean(value); lastTick = performance.now(); sync(); update(); },
             setController(handler) { onSeek = handler; update(); },
             close() { if (!alive) return; alive = false; generation++; exitFullscreen(); unwatch(); clearTimeout(reportRetryTimer); reportController?.abort(); document.removeEventListener?.('visibilitychange',visibilityChanged); global.removeEventListener('pagehide', hidePage); global.removeEventListener('pageshow', resumePage); unsubscribe?.(); clearInterval(timer); clearInterval(pollTimer); clearInterval(reportTimer); dispose(active); clearNext(); host.remove(); notifyPlayback(); } };

@@ -22,10 +22,10 @@ test('download names retain literal brackets, traceable authors, platform and re
     }
 });
 
-test('cut start times are compact and optional, while the real output extension is preserved', () => {
+test('complete cut ranges are compact and optional, while the real output extension is preserved', () => {
     const task = { title: 'Title', url: 'https://youtu.be/video', outputFileName: 'actual.m4a' };
-    const times = [['*01:25:03-02:36:07', '1h25m3'], ['3m7-5m9', '3m7'], ['3s-5m5', '3s'],
-        ['*00:00:03-00:05:05', '3s'], ['*0-5', '0s'], ['*00:03.125-00:04', '3.125s']];
+    const times = [['*01:25:03-02:36:07', '1h25m3-2h36m7'], ['3m7-5m9', '3m7-5m9'], ['3s-5m5', '3s-5m5'],
+        ['*00:00:03-00:05:05', '3s-5m5'], ['*0-9', '0s-9s'], ['*00:03.125-00:04', '3.125s-4s']];
     for (const [downloadSections, expected] of times) {
         assert.equal(downloadFileName({ ...task, downloadSections }, 'youtube'), `Title [${expected}][YT][video].m4a`);
     }

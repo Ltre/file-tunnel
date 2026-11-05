@@ -217,6 +217,32 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
             db.stations[stationId] = s; return summary(s, actor);
         });
     }
+    async function checkItem(item, deviceId, checks) {
+        if (!sources.check) return;
+        for (const source of [item.source, ...(item.references || []).map(ref => ref.source)]) {
+            if (source.kind === 'local') continue; // The creator checks its browser bytes without uploading to itself.
+            const key = JSON.stringify(source);
+            if (!checks.has(key)) checks.set(key, Promise.resolve().then(() => sources.check(source, deviceId)));
+            await checks.get(key);
+        }
+    }
+    async function checkSources(stationId, actor, expected) {
+        let s = station(stationId); authority(s, actor, 'edit');
+        if (s.configVersion !== expected) fail('STREAM_CONFLICT');
+        const itemErrors = [], checks = new Map();
+        for (const item of s.items) {
+            try {
+                const metadata = sources.stat?.(item.source);
+                const mime = value => String(value || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+                if (metadata && (metadata.size !== item.size || mime(metadata.type) !== mime(item.type) || mediaKind(metadata.name, metadata.type) !== item.kind)) fail('STREAM_SOURCE_CHANGED');
+                await checkItem(item, s.deviceId, checks);
+            } catch (error) { itemErrors.push({ id: item.id, error: /^STREAM_[A-Z_]+$/.test(error.message) ? error.message : 'STREAM_SOURCE_UNAVAILABLE' }); }
+        }
+        s = station(stationId); authority(s, actor, 'edit');
+        if (s.configVersion !== expected) fail('STREAM_CONFLICT');
+        if (itemErrors.length) throw Object.assign(Error(itemErrors[0].error), { itemErrors });
+        return { ok: true, configVersion: s.configVersion };
+    }
     async function edit(stationId, actor, input, req, progress = () => {}) {
         let s = station(stationId); authority(s, actor, 'edit');
         const expected = input.configVersion;
@@ -225,7 +251,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         const coverId = input.coverId === undefined ? s.coverId || '' : String(input.coverId);
         if (coverId && !covers?.has(stationId,coverId)) fail('STREAM_COVER_INVALID');
         const ids = new Set();
-        const items = [], itemErrors = [], resolutions = new Map();
+        const items = [], itemErrors = [], resolutions = new Map(), checks = new Map();
         for (const value of input.items) {
             if (!validId(value.id) || ids.has(value.id)) fail('STREAM_PLAYLIST_INVALID');
             ids.add(value.id);
@@ -247,6 +273,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
                     }
                 }
                 const kind = mediaKind(resolved.name, resolved.type);
+                await checkItem(resolved, s.deviceId, checks);
                 const duration = ['video', 'audio'].includes(kind) ? number(value.duration ?? previous?.duration, 0.01, 31536000, 'STREAM_DURATION_REQUIRED') : null;
                 const start = duration ? number(value.start ?? 0, 0, duration - 0.001, 'STREAM_START_INVALID') : 0;
                 items.push({ id: value.id, name: resolved.name, type: resolved.type, size: resolved.size,
@@ -547,7 +574,7 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         return s.coverId || '';
     }
     return { register, authenticate, syncDevice, create, edit, view, control, visibility, ownership, remove, list, bookmark, cover,
-        invitation, invitations, inspectInvite, accept, revoke, inbox, delivered, markInviteSent, access, report, unwatch, resource, unavailable, references, revision,
+        invitation, invitations, inspectInvite, accept, revoke, inbox, delivered, markInviteSent, access, report, unwatch, resource, unavailable, references, revision, checkSources,
         tick, revokeLogin, authority, station, allowed, sourceLoggedIn, rootsForAliases, invitableDevices, snapshot: () => copy(db) };
 }
 module.exports = { createStreamingConsole, mediaKind, digest };
