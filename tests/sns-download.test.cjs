@@ -61,6 +61,9 @@ test('SNS task service persists and downloads independently from YouTube Premium
     const completed = await waitFor(() => service.get(created.id)?.status === 'completed' && service.get(created.id));
     assert.equal(completed.platform, 'tiktok');
     assert.equal(completed.referenceInfo.extractor, 'TikTok');
+    assert.equal(completed.downloadFileName, '独立 SNS 成品[＠demo][Tk][123].mp4');
+    assert.equal(service.getFile(created.id, 'download').name, completed.downloadFileName);
+    assert.equal(service.getFile(created.id).name, 'sns.mp4');
     assert.ok(fs.existsSync(path.join(dataDir, 'sns-download-tasks.json')));
     assert.ok(fs.existsSync(path.join(dataDir, 'sns-downloads', created.id, 'sns.mp4')));
     assert.equal(fs.existsSync(path.join(dataDir, 'youtube-premium-tasks.json')), false);

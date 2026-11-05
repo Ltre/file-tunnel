@@ -336,6 +336,8 @@ test('private task service persists history, paginates and hides server paths', 
     assert.equal('coverPath' in completed, false);
     assert.equal(JSON.stringify(completed).includes(dataDir), false);
     assert.equal(service.getFile(created.id).name, 'private-test.mp4');
+    assert.equal(completed.downloadFileName, 'Private test[YT][test].mp4');
+    assert.equal(service.getFile(created.id, 'download').name, completed.downloadFileName);
     assert.deepEqual(service.list(1, 1).ids, [created.id]);
     const detailed = service.updateDetails(created.id, { remark: 'private note', tags: ['Epic', 'Epic', 'Public'] });
     assert.equal(detailed.remark, 'private note');

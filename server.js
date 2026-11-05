@@ -1737,7 +1737,7 @@ registerAudioTrackRepairRoutes(app, { root: '/api/sns-dl', service: snsDownloadS
     repair: audioTrackRepair, sanitizeError: sanitizeSnsDownloadError });
 app.get('/api/sns-dl/tasks/:taskId/file', adminAuth.requireAuth, (req, res) => {
     if(!taskAutoCache.admit('sns:'+req.params.taskId,req,res,snsDownloadService.get(req.params.taskId)))return;
-    const file = snsDownloadService.getFile(req.params.taskId);
+    const file = snsDownloadService.getFile(req.params.taskId, req.query.inline === '1' ? 'output' : 'download');
     if (!file) return res.status(404).json({ error: 'sns-download-file-not-found' });
     const stat = fs.statSync(file.path);
     res.setHeader('Accept-Ranges', 'bytes');
@@ -2026,7 +2026,7 @@ registerAudioTrackRepairRoutes(app, { root: '/api/youtube-premium', service: you
     repair: audioTrackRepair, sanitizeError: sanitizeYoutubePremiumError });
 app.get('/api/youtube-premium/tasks/:taskId/file', adminAuth.requireAuth, (req, res) => {
     if(!taskAutoCache.admit('youtube:'+req.params.taskId,req,res,youtubePremiumService.get(req.params.taskId)))return;
-    const file = youtubePremiumService.getFile(req.params.taskId);
+    const file = youtubePremiumService.getFile(req.params.taskId, req.query.inline === '1' ? 'output' : 'download');
     if (!file) return res.status(404).json({ error: 'youtube-premium-file-not-found' });
     const stat = fs.statSync(file.path);
     res.setHeader('Accept-Ranges', 'bytes');

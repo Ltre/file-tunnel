@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { downloadFileName } = require('./download-file-name');
 
 const ACTIVE_STATUSES = new Set(['queued', 'parsing', 'downloading', 'merging']);
 const ALLOWED_PLATFORMS = new Set(['tiktok', 'facebook', 'instagram', 'threads', 'line', 'twitter', 'x', 'bilibili', 'netease']);
@@ -148,6 +149,7 @@ function createSnsDownloadService({
             status: task.status,
             progress: task.progress || { percent: 0 },
             outputFileName: task.outputFileName || '',
+            downloadFileName: downloadFileName(task),
             outputFileSize: Number(task.outputFileSize) || 0,
             error: task.error || '',
             createdAt: task.createdAt,
@@ -386,7 +388,7 @@ function createSnsDownloadService({
             const resolved = path.resolve(filePath);
             const relative = path.relative(outputDir, resolved);
             if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
-            return { path: resolved, name: kind === 'cover' ? path.basename(resolved) : task.outputFileName };
+            return { path: resolved, name: kind === 'cover' ? path.basename(resolved) : kind === 'download' ? downloadFileName(task) : task.outputFileName };
         }
     };
 }

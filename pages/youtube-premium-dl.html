@@ -1966,13 +1966,13 @@
             download.className = 'command primary';
             if (download instanceof HTMLAnchorElement) {
                 download.href = task.downloadUrl;
-                download.download = task.outputFileName || '';
+                download.download = task.downloadFileName || task.outputFileName || '';
             } else {
                 download.type = 'button';
                 download.addEventListener('click', async () => {
                     download.disabled = true;
                     const blob = await getBrowserCachedBlob(task).catch(() => null);
-                    if (blob) downloadBlob(blob, task.outputFileName);
+                    if (blob) downloadBlob(blob, task.downloadFileName || task.outputFileName);
                     else if (task.downloadUrl) location.href = task.downloadUrl;
                     download.disabled = false;
                 });

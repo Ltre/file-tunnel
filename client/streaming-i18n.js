@@ -120,7 +120,7 @@
         ['节目单未保存，请检查来源后重试','Playlist was not saved; check the sources and retry'], ['保存结果尚未确认，请重新读取串流台状态','Save result is unconfirmed; reload the station state'],
         ['观看者黑名单','Viewer blacklist'], ['黑名单类型','Blacklist type'], ['黑名单 ID','Blacklist ID'], ['设备 ID','Device ID'], ['用户账号 ID','User account ID'],
         ['加入黑名单','Add to blacklist'], ['解除限制','Remove restriction'], ['本台暂无黑名单条目','No blacklist entries for this station'], ['请输入需要限制的 ID','Enter the ID to restrict'],
-        ['来源内容已变更，请重新导入该节目项','Source content changed; import this item again'], ['邀请不存在或已被删除，请索取新邀请','Invitation is unavailable or deleted; request a new one'],
+        ['来源内容已变更，请重新导入该节目项','Source content changed; import this item again'], ['该节目未通过保存校验','This programme failed save validation'], ['邀请不存在或已被删除，请索取新邀请','Invitation is unavailable or deleted; request a new one'],
         ['订阅','Subscribe'], ['已订阅','Subscribed'], ['已取消订阅','Unsubscribed'], ['结束本台观看','End viewing this station'],
         ['全台已暂停，本机跟随','Following the global pause'],
         ['图片已加载，正在解码…','Image loaded; decoding…'], ['文件超出预览大小限制，请通过原来源查看','File exceeds the preview size limit; open it at its original source'],

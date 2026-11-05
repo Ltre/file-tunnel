@@ -19,11 +19,16 @@ for (const [pagePath, apiPath] of [['sns-dl', 'sns-dl'], ['youtube-premium-dl', 
             title: 'Fixture ' + id, platform: 'twitter', downloadable: true, mediaType: 'video',
             selection: { ids: [id] }, formats: [{ id, kind: 'video_audio', ext: 'mp4', videoCodec: 'avc1', audioCodec: 'aac' }]
         });
-        let releaseFirst, releaseSubmit, sent, failFormat = false;
+        let releaseFirst, releaseSubmit, sent, failFormat = false, submissions = 0;
         const firstGate = new Promise(resolve => { releaseFirst = resolve; });
         const submitGate = new Promise(resolve => { releaseSubmit = resolve; });
         const tasks = [{ id: 'existing-task', title: 'Earlier download', url: first, status: 'queued', mode: 'custom',
             selectedFormatIds: ['one'], downloadSections: '*00:01-00:02', remark: 'prior remark', cacheFiles: false }];
+        const downloadName = 'Title [3s][＠account][YT][resource].mp4';
+        tasks.push({ id: 'download-fixture', title: 'Download fixture', url: first, status: 'completed', mode: 'default',
+            hasFile: true, outputFileName: 'on-server.mp4', downloadFileName: downloadName, downloadUrl: '/fixture-download',
+            outputFileSize: 3, completedAt: 1, autoCacheEnabled: false, cacheFiles: true });
+        await page.route('**/fixture-download', route => route.fulfill({ body: 'abc', contentType: 'video/mp4', headers: { 'Content-Length': '3' } }));
         await page.route('**/api/' + apiPath + '/formats', async route => {
             const { url } = route.request().postDataJSON();
             if (url === first) await firstGate;
@@ -35,13 +40,15 @@ for (const [pagePath, apiPath] of [['sns-dl', 'sns-dl'], ['youtube-premium-dl', 
         await page.route('**/api/' + apiPath + '/tasks', async route => {
             sent = route.request().postDataJSON();
             await submitGate;
-            const task = { ...sent, id: 'created-task', title: 'Created', status: 'queued' };
+            const task = { ...sent, id: ++submissions === 1 ? 'created-task' : 'created-task-' + submissions, title: 'Created', status: 'queued' };
             tasks.unshift(task);
             await route.fulfill({ json: task });
         });
         const mode = () => page.locator('input[name="mode"][value="custom"]').evaluate(input => input.click());
         const tab = n => page.getByRole('button', { name: '表单 ' + n, exact: true });
         await page.goto(fixture.base + '/' + pagePath);
+        const downloadTask = page.locator('[data-task-id="download-fixture"]');
+        assert.equal(await downloadTask.getByRole('link', { name: '下载', exact: true }).getAttribute('download'), downloadName);
         const url = page.locator('#urlInput');
         await url.fill(first);
         const requested = page.waitForRequest(req => req.url().endsWith('/formats') && req.postDataJSON()?.url === first);
@@ -81,5 +88,31 @@ for (const [pagePath, apiPath] of [['sns-dl', 'sns-dl'], ['youtube-premium-dl', 
         await page.locator('#formatList input[value="two"]').waitFor();
         assert.equal(await page.locator('#manualFormatInput').inputValue(), 'one');
         assert.equal(await page.locator('#useManualFormatInput').isChecked(), true);
+        page.on('dialog', dialog => dialog.accept());
+        while (await page.locator('.download-form-tabs button[aria-pressed]').count() > 1) {
+            await page.getByRole('button', { name: '删除表单', exact: true }).click();
+        }
+        await url.fill(second);
+        await page.locator('#startBtn').click();
+        await page.waitForFunction(() => !document.getElementById('urlInput').value);
+        assert.equal(await tab(1).getAttribute('aria-pressed'), 'true');
+        assert.equal(await tab(1).evaluate(button => getComputedStyle(button).color), 'rgb(255, 255, 255)');
+        await page.getByRole('button', { name: '新建任务表单' }).click();
+        assert.equal(await tab(2).getAttribute('aria-pressed'), 'true');
+        await page.getByRole('button', { name: '删除表单', exact: true }).click();
+        await page.getByRole('button', { name: '删除表单', exact: true }).click();
+        assert.equal(await tab(1).getAttribute('aria-pressed'), 'true');
+        await page.reload();
+        assert.equal(await tab(1).getAttribute('aria-pressed'), 'true');
+        if (pagePath === 'youtube-premium-dl') {
+            await downloadTask.getByRole('button', { name: '缓存到浏览器', exact: true }).click();
+            await page.waitForFunction(() => browserCacheStates.get('download-fixture')?.status === 'browser_cache_cached');
+            await page.reload();
+            const saved = page.waitForEvent('download');
+            await downloadTask.getByRole('button', { name: '下载', exact: true }).click();
+            const download = await saved;
+            assert.equal(download.suggestedFilename(), downloadName);
+            await download.cancel();
+        }
     });
 }

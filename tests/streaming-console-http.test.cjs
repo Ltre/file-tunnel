@@ -195,6 +195,26 @@ test('playlist save streams real progress and confirms success only after persis
     assert.equal(error.at(-1).error, 'STREAM_CONFLICT'); assert.ok(error.every(value => !value.result));
 });
 
+test('JSON and streamed playlist errors identify every affected programme', async t => {
+    const f = await setup(t), station = f.streaming.service.station(f.s.id);
+    station.items[0].size++;
+    station.items[1].size++;
+    const items = station.items.map(item => ({ id: item.id, stay: 8 }));
+    const expected = station.items.slice(0, 2).map(item => ({ id: item.id, error: 'STREAM_SOURCE_CHANGED' }));
+    const input = { configVersion: station.configVersion, items };
+    const json = await f.call('device-A', '/stations/' + station.id, 'PUT', input, true);
+    assert.equal(json.status, 422);
+    assert.deepEqual(json.body.itemErrors, expected);
+    const response = await fetch(f.base + '/api/streaming/stations/' + station.id, { method: 'PUT',
+        headers: { ...f.headers('device-A', true), Accept: 'application/x-ndjson', 'Content-Type': 'application/json' },
+        body: JSON.stringify(input) });
+    const lines = (await response.text()).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(lines.at(-1).error, 'STREAM_SOURCE_CHANGED');
+    assert.deepEqual(lines.at(-1).itemErrors, expected);
+    assert.ok(lines.every(line => !line.result));
+    assert.equal(station.configVersion, input.configVersion);
+});
+
 test('account blacklist immediately invalidates issued HTTP media tickets and can be lifted per station', async t => {
     const f = await setup(t); await f.login('bob');
     const open = f.api.objectStorage.open; let readClosed = Promise.resolve();

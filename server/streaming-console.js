@@ -225,38 +225,44 @@ function createStreamingConsole({ dataDir, now = Date.now, user = () => null,
         const coverId = input.coverId === undefined ? s.coverId || '' : String(input.coverId);
         if (coverId && !covers?.has(stationId,coverId)) fail('STREAM_COVER_INVALID');
         const ids = new Set();
-        const items = [], resolutions = new Map();
+        const items = [], itemErrors = [], resolutions = new Map();
         for (const value of input.items) {
             if (!validId(value.id) || ids.has(value.id)) fail('STREAM_PLAYLIST_INVALID');
             ids.add(value.id);
-            const previous = s.items.find(item => item.id === value.id);
-            const locator = value.source && JSON.stringify(value.source);
-            if (locator && !resolutions.has(locator)) {
-                progress({phase:'checking',completed:items.length,total:input.items.length,name:String(value.name || '').slice(0,255)});
-                resolutions.set(locator, await sources.resolve(value.source, actor, req));
-            }
-            let resolved = locator ? resolutions.get(locator) : previous;
-            if (!resolved?.source) fail('STREAM_SOURCE_INVALID');
-            if (!locator) {
-                const current = sources.stat?.(resolved.source);
-                if (current) {
-                    const mime = value => String(value || 'application/octet-stream').split(';')[0].trim().toLowerCase();
-                    if (mime(current.type) !== mime(resolved.type) || current.size !== resolved.size || mediaKind(current.name, current.type) !== mediaKind(resolved.name, resolved.type)) fail('STREAM_SOURCE_CHANGED');
-                    resolved = { ...resolved, name: current.name, type: current.type, size: current.size };
+            try {
+                const previous = s.items.find(item => item.id === value.id);
+                const locator = value.source && JSON.stringify(value.source);
+                if (locator && !resolutions.has(locator)) {
+                    progress({phase:'checking',completed:items.length,total:input.items.length,name:String(value.name || '').slice(0,255)});
+                    resolutions.set(locator, Promise.resolve().then(() => sources.resolve(value.source, actor, req)));
                 }
+                let resolved = locator ? await resolutions.get(locator) : previous;
+                if (!resolved?.source) fail('STREAM_SOURCE_INVALID');
+                if (!locator) {
+                    const current = sources.stat?.(resolved.source);
+                    if (current) {
+                        const mime = value => String(value || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+                        if (mime(current.type) !== mime(resolved.type) || current.size !== resolved.size || mediaKind(current.name, current.type) !== mediaKind(resolved.name, resolved.type)) fail('STREAM_SOURCE_CHANGED');
+                        resolved = { ...resolved, name: current.name, type: current.type, size: current.size };
+                    }
+                }
+                const kind = mediaKind(resolved.name, resolved.type);
+                const duration = ['video', 'audio'].includes(kind) ? number(value.duration ?? previous?.duration, 0.01, 31536000, 'STREAM_DURATION_REQUIRED') : null;
+                const start = duration ? number(value.start ?? 0, 0, duration - 0.001, 'STREAM_START_INVALID') : 0;
+                items.push({ id: value.id, name: resolved.name, type: resolved.type, size: resolved.size,
+                    source: copy(resolved.source), references: copy(resolved.references || []), kind, duration, start,
+                    stay: duration ? null : number(value.stay ?? 10, 0.1, 86400), unavailable: null });
+                if (locator) progress({ phase: 'checked', completed: items.length, total: input.items.length, name: resolved.name });
+            } catch (error) {
+                if (!/^STREAM_[A-Z_]+$/.test(error.message)) throw error;
+                itemErrors.push({ id: value.id, error: error.message });
             }
-            const kind = mediaKind(resolved.name, resolved.type);
-            const duration = ['video', 'audio'].includes(kind) ? number(value.duration ?? previous?.duration, 0.01, 31536000, 'STREAM_DURATION_REQUIRED') : null;
-            const start = duration ? number(value.start ?? 0, 0, duration - 0.001, 'STREAM_START_INVALID') : 0;
-            items.push({ id: value.id, name: resolved.name, type: resolved.type, size: resolved.size,
-                source: copy(resolved.source), references: copy(resolved.references || []), kind, duration, start,
-                stay: duration ? null : number(value.stay ?? 10, 0.1, 86400), unavailable: null });
-            if (locator) progress({ phase: 'checked', completed: items.length, total: input.items.length, name: resolved.name });
         }
         // Source resolution can await network metadata; recheck both authority
         // and configuration revision before committing any of the new list.
         s = station(stationId); authority(s, actor, 'edit');
         if (s.configVersion !== expected) throw Object.assign(Error('STREAM_CONFLICT'), { expectedVersion: expected, currentVersion: s.configVersion });
+        if (itemErrors.length) throw Object.assign(Error(itemErrors[0].error), { itemErrors });
         progress({ phase: 'persisting', completed: items.length, total: input.items.length });
         return change(() => {
             advance(s); const oldIndex = s.items.findIndex(item => item.id === s.playback.itemId), oldPosition = position(s), oldStart = s.items[oldIndex]?.start || 0;

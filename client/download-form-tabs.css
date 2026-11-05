@@ -1,7 +1,7 @@
 .download-form-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
 .download-form-tabs{display:flex;gap:6px;flex-wrap:wrap}
 .download-form-tabs button,.download-form-tools button{min-width:36px;padding:5px 9px}
-.download-form-tabs button[aria-pressed="true"]{background:#e8efff;border-color:#8aa3df;color:#244a9b;font-weight:700}
+.download-form-tabs button[aria-pressed="true"]{background:var(--accent,#4767d4);border-color:var(--accent,#4767d4);color:#fff;font-weight:700}
 .download-form-tools{display:flex;gap:6px;flex:none}
 .download-form-heading + .url-row{margin-top:0}
 .sns-download-options .segmented{display:inline-flex;border:1px solid var(--line);border-radius:9px;padding:3px}

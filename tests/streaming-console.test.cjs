@@ -59,6 +59,22 @@ test('playlist resolves a repeated source once and later arrangement reuses its 
     assert.equal(f.service.station(s.id).items[0].stay, 7, 'reference reuse cannot bypass revocation checks or partially save');
 });
 
+test('playlist save reports every changed source without committing a partial list', async t => {
+    const f = fixture(t), s = f.create();
+    await f.edit(s, ['bad-one', 'good', 'bad-two'].map(id => ({ id, source: { kind: 'local', fileId: id } })));
+    const before = structuredClone(f.service.station(s.id));
+    f.options.sources.stat = source => ({ name: 'image.jpg', type: 'image/jpeg', size: source.fileId === 'good' ? 10 : 20 });
+    await assert.rejects(f.edit(s, before.items.map(item => ({ id: item.id, stay: 20 }))), error => {
+        assert.equal(error.message, 'STREAM_SOURCE_CHANGED');
+        assert.deepEqual(error.itemErrors, [
+            { id: 'bad-one', error: 'STREAM_SOURCE_CHANGED' },
+            { id: 'bad-two', error: 'STREAM_SOURCE_CHANGED' }
+        ]);
+        return true;
+    });
+    assert.deepEqual(f.service.station(s.id), before);
+});
+
 test('verified legacy device aliases preserve one-way discovery and fixed-device offline invitations', async t => {
     const f = fixture(t), s = f.create(); await f.edit(s); f.online(s);
     f.service.syncDevice(f.a, { aliases: ['legacy-A'] }); f.service.syncDevice(f.b, { aliases: ['legacy-B'] });

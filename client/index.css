@@ -886,6 +886,13 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
     box-shadow: 0 14px 38px rgba(20, 29, 50, .22);
 }
 
+.message-record-action-menu,
+.message-record-action-menu * {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
+
 .message-record-action-menu .history-action {
     display: flex;
     align-items: center;

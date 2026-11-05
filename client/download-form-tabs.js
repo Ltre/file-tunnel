@@ -141,6 +141,11 @@
         function reset(draft) {
             clearTimeout(draft.timer);
             Object.assign(draft, blank(), { pending: false, request: null });
+            if (drafts.length === 1 && drafts[0] === draft) {
+                draft.id = 1;
+                next = 2;
+                renderTabs();
+            }
             update(draft);
         }
         copy.onclick = () => {
@@ -153,7 +158,10 @@
             active.request = null;
             const index = drafts.indexOf(active);
             drafts.splice(index, 1);
-            if (!drafts.length) drafts.push({ id: next++, ...blank() });
+            if (!drafts.length) {
+                next = 1;
+                drafts.push({ id: next++, ...blank() });
+            }
             active = drafts[Math.min(index, drafts.length - 1)];
             display();
             renderTabs();

@@ -196,7 +196,7 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         res.type('application/x-ndjson').set('X-Accel-Buffering', 'no'); res.flushHeaders();
         const send = value => { if (!res.destroyed && !res.writableEnded) res.write(JSON.stringify(value) + '\n'); };
         try { const result = await service.edit(req.params.id, req.streamActor, req.body || {}, req, progress => send({ progress })); send({ result }); }
-        catch (error) { send({ error: /^(STREAM_[A-Z_]+|LOGIN_REQUIRED)$/.test(error.message) ? error.message : 'STREAM_SOURCE_UNAVAILABLE', ...(error.message === 'STREAM_CONFLICT' ? { expectedVersion: error.expectedVersion, currentVersion: error.currentVersion } : {}) }); }
+        catch (error) { send({ error: /^(STREAM_[A-Z_]+|LOGIN_REQUIRED)$/.test(error.message) ? error.message : 'STREAM_SOURCE_UNAVAILABLE', ...(error.itemErrors ? { itemErrors: error.itemErrors } : {}), ...(error.message === 'STREAM_CONFLICT' ? { expectedVersion: error.expectedVersion, currentVersion: error.currentVersion } : {}) }); }
         res.end();
     }));
     router.delete('/stations/:id', wrap((req, res) => res.json(service.remove(req.params.id, req.streamActor))));
@@ -233,7 +233,7 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         if (tickets.size >= 4096) throw new Error('STREAM_LIMIT');
         const token = crypto.randomBytes(24).toString('base64url'), expiresAt = now() + 600000;
         tickets.set(token, { preview: true, source: resolved.source, epoch: 0, deviceId: a.deviceId, userId: a.userId, expiresAt });
-        res.json({ url: '/api/streaming/media/' + token, expiresAt });
+        res.json({ url: '/api/streaming/media/' + token, expiresAt, name: resolved.name, type: resolved.type, size: resolved.size });
     }));
     router.get('/provider-work', wrap(async (req, res) => {
         const controller = new AbortController(); res.once('close', () => controller.abort());
@@ -259,7 +259,7 @@ function registerStreamingConsole(app, { dataDir, identity, proofs, user, loginR
         if (res.headersSent) { res.destroy(); return; }
         const code = String(error.message || 'STREAM_FAILED');
         const publicCode = /^(STREAM_[A-Z_]+|LOGIN_REQUIRED|ORIGIN_MISMATCH)$/.test(code) ? code : 'STREAM_SOURCE_UNAVAILABLE';
-        res.status(code === 'STREAM_CONFLICT' ? 409 : code === 'STREAM_NOT_FOUND' ? 404 : /REQUIRED|DENIED|KICKED|LOCAL_ONLY|DEVICE$|REVOKED|EXPIRED/.test(code) ? 403 : 422).json({ error: publicCode, ...(code === 'STREAM_CONFLICT' ? { expectedVersion: error.expectedVersion, currentVersion: error.currentVersion } : {}) });
+        res.status(code === 'STREAM_CONFLICT' ? 409 : code === 'STREAM_NOT_FOUND' ? 404 : /REQUIRED|DENIED|KICKED|LOCAL_ONLY|DEVICE$|REVOKED|EXPIRED/.test(code) ? 403 : 422).json({ error: publicCode, ...(error.itemErrors ? { itemErrors: error.itemErrors } : {}), ...(code === 'STREAM_CONFLICT' ? { expectedVersion: error.expectedVersion, currentVersion: error.currentVersion } : {}) });
     });
     app.use('/api/streaming', router);
     const timer = setInterval(() => { try { service.tick(); } catch (error) { console.warn('streaming clock persistence failed:', error.code || error.message); } }, 1000); timer.unref();

@@ -38,8 +38,10 @@ test('the wide record menu anchors to the gesture and stays within the viewport'
     await close();
 
     await bubble.dispatchEvent('pointerdown', { pointerType: 'touch', pointerId: 10, clientX: 990, clientY: 740 });
+    assert.equal(await bubble.evaluate(node => node.dispatchEvent(new Event('selectstart', { bubbles: true, cancelable: true }))), false);
     await bubble.dispatchEvent('pointermove', { pointerType: 'touch', pointerId: 10, clientX: 994, clientY: 744 });
     await menu.waitFor();
+    assert.equal(await menu.locator('.history-action').first().evaluate(node => getComputedStyle(node).userSelect), 'none');
     box = await menu.boundingBox();
     near(box.x + box.width, 994); near(box.y + box.height, 744);
     await bubble.dispatchEvent('pointerup', { pointerType: 'touch', pointerId: 10 });
@@ -102,9 +104,9 @@ test('right click and touch long press distinguish the record bubble from its ro
     await page.locator('[data-message-id="text1"] .message-bubble').click();
     assert.equal(await toolbar.getByText('保存到网盘').isVisible(), false);
     await toolbar.getByText('复制所有文本').click();
-    assert.equal(await page.evaluate(() => copied), 'file text\nordinary text');
+    assert.equal(await page.evaluate(() => copied), 'file text\n\nordinary text');
     await toolbar.getByText('复制所有锚点').click();
-    assert.equal(await page.evaluate(() => copied), 'https://fixture.example/?record=file1\nhttps://fixture.example/?record=text1');
+    assert.equal(await page.evaluate(() => copied), 'https://fixture.example/?record=file1\n\nhttps://fixture.example/?record=text1');
     await toolbar.getByText('退出多选').click();
     assert.equal(await page.locator('#textInput').inputValue(), 'draft message');
     assert.equal(await toolbar.isVisible(), false);

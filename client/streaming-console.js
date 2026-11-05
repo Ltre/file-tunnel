@@ -781,11 +781,21 @@
             }
             if (unchanged) delete ui.drafts[stationId];
             else if (ui.drafts[stationId] === d) { d.configVersion = result.configVersion; for (const item of d.items) if (submitted.items.some(saved => saved.id === item.id && JSON.stringify(saved.source) === JSON.stringify(item.source))) item.sourceSaved = true; }
+            if (ui.saveErrors) delete ui.saveErrors[stationId];
             saveUi();
             await syncSourceCache(stationId).catch(() => notice('节目单已保存，但本地缓存清理未完成，请稍后重试'));
             return unchanged;
         })();
         saveFlights.set(stationId, flight); try { return await flight; } finally { if (saveFlights.get(stationId) === flight) saveFlights.delete(stationId); }
+    }
+    function clearSaveError(stationId, item, codes) {
+        if (!ui.drafts[stationId]?.items.includes(item)) return;
+        const errors = ui.saveErrors?.[stationId];
+        if (!errors?.some(error => error.id === item.id && codes.includes(error.error))) return;
+        const remaining = errors.filter(error => error.id !== item.id || !codes.includes(error.error));
+        if (remaining.length) ui.saveErrors[stationId] = remaining;
+        else delete ui.saveErrors[stationId];
+        saveUi(); refreshEditorItems?.();
     }
     function editor() {
         title('创建与编辑串流台'); main.classList.add('sc-editor-page'); const d = draft(), stationId = ui.stationId, actions = document.createElement('div'); actions.className = 'sc-actions sc-editor-actions';
@@ -802,6 +812,25 @@
         };
         const heading = document.createElement('h2'); heading.textContent = t('已导入节目项'); const resourceHeading = document.createElement('div'); resourceHeading.className = 'sc-editor-heading'; resourceHeading.append(heading, button('打乱', () => reorder(false)), button('逆转', () => reorder(true)), button('导入', () => { pending = new Map(); channel = 'local'; candidates = []; navigate('import', ui.stationId); })); resources.append(resourceHeading);
         const list = document.createElement('div'); list.className = 'sc-program-list'; resources.append(list);
+        function showSaveErrors() {
+            const errors = new Map((ui.saveErrors?.[stationId] || []).map(item => [item.id, item.error]));
+            for (const row of list.children) {
+                const code = errors.get(row.dataset.itemId);
+                row.classList.toggle('sc-source-error', Boolean(code));
+                row.querySelector('.sc-source-error-message')?.remove();
+                if (!code) continue;
+                const text = document.createElement('p'); text.className = 'sc-source-error-message';
+                text.textContent = t('该节目未通过保存校验') + ' [' + code + ']';
+                row.append(text);
+            }
+        }
+        function focusSaveError() {
+            const row = list.querySelector('.sc-source-error');
+            if (!row || !list.isConnected || ui.stationId !== stationId) return;
+            row.tabIndex = -1;
+            row.focus({ preventScroll: true });
+            row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
         function focusProgram(id, duration = 1000, highlightIds = [id]) {
             const target = [...list.children].find(node => node.dataset.itemId === id); if (!target) return;
             target.tabIndex = -1; target.focus({ preventScroll: true }); target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -815,7 +844,14 @@
                 const row = document.createElement('article'); row.className = 'sc-program'; row.dataset.itemId = item.id;
                 const av = ['video', 'audio'].includes(item.kind);
                 row.innerHTML = `<div class="sc-program-name"><strong>${index + 1}. ${userText(item.name)}</strong><small>${labelKind(item.source?.kind)} · ${labelKind(item.kind)} · ${formatSize(item.size)}</small></div><label>${t(av ? '起始时刻（秒）' : '停留时间（秒）')}<input type="number" min="${av ? 0 : .1}" step="0.1" value="${av ? item.start || 0 : item.stay || 10}" aria-label="${t(av ? '起始时刻（秒）' : '停留时间（秒）')}"></label>`;
-                row.querySelector('input').oninput = event => { item[av ? 'start' : 'stay'] = Number(event.target.value); saveUi(); };
+                row.querySelector('input').oninput = event => {
+                    const value = event.target.value.trim(), number = Number(value);
+                    item[av ? 'start' : 'stay'] = number;
+                    if (value && Number.isFinite(number) && (av ? number >= 0 && number < item.duration : number >= .1 && number <= 86400)) {
+                        clearSaveError(stationId, item, [av ? 'STREAM_START_INVALID' : 'STREAM_PARAMETER_INVALID']);
+                    }
+                    saveUi();
+                };
                 if (av) {
                     const state = document.createElement('p'); state.className = 'sc-duration-status'; state.setAttribute('role', 'status'); state.hidden = Boolean(item.duration);
                     state.textContent = t(item.durationError ? '时长检查失败，请重试或重新选择来源' : '正在后台检查媒体时长…') + (item.durationError ? ' [' + item.durationError + ']' : '');
@@ -835,6 +871,7 @@
                 if (item.source?.kind === 'local') toolbar.append(button('重新选择文件', () => chooseLocalFile(item)));
                 row.append(toolbar); list.append(row);
             });
+            showSaveErrors();
         }
         refreshEditorItems = () => {
             if (ui.view !== 'edit' || ui.stationId !== stationId || !list.isConnected) return;
@@ -842,6 +879,7 @@
             for (const row of list.children) { const item = items.get(row.dataset.itemId), state = row.querySelector('.sc-duration-status'), retry = row.querySelector('.sc-duration-retry');
                 if (!item || !state) continue; state.hidden = Boolean(item.duration); state.textContent = t(item.durationError ? '时长检查失败，请重试或重新选择来源' : '正在后台检查媒体时长…') + (item.durationError ? ' [' + item.durationError + ']' : ''); retry.hidden = !item.durationError;
             }
+            showSaveErrors();
         };
         for (const item of d.items) ensureDuration(item);
         renderItems(); layout.append(form, resources); main.append(layout);
@@ -849,6 +887,8 @@
         const saving = text => { saveStatus.hidden = false; saveStatus.textContent = text; };
         actions.append(button('保存', async () => {
             const stationId = ui.stationId, actor = account(); actions.setAttribute('aria-busy', 'true'); let unchanged;
+            if (ui.saveErrors) delete ui.saveErrors[stationId];
+            showSaveErrors(); saveUi();
             try {
                 await checkSaveDurations(d, saving, () => account() === actor && ui.stationId === stationId && ui.view === 'edit');
                 unchanged = await persistDraft(stationId, saving);
@@ -856,7 +896,10 @@
             catch (cause) {
                 saving(cause.details || saveFailure(cause));
                 if (account() === actor && ui.stationId === stationId && ui.view === 'edit') {
-                    const body = document.createElement('div'), detail = document.createElement('p'); detail.textContent = cause.details || saveFailure(cause); detail.style.whiteSpace = 'pre-wrap'; body.append(detail, button('关闭', closeDialog)); showDialog('无法完成保存', body);
+                    ui.saveErrors ||= {};
+                    ui.saveErrors[stationId] = Array.isArray(cause.itemErrors) ? cause.itemErrors : [];
+                    showSaveErrors(); saveUi(); focusSaveError();
+                    const body = document.createElement('div'), detail = document.createElement('p'); detail.textContent = cause.details || saveFailure(cause); detail.style.whiteSpace = 'pre-wrap'; body.append(detail, button('关闭', () => { closeDialog(); focusSaveError(); })); showDialog('无法完成保存', body);
                 }
                 return;
             }
@@ -916,7 +959,12 @@
                     catch(cause) { throw Object.assign(Error('STREAM_LOCAL_CACHE_FAILED'),{cause}); }
                 } else if (!handles[index] && current()) notice('文件引用仅在本次页面会话有效，重开后请重新选择');
                 localFiles.set(fileId, { file, handle: handles[index] });
-                if (replace && current()) { replace.sourceSaved = false; delete replace.duration; replace.durationError = ''; durationJobs.delete(actor + ':' + durationKey(replace)); ensureDuration(replace); }
+                if (replace && current()) {
+                    replace.source = source; replace.type = file.type; replace.kind = kind;
+                    replace.sourceSaved = false; delete replace.duration; replace.durationError = '';
+                    durationJobs.delete(actor + ':' + durationKey(replace)); ensureDuration(replace);
+                    clearSaveError(stationId, replace, ['STREAM_SOURCE_CHANGED', 'STREAM_SOURCE_MISSING', 'STREAM_SOURCE_INVALID', 'STREAM_PROVIDER_OFFLINE', 'STREAM_LOCAL_CACHE_FAILED']);
+                }
                 if (handles[index]) { feedback.update('正在保存本机文件引用…', index + 1, total, file.name); await handleStore('put', fileId, handles[index]).catch(() => { if (!global.StreamingCache && current()) notice('文件引用仅在本次页面会话有效，重开后请重新选择'); }); }
                 if (!replace && current()) { const candidate = { name: file.name, type: file.type, size: file.size, kind, source }; candidates.push(candidate); selection.set(candidateKey(candidate), candidate); }
             }
@@ -1119,7 +1167,9 @@
         }
         if (!current()) throw Error('STREAM_SAVE_CONTEXT_CHANGED');
         const unchecked = value.items.filter(item => ['audio','video'].includes(item.kind) && !item.duration);
-        if (unchecked.length) throw Object.assign(Error('STREAM_DURATION_REQUIRED'), { details:t('媒体时长检查多次失败，以下节目阻碍了保存：') + '\n' + unchecked.map(item => item.name + ' [' + (item.durationError || 'STREAM_DURATION_REQUIRED') + ']').join('\n') });
+        if (unchecked.length) throw Object.assign(Error('STREAM_DURATION_REQUIRED'), {
+            itemErrors: unchecked.map(item => ({ id: item.id, error: item.durationError || 'STREAM_DURATION_REQUIRED' })),
+            details:t('媒体时长检查多次失败，以下节目阻碍了保存：') + '\n' + unchecked.map(item => item.name + ' [' + (item.durationError || 'STREAM_DURATION_REQUIRED') + ']').join('\n') });
     }
     function ensureDuration(item) {
         if (!['video', 'audio'].includes(item.kind) || item.duration) return;
@@ -1128,8 +1178,9 @@
             let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; });
             job = { item: structuredClone(item), actor: account(), promise, resolve, reject }; durationJobs.set(jobKey, job); durationQueue.push(job);
         }
+        const previousError = item.durationError, stationId = ui.stationId;
         item.durationError = '';
-        job.promise.then(value => { if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.duration = value; item.durationError = ''; saveUi(); refreshEditorItems?.(); } }, cause => { job.failed = true; if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.durationError = cause.message; saveUi(); refreshEditorItems?.(); } });
+        job.promise.then(value => { if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.duration = value; item.durationError = ''; clearSaveError(stationId, item, ['STREAM_DURATION_REQUIRED', previousError]); saveUi(); refreshEditorItems?.(); } }, cause => { job.failed = true; if (durationJobs.get(jobKey) === job && durationKey(item) === identity) { item.durationError = cause.message; saveUi(); refreshEditorItems?.(); } });
         pumpDurations();
         return job.promise;
     }
@@ -1140,10 +1191,17 @@
         }
     }
     async function sourceUrl(item, signal, actor = account()) {
+        const stationId = ui.stationId;
         const cacheKey = actor + ':' + durationKey(item), cached = previewTickets.get(cacheKey);
-        if (cached?.expiresAt > Date.now() + 30000) return cached.url;
+        const marked = ui.saveErrors?.[stationId]?.some(error => error.id === item.id);
+        if (!marked && cached?.expiresAt > Date.now() + 30000) return cached.url;
         const source = structuredClone(item.source); source.tunnelGrants = Object.fromEntries((await config.tunnels()).map(entry => [entry.sessionId, entry.accessGrant]));
-        const ticket = await request('/preview', 'POST', { source }, { signal, accountId: actor }); previewTickets.set(cacheKey, ticket); return ticket.url;
+        const ticket = await request('/preview', 'POST', { source }, { signal, accountId: actor });
+        const mime = value => String(value || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+        if (actor === account() && ticket.size === item.size && mime(ticket.type) === mime(item.type) && kindOf({ name: ticket.name, type: ticket.type }) === item.kind) {
+            clearSaveError(stationId, item, ['STREAM_SOURCE_CHANGED', 'STREAM_SOURCE_INVALID', 'STREAM_SOURCE_DELETED', 'STREAM_SOURCE_REVOKED', 'STREAM_TUNNEL_DENIED']);
+        }
+        previewTickets.set(cacheKey, ticket); return ticket.url;
     }
     async function duration(item, actor) {
         return new Promise((resolve, reject) => {

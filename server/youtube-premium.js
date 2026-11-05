@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { downloadFileName } = require('./download-file-name');
 
 const RUNNING_STATUSES = new Set(['queued', 'parsing', 'downloading', 'merging', 'metadata']);
 
@@ -408,6 +409,7 @@ function createYoutubePremiumService({
             status: task.status,
             progress: task.progress || { percent: 0 },
             outputFileName: task.outputFileName || '',
+            downloadFileName: downloadFileName(task, 'youtube'),
             outputFileSize: Number(task.outputFileSize) || 0,
             error: task.error || '',
             createdAt: task.createdAt,
@@ -744,7 +746,7 @@ function createYoutubePremiumService({
             if (!task || !filePath || !fs.existsSync(filePath)) return null;
             const relative = path.relative(outputDir, path.resolve(filePath));
             if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
-            return { path: path.resolve(filePath), name: kind === 'cover' ? path.basename(filePath) : task.outputFileName };
+            return { path: path.resolve(filePath), name: kind === 'cover' ? path.basename(filePath) : kind === 'download' ? downloadFileName(task, 'youtube') : task.outputFileName };
         }
     };
 }

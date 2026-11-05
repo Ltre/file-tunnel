@@ -8392,8 +8392,8 @@ function initHistoryRecordSelection() {
     const save = action('保存到网盘', records => window.DiskTunnelAdapter.saveRecords(records, window.TunnelMarkdown.archive));
     const count = document.createElement('span');
     toolbar.append(
-        action('复制所有文本', records => copy(records.map(record => recordTextPayload(record).text.trim()).filter(Boolean).join('\n'))),
-        action('复制所有锚点', (records, scope) => copy(records.map(record => getTransferRecordAnchorUrl(record.id, scope)).join('\n')), true),
+        action('复制所有文本', records => copy(records.map(record => recordTextPayload(record).text.trim()).filter(Boolean).join('\n\n'))),
+        action('复制所有锚点', (records, scope) => copy(records.map(record => getTransferRecordAnchorUrl(record.id, scope)).join('\n\n')), true),
         action('收藏', async records => { for (const record of records) if (!record.favorite) await toggleTransferRecordFavorite(record.id); }, true),
         action('发送到其他隧道', async (records, scope) => {
             const target = await chooseForwardTargetSession();
@@ -8471,6 +8471,9 @@ function initHistoryRecordSelection() {
         else gesture.anchor = { x: event.clientX, y: event.clientY };
     }, true);
     for (const name of ['pointerup', 'pointercancel', 'pointerleave']) chat.addEventListener(name, clearGesture, true);
+    chat.addEventListener('selectstart', event => {
+        if (gesture || Date.now() < suppressClick) event.preventDefault();
+    }, true);
     chat.addEventListener('click', event => {
         if (Date.now() >= suppressClick && !choosing) return;
         const row = rowFor(event.target);
