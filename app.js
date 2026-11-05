@@ -7596,7 +7596,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
     if (message.type === 'markdown') {
         contentHtml = '<div class="message-bubble" data-tunnel-markdown></div>';
     } else if (message.type === 'text') {
-        contentHtml = `<div class="message-bubble">${escapeHtml(message.text)}</div>`;
+        contentHtml = `<div class="message-bubble message-plain-text">${escapeHtml(message.text)}</div>`;
     } else if (message.type === 'file') {
         const fileInfo = message.fileInfo;
         console.log('Rendering file message:', fileInfo.id, fileInfo.name, 'isSmall:', fileInfo.isSmall);
@@ -8337,6 +8337,7 @@ function renderMessageRecordActions(messageEl, message) {
 }
 
 const selectedHistoryIds = new Set();
+let historySelectionNavigation = null;
 function markSelectedHistoryRow(row) {
     const selected = selectedHistoryIds.has(row.dataset.messageId);
     row.classList.toggle('history-selected', selected);
@@ -8355,6 +8356,8 @@ function initHistoryRecordSelection() {
     toolbar.dataset.bound = '1';
     const panel = toolbar.parentElement;
     let choosing = false, busy = false, gesture, heldTouch, suppressClick = 0;
+    let closingHistory = false;
+    const historyKey = 'tunnelHistorySelection';
     const t = text => window.TunnelI18n?.t(text) || text;
     toolbar.setAttribute('aria-label', t('传输记录批量操作'));
     const rowFor = target => target.closest?.('.message[data-message-id]');
@@ -8381,13 +8384,35 @@ function initHistoryRecordSelection() {
         };
         return button;
     }
-    function exit() {
-        choosing = false;
-        selectedHistoryIds.clear();
-        rows().forEach(markSelectedHistoryRow);
-        panel.classList.remove('history-selection-active');
-        toolbar.hidden = true;
+    function retainPosition(change, anchor) {
+        anchor ||= rows().find(row => row.getBoundingClientRect().bottom > chat.getBoundingClientRect().top);
+        const top = anchor?.getBoundingClientRect().top - chat.getBoundingClientRect().top;
+        if (typeof releaseChatScrollAnchorPinByUser === 'function') releaseChatScrollAnchorPinByUser();
+        change();
+        const restore = () => {
+            if (!anchor?.isConnected || !Number.isFinite(top)) return;
+            chat.scrollTop += anchor.getBoundingClientRect().top - chat.getBoundingClientRect().top - top;
+        };
+        restore(); requestAnimationFrame(restore);
     }
+    function exit({ fromHistory = false } = {}) {
+        retainPosition(() => {
+            choosing = false;
+            selectedHistoryIds.clear();
+            rows().forEach(markSelectedHistoryRow);
+            panel.classList.remove('history-selection-active');
+            toolbar.hidden = true;
+        });
+        if (!fromHistory && history.state?.[historyKey]) { closingHistory = true; history.back(); }
+    }
+    historySelectionNavigation = {
+        back(value) {
+            if (closingHistory) { closingHistory = false; return true; }
+            if (!choosing) return false;
+            if (!value?.[historyKey]) exit({ fromHistory: true });
+            return true;
+        }
+    };
     async function copy(text, message) {
         if (!await copyTextToClipboard(text)) throw Error(t('复制失败，请检查浏览器剪贴板权限'));
         showAppToast(t(message));
@@ -8441,10 +8466,13 @@ function initHistoryRecordSelection() {
             row.querySelector('.message-record-menu-trigger')?.dispatchEvent(new CustomEvent('record-menu-open', { detail: anchor }));
             return;
         }
-        choosing = true;
-        panel.classList.add('history-selection-active');
-        toolbar.hidden = false;
-        toggle(row);
+        retainPosition(() => {
+            choosing = true;
+            panel.classList.add('history-selection-active');
+            toolbar.hidden = false;
+            toggle(row);
+        }, row);
+        history.pushState({ ...(history.state || {}), [historyKey]: true }, '', location.href);
     }
     function clearGesture() {
         clearTimeout(gesture?.timer);
@@ -19963,6 +19991,7 @@ window.addEventListener('popstate', event => {
         closeFilePreview({ fromHistory: true });
         return;
     }
+    if (historySelectionNavigation?.back(event.state)) return;
     if (trapHomeBackNavigation(event.state)) return;
     if (!richViewerHistoryOpen) return;
     richViewerHistoryOpen = false;

@@ -828,6 +828,109 @@
         };
         const heading = document.createElement('h2'); heading.textContent = t('已导入节目项'); const resourceHeading = document.createElement('div'); resourceHeading.className = 'sc-editor-heading'; resourceHeading.append(heading, button('打乱', () => reorder(false)), button('逆转', () => reorder(true)), button('导入', () => { pending = new Map(); channel = 'local'; candidates = []; navigate('import', ui.stationId); })); resources.append(resourceHeading);
         const list = document.createElement('div'); list.className = 'sc-program-list'; resources.append(list);
+        const selectedPrograms = new Set(), sourceCodes = new Map();
+        let selecting = false, removing = false, press, heldPointer, suppressedProgram, suppressClick = 0;
+        const selectionActions = document.createElement('div'); selectionActions.className = 'sc-program-selection-actions'; selectionActions.hidden = true;
+        const selectionCount = document.createElement('span'); selectionCount.className = 'sc-program-selection-count';
+        const bulkRemoval = removalControls(() => [...selectedPrograms]);
+        selectionActions.append(button('置顶', () => moveSelected('top')), button('置底', () => moveSelected('bottom')),
+            button('↑', () => moveSelected(-1)), button('↓', () => moveSelected(1)), bulkRemoval, selectionCount,
+            button('取消', () => { selecting = false; selectedPrograms.clear(); syncProgramSelection(); }));
+        resourceHeading.append(selectionActions);
+        function syncProgramSelection() {
+            const ids = new Set(d.items.map(item => item.id));
+            for (const id of selectedPrograms) if (!ids.has(id)) selectedPrograms.delete(id);
+            resourceHeading.classList.toggle('sc-selecting', selecting); selectionActions.hidden = !selecting;
+            selectionCount.textContent = selectedPrograms.size + ' ✓'; bulkRemoval.resetRemoval();
+            for (const control of selectionActions.querySelectorAll('button')) if (control !== selectionActions.lastElementChild) control.disabled = !selectedPrograms.size;
+            for (const row of list.children) {
+                const checked = selectedPrograms.has(row.dataset.itemId);
+                row.classList.toggle('sc-program-selected', checked); row.querySelector('.sc-program-selection-check')?.remove();
+                if (checked) { const check = document.createElement('span'); check.className = 'sc-program-selection-check'; check.textContent = '✓'; row.append(check); }
+            }
+        }
+        function toggleProgram(row) {
+            selecting = true;
+            if (selectedPrograms.has(row.dataset.itemId)) selectedPrograms.delete(row.dataset.itemId); else selectedPrograms.add(row.dataset.itemId);
+            syncProgramSelection();
+        }
+        function moveSelected(destination) {
+            const chosen = d.items.filter(item => selectedPrograms.has(item.id)), rest = d.items.filter(item => !selectedPrograms.has(item.id));
+            if (destination === 'top') d.items = [...chosen, ...rest];
+            else if (destination === 'bottom') d.items = [...rest, ...chosen];
+            else {
+                const step = destination;
+                for (let i = step < 0 ? 1 : d.items.length - 2; step < 0 ? i < d.items.length : i >= 0; i -= step) {
+                    if (selectedPrograms.has(d.items[i].id) && !selectedPrograms.has(d.items[i + step].id)) [d.items[i], d.items[i + step]] = [d.items[i + step], d.items[i]];
+                }
+            }
+            saveUi(); renderItems(); if (chosen.length) focusProgram(chosen[0].id, 250, chosen.map(item => item.id));
+        }
+        function removalControls(getIds) {
+            const controls = document.createElement('span'); controls.className = 'sc-removal-controls'; let pendingIds = [];
+            const reset = () => { pendingIds = []; remove.hidden = false; confirm.hidden = cancel.hidden = true; };
+            const remove = button('移除', () => { if (removing) return; pendingIds = getIds(); if (!pendingIds.length) return; remove.hidden = true; confirm.hidden = cancel.hidden = false; }, 'sc-remove');
+            const confirm = button('确认移除', async () => { if (!removing) { await removePrograms(pendingIds); reset(); } }, 'sc-confirm-remove');
+            const cancel = button('取消移除', reset, 'sc-cancel-remove');
+            controls.append(remove, confirm, cancel); controls.resetRemoval = reset; reset(); return controls;
+        }
+        async function removePrograms(ids) {
+            if (removing || !ids.length) return;
+            removing = true; const targets = new Set(ids), rows = [...list.children].filter(row => targets.has(row.dataset.itemId));
+            d.items = d.items.filter(item => !targets.has(item.id)); ids.forEach(id => selectedPrograms.delete(id)); saveUi();
+            try {
+                rows.forEach(row => row.classList.add('sc-program-removing'));
+                await Promise.all(rows.flatMap(row => row.getAnimations().map(animation => animation.finished.catch(() => {}))));
+            } finally {
+                removing = false;
+                if (list.isConnected && ui.view === 'edit' && ui.stationId === stationId) { if (!selectedPrograms.size) selecting = false; renderItems(); }
+            }
+        }
+        function clearPress() { clearTimeout(press?.timer); press = null; }
+        list.addEventListener('contextmenu', event => {
+            const row = event.target.closest('.sc-program'); if (!row) return;
+            event.preventDefault();
+            if (heldPointer !== undefined || Date.now() < suppressClick && suppressedProgram === row.dataset.itemId) return;
+            clearPress(); global.getSelection?.()?.removeAllRanges(); toggleProgram(row);
+        });
+        list.addEventListener('pointerdown', event => {
+            const row = event.target.closest('.sc-program');
+            if (event.pointerType !== 'touch' || !row || event.target.closest('button,input,textarea,select')) return;
+            clearPress(); press = { id: event.pointerId, x: event.clientX, y: event.clientY, timer: setTimeout(() => {
+                if (!row.isConnected || removing || !list.isConnected) return;
+                heldPointer = event.pointerId; suppressedProgram = row.dataset.itemId; suppressClick = Date.now() + 700; clearPress(); global.getSelection?.()?.removeAllRanges(); toggleProgram(row);
+            }, 550) };
+        });
+        list.addEventListener('pointermove', event => { if (press?.id === event.pointerId && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 12) clearPress(); });
+        for (const name of ['pointerup', 'pointercancel', 'pointerleave']) list.addEventListener(name, event => {
+            if (heldPointer === event.pointerId) { heldPointer = undefined; suppressClick = Date.now() + 700; } clearPress();
+        });
+        list.addEventListener('selectstart', event => { if (press || selecting) event.preventDefault(); });
+        list.addEventListener('click', event => {
+            const row = event.target.closest('.sc-program'); if (!row || !selecting && Date.now() >= suppressClick) return;
+            event.preventDefault(); event.stopImmediatePropagation();
+            if ((Date.now() >= suppressClick || suppressedProgram !== row.dataset.itemId) && !removing) toggleProgram(row);
+        }, true);
+        function sourceLabel(item) {
+            const parts = [labelKind(item.source?.kind)];
+            if (item.source?.kind === 'tunnel') parts.push(sourceCodes.get(item.source.sessionId) || t(sourceCodes.has(item.source.sessionId) ? '短码不可用' : '正在读取短码…'), item.source.messageId);
+            return [...parts, labelKind(item.kind), formatSize(item.size)].join(' · ');
+        }
+        async function loadSourceLabels() {
+            const actor = account(), live = () => list.isConnected && account() === actor && ui.stationId === stationId && ui.view === 'edit';
+            const entries = await Promise.resolve().then(() => config.tunnels()).catch(() => []); if (!live()) return;
+            entries.forEach(entry => sourceCodes.set(entry.sessionId, entry.shortCode || ''));
+            d.items.filter(item => item.source.kind === 'tunnel').forEach(item => { if (!sourceCodes.has(item.source.sessionId)) sourceCodes.set(item.source.sessionId, ''); });
+            const update = () => { const items = new Map(d.items.map(item => [item.id,item])); for (const row of list.children) { const item = items.get(row.dataset.itemId); if (item) row.querySelector('.sc-program-source').textContent = sourceLabel(item); } };
+            update();
+            const pending = [...new Map(d.items.filter(item => item.source.kind === 'tunnel' && item.sourceSaved && !sourceCodes.get(item.source.sessionId)).map(item => [item.source.sessionId, item])).values()];
+            const read = async () => { while (pending.length && live()) { const item = pending.shift();
+                try { const result = await request('/stations/' + stationId + '/items/' + encodeURIComponent(item.id) + '/source-location?configVersion=' + d.configVersion, 'GET', undefined, {accountId:actor}); sourceCodes.set(item.source.sessionId, result.location.shortCode || ''); }
+                catch (_) { sourceCodes.set(item.source.sessionId, ''); }
+                if (live()) update();
+            } };
+            await Promise.all([read(), read()]);
+        }
         function showSaveErrors() {
             const errors = new Map((ui.saveErrors?.[stationId] || []).map(item => [item.id, item.error]));
             for (const row of list.children) {
@@ -855,11 +958,13 @@
             }
         }
         function renderItems() {
+            const scroll = list.scrollTop;
             list.replaceChildren();
             d.items.forEach((item, index) => {
                 const row = document.createElement('article'); row.className = 'sc-program'; row.dataset.itemId = item.id;
                 const av = ['video', 'audio'].includes(item.kind);
                 row.innerHTML = `<div class="sc-program-name"><strong>${index + 1}. ${userText(item.name)}</strong><small>${labelKind(item.source?.kind)} · ${labelKind(item.kind)} · ${formatSize(item.size)}</small></div><label>${t(av ? '起始时刻（秒）' : '停留时间（秒）')}<input type="number" min="${av ? 0 : .1}" step="0.1" value="${av ? item.start || 0 : item.stay || 10}" aria-label="${t(av ? '起始时刻（秒）' : '停留时间（秒）')}"></label>`;
+                const source = row.querySelector('small'); source.className = 'sc-program-source'; source.textContent = sourceLabel(item);
                 row.querySelector('input').oninput = event => {
                     const value = event.target.value.trim(), number = Number(value);
                     item[av ? 'start' : 'stay'] = number;
@@ -883,11 +988,11 @@
                 handle.onpointermove = event => { if (!start || Math.abs(event.clientY - start.y) < 8) return; const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.sc-program'); list.querySelectorAll('.sc-drop-target').forEach(node => node.classList.remove('sc-drop-target')); target?.classList.add('sc-drop-target'); };
                 handle.onpointerup = event => { if (!start) return; start = null; const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.sc-program'); const to = d.items.findIndex(value => value.id === target?.dataset.itemId); if (to >= 0) { const from = d.items.indexOf(item); d.items.splice(from, 1); d.items.splice(to, 0, item); saveUi(); renderItems(); } };
                 handle.onpointercancel = () => { start = null; list.querySelectorAll('.sc-drop-target').forEach(node => node.classList.remove('sc-drop-target')); };
-                toolbar.append(handle, button('置顶', () => moveTo(0, 1000)), button('置底', () => moveTo(d.items.length - 1, 1000)), button('↑', () => move(-1)), button('↓', () => move(1)), button('预览', () => preview(item)), button('重复加入', () => { const added = { ...structuredClone(item), id: uid(), sourceSaved: false }; d.items.splice(d.items.indexOf(item) + 1, 0, added); ensureDuration(added); saveUi(); renderItems(); focusProgram(added.id); }), button('移除', () => { d.items = d.items.filter(value => value.id !== item.id); saveUi(); renderItems(); }));
+                toolbar.append(handle, button('置顶', () => moveTo(0, 1000)), button('置底', () => moveTo(d.items.length - 1, 1000)), button('↑', () => move(-1)), button('↓', () => move(1)), button('预览', () => preview(item)), button('重复加入', () => { const added = { ...structuredClone(item), id: uid(), sourceSaved: false }; d.items.splice(d.items.indexOf(item) + 1, 0, added); ensureDuration(added); saveUi(); renderItems(); focusProgram(added.id); }), removalControls(() => [item.id]));
                 if (item.source?.kind === 'local') toolbar.append(button('重新选择文件', () => chooseLocalFile(item)));
                 row.append(toolbar); list.append(row);
             });
-            showSaveErrors();
+            showSaveErrors(); syncProgramSelection(); list.scrollTop = scroll;
         }
         refreshEditorItems = () => {
             if (ui.view !== 'edit' || ui.stationId !== stationId || !list.isConnected) return;
@@ -899,6 +1004,7 @@
         };
         for (const item of d.items) ensureDuration(item);
         renderItems(); layout.append(form, resources); main.append(layout);
+        loadSourceLabels().catch(() => {});
         const saveStatus = document.createElement('p'); saveStatus.className = 'sc-save-status'; saveStatus.setAttribute('role', 'status'); saveStatus.hidden = true;
         const saving = text => { saveStatus.hidden = false; saveStatus.textContent = text; };
         actions.append(button('保存', async () => {
@@ -1145,7 +1251,8 @@
             const tunnels = await config.tunnels(); if (version !== pickerVersion) return;
             const selector = document.createElement('select'); selector.setAttribute('aria-label', t('来源隧道'));
             for (const entry of tunnels) selector.add(new Option(entry.name || entry.sessionId, entry.sessionId));
-            tunnelScope ||= tunnels[0]?.sessionId || ''; selector.value = tunnelScope; controls.append(selector);
+            if (!tunnels.some(entry => entry.sessionId === tunnelScope)) tunnelScope = tunnels.find(entry => entry.sessionId === config.currentTunnel?.())?.sessionId || tunnels[0]?.sessionId || '';
+            selector.value = tunnelScope; controls.append(selector);
             selector.onchange = () => { tunnelScope = selector.value; importer(); };
             const selected = tunnels.find(entry => entry.sessionId === selector.value); if (!selected) return;
             const result = await request('/tunnel-candidates', 'POST', selected); if (version !== pickerVersion) return;

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v127-content-v8-stream-source-text-edit-261105-3';
+const CACHE_NAME = 'instant-tunnel-v128-content-v8-selection-editor-tabs-261105-4';
 const APP_SHELL = [
     '/',
     '/index.html',

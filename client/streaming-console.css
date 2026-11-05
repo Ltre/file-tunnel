@@ -210,3 +210,23 @@
 .sns-post-author{display:flex;align-items:center;gap:8px;min-width:0}
 .sns-post-author a{min-width:0;overflow-wrap:anywhere}.sns-post-author a>span{opacity:.8}
 .sns-post-author>img.sns-post-avatar{display:block;flex:none;width:28px;height:28px;max-width:28px;max-height:28px;border-radius:50%;object-fit:cover}
+.sc-overlay{--sc-danger:var(--ui-danger,#c12c49);--sc-danger-soft:var(--ui-danger-soft,#fff0f3)}
+body[data-theme="graphite"] .sc-overlay{--sc-danger:#ffaaa8;--sc-danger-soft:#402b32}
+body[data-theme="atelier"] .sc-overlay{--sc-danger:#b64035;--sc-danger-soft:#fff0e9}
+body[data-theme="social"] .sc-overlay{--sc-danger:#b82c50;--sc-danger-soft:#fff0f5}
+body[data-theme="blamen"] .sc-overlay{--sc-danger:#b43c58;--sc-danger-soft:#faedf2}
+body[data-theme="lusns"] .sc-overlay{--sc-danger:#bd3559;--sc-danger-soft:#fff0f6}
+.sc-removal-controls{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}
+#streamingConsole .sc-remove{color:var(--sc-danger);border-color:var(--sc-danger);background:var(--sc-danger-soft)}
+#streamingConsole .sc-confirm-remove{color:var(--ui-on,#fff);border-color:var(--sc-danger);background:var(--sc-danger);font-weight:700}
+#streamingConsole .sc-cancel-remove{border-color:var(--ui-accent,#4064bd);font-weight:700}
+.sc-editor-heading.sc-selecting>:not(.sc-program-selection-actions){display:none!important}
+.sc-program-selection-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
+.sc-program-list{overflow-x:hidden}
+.sc-program{position:relative;-webkit-touch-callout:none}
+.sc-program-selected{box-shadow:inset 0 0 0 2px var(--ui-accent,#4064bd)}
+.sc-program-selection-check{position:absolute;right:5px;top:50%;transform:translateY(-50%);color:var(--ui-accent,#4064bd);font-weight:700;pointer-events:none}
+.sc-program-source{overflow-wrap:anywhere}
+.sc-program-removing{animation:sc-program-slide-out .24s ease-in forwards;pointer-events:none}
+@keyframes sc-program-slide-out{to{transform:translateX(110%);opacity:0}}
+@media(prefers-reduced-motion:reduce){.sc-program-removing{animation:none}}

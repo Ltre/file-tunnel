@@ -3,6 +3,8 @@
     function create({ key, fields, tabs, copy, remove, formatList, readMode, writeMode, paint, parse }) {
         const defaults = readFields();
         let drafts = [], active, next = 1;
+        let selecting = false, press, heldPointer, suppressedDraft, suppressClick = 0;
+        const selected = new Set();
         try {
             const saved = JSON.parse(localStorage.getItem(key) || 'null');
             if (Array.isArray(saved?.drafts)) {
@@ -39,7 +41,7 @@
                 active.ids = [...formatList.querySelectorAll('input:checked')].map(input => input.value);
             }
             Object.assign(active, values);
-            const tab = tabs.querySelector('[aria-pressed="true"]');
+            const tab = tabs.querySelector('[data-draft-id="' + active.id + '"]');
             if (tab) tab.textContent = active.remark?.trim() || String(active.id);
             persist();
             return active;
@@ -63,11 +65,42 @@
         function renderTabs() {
             tabs.replaceChildren(makeButton('+', () => insert(), '新建任务表单'));
             for (const draft of drafts) {
-                const button = makeButton(draft.remark?.trim() || String(draft.id), () => select(draft), '表单 ' + draft.id);
-                button.setAttribute('aria-pressed', String(draft === active));
+                const button = makeButton(draft.remark?.trim() || String(draft.id), () => {
+                    if (Date.now() < suppressClick && suppressedDraft === draft) return;
+                    if (!selecting) return select(draft);
+                    if (selected.has(draft)) selected.delete(draft); else selected.add(draft);
+                    renderTabs();
+                }, '表单 ' + draft.id);
+                button.dataset.draftId = draft.id;
+                button.setAttribute('aria-pressed', String(selecting ? selected.has(draft) : draft === active));
                 tabs.append(button);
             }
+            tabs.classList.toggle('is-selecting', selecting);
+            copy.hidden = selecting; cancelSelection.hidden = selectAll.hidden = !selecting;
+            remove.disabled = selecting && !selected.size;
         }
+        const cancelSelection = makeButton('取消', () => { selecting = false; selected.clear(); renderTabs(); }, '取消表单多选');
+        const selectAll = makeButton('☑', () => { drafts.forEach(draft => selected.add(draft)); renderTabs(); }, '全选表单');
+        selectAll.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m7 12 3 3 7-7"/></svg>';
+        remove.before(cancelSelection, selectAll);
+        function clearPress() { clearTimeout(press?.timer); press = null; }
+        tabs.addEventListener('pointerdown', event => {
+            const button = event.target.closest('button[data-draft-id]');
+            if (!button || event.button !== 0) return;
+            clearPress(); const draft = drafts.find(item => String(item.id) === button.dataset.draftId);
+            press = { id: event.pointerId, x: event.clientX, y: event.clientY, timer: setTimeout(() => {
+                if (!drafts.includes(draft)) return;
+                selecting = true; selected.add(draft); heldPointer = event.pointerId; suppressedDraft = draft; suppressClick = Date.now() + 700;
+                clearPress(); global.getSelection?.()?.removeAllRanges(); renderTabs();
+            }, 550) };
+        });
+        tabs.addEventListener('pointermove', event => { if (press?.id === event.pointerId && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 12) clearPress(); });
+        for (const name of ['pointerup', 'pointercancel', 'pointerleave']) tabs.addEventListener(name, event => {
+            if (heldPointer === event.pointerId) { heldPointer = undefined; suppressClick = Date.now() + 700; }
+            clearPress();
+        });
+        tabs.addEventListener('selectstart', event => { if (press || selecting) event.preventDefault(); });
+        tabs.addEventListener('contextmenu', event => { if (press || selecting || Date.now() < suppressClick) event.preventDefault(); });
         function select(draft) {
             if (draft === active) return;
             capture();
@@ -86,6 +119,8 @@
         }
         function update(draft) {
             if (draft === active) display();
+            const tab = tabs.querySelector('[data-draft-id="' + draft.id + '"]');
+            if (tab) tab.textContent = draft.remark?.trim() || String(draft.id);
             persist();
         }
         async function analyze(draft, refresh = false) {
@@ -141,6 +176,7 @@
             tabs.scrollIntoView({ block: 'nearest' });
         }
         function reset(draft) {
+            if (!drafts.includes(draft)) return;
             clearTimeout(draft.timer);
             Object.assign(draft, blank(), { pending: false, request: null });
             if (drafts.length === 1 && drafts[0] === draft) {
@@ -155,16 +191,18 @@
             insert({ ...readFields(), analysis: draft.analysis, ids: draft.ids?.slice() || null, restoreIds: draft.restoreIds });
         };
         remove.onclick = () => {
-            if (!confirm('删除当前任务表单？')) return;
-            clearTimeout(active.timer);
-            active.request = null;
+            capture();
+            const targets = selecting ? [...selected] : [active];
+            if (!targets.length || !confirm(selecting ? '删除选中的 ' + targets.length + ' 套任务表单？' : '删除当前任务表单？')) return;
             const index = drafts.indexOf(active);
-            drafts.splice(index, 1);
+            for (const draft of targets) { clearTimeout(draft.timer); draft.request = null; }
+            drafts = drafts.filter(draft => !targets.includes(draft));
             if (!drafts.length) {
                 next = 1;
                 drafts.push({ id: next++, ...blank() });
             }
-            active = drafts[Math.min(index, drafts.length - 1)];
+            if (!drafts.includes(active)) active = drafts[Math.min(index, drafts.length - 1)];
+            selecting = false; selected.clear();
             display();
             renderTabs();
             persist();

@@ -3,6 +3,8 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['确认移除','Confirm removal'],['取消移除','Cancel removal'],
+        ['短码不可用','Short code unavailable'],['正在读取短码…','Reading the short code…'],
         ['邀请已失效','Invitation is no longer valid'],['暂时无法使用此邀请','This invitation cannot be used right now'],
         ['正在核对邀请…','Checking the invitation…'],['正在核对邀请，请稍候…','Checking the invitation. Please wait…'],
         ['邀请核对未完成，请检查连接后重试或索取新邀请','The invitation could not be checked. Check the connection and retry, or request a new invitation'],
