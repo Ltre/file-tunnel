@@ -1,8 +1,9 @@
-const CACHE_NAME = 'instant-tunnel-v130-content-v8-web-zip-sync-feedback-261106-2';
+const CACHE_NAME = 'instant-tunnel-v131-content-v8-route-web-zip-261106-3';
 const APP_SHELL = [
     '/',
     '/index.html',
     '/tunnel-entry.html',
+    '/client/tunnel-code-scanner.js',
     '/client/tunnel-entry.js',
     '/client/tunnel-entry.css',
     '/client/tunnel-landing.css',

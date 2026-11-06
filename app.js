@@ -246,7 +246,6 @@ let homeHistoryGuardReady = false;
 let nearbyPresenceTimer = null;
 let nearbyLocation = null;
 let deviceCameraBridge = null;
-let tunnelCodeScannerState = null;
 
 function nextHistoryTimestamp() {
     const now = Date.now();
@@ -1340,12 +1339,15 @@ function initSessionLanding({ hidden = false, overlay = false } = {}) {
     sessionSelect?.addEventListener('change', () => { selectionTouched = true; });
     const renderSessionPicker = sessions => {
         const validSessions = sessions
-            .filter(session => /^[a-zA-Z0-9_-]{8,64}$/.test(session.sessionId) && normalizeLocalShortCode(session.shortCode))
+            .filter(session => /^[a-zA-Z0-9_-]{8,64}$/.test(session.sessionId))
             .sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId), undefined, { numeric: true, sensitivity: 'base' }));
         if (state.sessionId && document.body.classList.contains('tunnel-route-active') && !validSessions.some(session => session.sessionId === state.sessionId)) {
             validSessions.unshift({ sessionId:state.sessionId, shortCode:state.shortCode, remark:state.sessionRemark });
         }
-        if (!validSessions.length || !sessionPicker || !sessionSelect) return;
+        if (!sessionPicker || !sessionSelect) return;
+        landing.dataset.hasSessions = String(validSessions.length > 0);
+        sessionPicker.hidden = sessionSelect.hidden = recentButton.hidden = !validSessions.length;
+        if (!validSessions.length) { sessionSelect.replaceChildren(); return; }
         const selectedId = selectionTouched ? sessionSelect.value : '';
         sessionSelect.replaceChildren();
         const recentId = state.recentSessionId || validSessions.slice().sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))[0]?.sessionId || '';
@@ -1377,7 +1379,7 @@ function initSessionLanding({ hidden = false, overlay = false } = {}) {
     refreshPicker();
 
     if (recentButton) {
-        recentButton.hidden = !state.recentSessionId;
+        recentButton.hidden = !sessionSelect.options.length;
         recentButton.addEventListener('click', async () => {
             const selected = sessionSelect?.value || state.recentSessionId;
             if (document.body.classList.contains('tunnel-route-active') && selected === state.sessionId) {
@@ -1405,6 +1407,8 @@ function initSessionLanding({ hidden = false, overlay = false } = {}) {
         inputs[focusIndex].focus();
         maybeAutoJoin();
     };
+    initSessionLanding.scan = fillCode;
+    document.getElementById('landingScanBtn').onclick = () => openTunnelCodeScanner().catch(error => { note.textContent=error.message; });
     const join = async () => {
         if (joinInProgress) return;
         const shortCode = getCodeValue();
@@ -1865,12 +1869,7 @@ function ensureDeviceCameraBridge() {
 }
 
 function closeTunnelCodeScanner() {
-    const scanner = tunnelCodeScannerState;
-    tunnelCodeScannerState = null;
-    if (!scanner) return;
-    clearInterval(scanner.timer);
-    scanner.stream?.getTracks?.().forEach(track => track.stop());
-    scanner.layer?.remove();
+    window.TunnelCodeScanner?.close();
 }
 
 function applyScannedTunnelCode(rawValue) {
@@ -1897,6 +1896,7 @@ function applyScannedTunnelCode(rawValue) {
         }
     } catch (_) {}
     if (/^[A-Z0-9]{5}$/i.test(raw)) {
+        if (!document.getElementById('sessionLanding')?.hidden && initSessionLanding.scan) { initSessionLanding.scan(raw); return true; }
         const input = document.getElementById('shortCodeInput');
         if (input) input.value = raw.toUpperCase();
         closeTunnelCodeScanner();
@@ -1907,26 +1907,7 @@ function applyScannedTunnelCode(rawValue) {
 }
 
 async function openTunnelCodeScanner() {
-    closeTunnelCodeScanner();
-    if (!('BarcodeDetector' in window)) throw new Error('当前浏览器不支持二维码扫描，请使用支持 BarcodeDetector 的 Chromium 浏览器');
-    const detector = new BarcodeDetector({ formats: ['qr_code'] });
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-    const layer = document.createElement('div');
-    layer.style.cssText = 'position:fixed;inset:0;z-index:2147483100;background:#05070a;color:#fff;display:flex;flex-direction:column;padding:max(14px,env(safe-area-inset-top)) 14px 18px;';
-    layer.innerHTML = '<div style="display:flex;align-items:center;gap:12px"><strong style="flex:1">扫描隧道码</strong><button data-close type="button" style="border:0;border-radius:999px;width:38px;height:38px;font-size:22px">×</button></div><div style="flex:1;min-height:0;display:grid;place-items:center"><video data-video playsinline muted style="width:min(92vw,680px);max-height:72vh;border-radius:18px;background:#000;object-fit:cover"></video></div><div data-status style="text-align:center;color:#cbd5e1">将隧道二维码置于扫描框内</div>';
-    document.body.appendChild(layer);
-    const video = layer.querySelector('[data-video]');
-    video.srcObject = stream;
-    await video.play();
-    layer.querySelector('[data-close]').onclick = closeTunnelCodeScanner;
-    const timer = setInterval(async () => {
-        if (!tunnelCodeScannerState || video.readyState < 2) return;
-        try {
-            const results = await detector.detect(video);
-            for (const result of results || []) if (applyScannedTunnelCode(result.rawValue)) return;
-        } catch (_) {}
-    }, 180);
-    tunnelCodeScannerState = { layer, stream, timer };
+    return window.TunnelCodeScanner.open(applyScannedTunnelCode);
 }
 
 // ==================== Socket.io 连接 ====================
@@ -2234,6 +2215,7 @@ function initSocket() {
         window.NotificationCenter?.add({ id:data.requestId, type:'web-zip-edit-request', title:'网页 ZIP 编辑权限申请', body:`设备 ${data.requesterName || data.requesterDeviceId || '未知设备'} 申请编辑“${data.fileName || '网页 ZIP'}”`, data });
     });
     state.socket.on('web-zip-edit-response', data => {
+        if (data.approved) rememberWebZipEditCredential(data.credential,data.sessionId,data.messageId);
         window.NotificationCenter?.add({ id:`${data.requestId}:response`, type:'web-zip-edit-response', title:data.approved ? '网页编辑权限已获批准' : '网页编辑权限被拒绝', body:`“${data.fileName || '网页 ZIP'}”的编辑申请${data.approved ? '已通过，可重新打开并转入草稿编辑。' : '未通过。'}`, data });
         if (data.approved) requestSessionHistory('web-zip-edit-approved');
     });
@@ -2241,6 +2223,7 @@ function initSocket() {
         const data=notification?.data||{};
         if(notification?.type==='web-zip-edit-request')window.NotificationCenter?.add({id:data.requestId,type:'web-zip-edit-request',title:'网页 ZIP 编辑权限申请',body:`设备 ${data.requesterName||data.requesterDeviceId||'未知设备'} 申请编辑“${data.fileName||'网页 ZIP'}”`,data});
         if(notification?.type==='web-zip-edit-response'){
+            if (data.approved) rememberWebZipEditCredential(data.credential,data.sessionId,data.messageId);
             window.NotificationCenter?.add({id:`${data.requestId}:response`,type:'web-zip-edit-response',title:data.approved?'网页编辑权限已获批准':'网页编辑权限被拒绝',body:`“${data.fileName||'网页 ZIP'}”的编辑申请${data.approved?'已通过，可重新打开并转入草稿编辑。':'未通过。'}`,data});
             if(data.approved)requestSessionHistory('web-zip-edit-approved');
         }
@@ -4921,6 +4904,22 @@ function formatWebZipText(source, ...values) {
     return (window.TunnelI18n?.t(source) || source).replace(/\{(\d+)\}/g, (_, i) => values[i]);
 }
 
+function rememberWebZipEditCredential(credential, sessionId, messageId, deviceId = state.deviceId) {
+    if (!credential || !sessionId || !messageId) return;
+    try { localStorage.setItem(`webZipEditCredential:${deviceId}:${sessionId}:${messageId}`, credential); } catch (_) {}
+}
+
+async function requestWebZipEditCredential(fileInfo, messageId) {
+    const sessionId=state.sessionId, deviceId=state.deviceId;
+    if (!state.socket?.connected) throw Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'));
+    const response=await new Promise((resolve,reject)=>state.socket.timeout(10000).emit('web-zip-edit-credential', {
+        sessionId,messageId,fileId:fileInfo.id
+    },(error,result)=>error?reject(Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'))):resolve(result)));
+    if (!response?.ok || !response.credential || state.sessionId!==sessionId || state.deviceId!==deviceId) throw Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'));
+    rememberWebZipEditCredential(response.credential,sessionId,messageId,deviceId);
+    return response.credential;
+}
+
 function renderWebZipRecordLabels(fileInfo) {
     if (!fileInfo?.webZip && !/\.html\.zip$/i.test(fileInfo?.name || '')) return '';
     const labels = [];
@@ -4979,6 +4978,10 @@ function showWebZipEditDialog(fileInfo, context = {}) {
         const button = event.currentTarget, text = button.textContent;
         button.disabled = true; button.textContent = '正在导入…';
         try {
+            if (action === 'edit') {
+                const recordId = context.messageId || context.sourceMessageId || (await getCurrentSessionMessages()).find(message=>message.fileInfo?.id===fileInfo.id || message.collection?.files?.some(file=>file.id===fileInfo.id))?.id;
+                await requestWebZipEditCredential(fileInfo,recordId);
+            }
             const blob = await getWebZipBlob(fileInfo, context.ownerDeviceId || context.sender || '');
             if (!dialog.isConnected) return;
             const draft = await window.WebWorkshop.importPackage(fileInfo, blob, { ...context, revealEditor: true }, action === 'edit' ? 'update' : 'copy');
@@ -5005,6 +5008,7 @@ async function publishWebZipUpdate(file, draft) {
     if (!current) throw new Error('原记录已换成其它文件，不能将此草稿覆盖到不相关的记录');
     if (!canEditWebZip(current)) throw new Error('当前设备没有该网页 ZIP 的编辑权限');
     if (state.sessionId !== sessionId) throw new Error(formatWebZipText('隧道已切换，请回到原隧道重新发布网页'));
+    const editCredential = await requestWebZipEditCredential(current,message.id);
     const nextFileId = generateId();
     // The previous record describes the old physical ZIP. Carrying these
     // fields forward overwrites the new Blob metadata and makes the cache
@@ -5039,7 +5043,7 @@ async function publishWebZipUpdate(file, draft) {
     if (!hasCompleteFileCache(locallyStoredVersion, fileInfo)) throw new Error('网页 ZIP 新版本未能完整写入本机缓存');
     if (state.sessionId !== sessionId) throw new Error(formatWebZipText('隧道已切换，请回到原隧道重新发布网页'));
     const confirmed = await new Promise((resolve,reject) => state.socket.timeout(15000).emit('web-zip-publish', {
-        sessionId,messageId:message.id,fileId:current.id,fileInfo
+        sessionId,messageId:message.id,fileId:current.id,fileInfo,editCredential
     }, (error,response) => {
         if (error || !response?.ok || !response.message) {
             const labels = {WEB_ZIP_EDIT_DENIED:'网页编辑权限已变化，请向创建者重新申请',WEB_ZIP_SOURCE_CHANGED:'网页记录已变化，请重新导入后发布',WEB_ZIP_CONTENT_NOT_READY:'网页缓存尚未就绪，请重试发布',WEB_ZIP_SYNC_STORAGE:'待同步事项保存失败，请稍后重试'};
@@ -8749,7 +8753,9 @@ async function editTransferRecordText(messageId) {
     const t = text => window.TunnelI18n?.t(text) || text;
     await openTransferRecordRemarkEditor(message.text || '', {
         title: '编辑文本', hint: '修改会同步到当前隧道中的这条文本记录。', placeholder: '输入文本内容', maxLength: 262144,
+        guardChanges: true, fullscreen: true,
         onSave: async text => {
+            text = text.replace(/(?:\r\n|\r|\n)\s*$/, '');
             if (!text.trim()) throw Error(t('文本内容不能为空'));
             if (state.sessionId !== scope || !state.socket?.connected) throw Error(t('当前隧道连接已失效，请重新进入后再试'));
             const result = await new Promise((resolve, reject) => state.socket.timeout(10000).emit('text-message-edit', {
@@ -8773,6 +8779,11 @@ async function editTransferRecordRemark(messageId) {
     if (updated.type === 'collection') updated.collection = { ...updated.collection, remark };
     await updateHistoryMessage(updated);
 }
+
+// Install before the homepage's history listener so a modal Back cannot also
+// close an underlying preview or activate the home guard in the same event.
+let transferRecordEditorBack = null;
+window.addEventListener('popstate', event => transferRecordEditorBack?.(event), true);
 
 function openTransferRecordRemarkEditor(current = '', options = {}) {
     return new Promise(resolve => {
@@ -8798,28 +8809,65 @@ function openTransferRecordRemarkEditor(current = '', options = {}) {
         const syncCount = () => { count.textContent = `${input.value.length} / ${maxLength}`; };
         syncCount();
         input.addEventListener('input', syncCount);
-        let saving = false;
+        let saving = false, closed = false, prompt, historyActive = false;
+        const historyId = 'text-editor-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+        const pushHistory = () => { history.pushState({ ...history.state, transferTextEditor:historyId }, '', location.href); historyActive = true; };
+        const clearPrompt = () => { prompt?.remove(); prompt = null; };
+        const keyHandler = event => { if (event.key === 'Escape' && !closed) { event.preventDefault(); event.stopImmediatePropagation(); if (prompt) { clearPrompt(); input.focus(); } else requestClose(); } };
+        const popHandler = event => { if (!historyActive || closed) return; event.stopImmediatePropagation(); historyActive = false; requestClose(true); };
         const finish = async value => {
-            if (saving) return;
+            if (saving || closed) return;
+            clearPrompt();
             if (value !== null && options.onSave) {
                 saving = true; const save = overlay.querySelector('[data-remark-save]'); save.disabled = true; input.readOnly = true;
                 try { await options.onSave(value); }
                 catch (error) { const status = overlay.querySelector('.record-edit-status'); status.hidden = false; status.textContent = error.message; return; }
                 finally { saving = false; save.disabled = false; input.readOnly = false; }
             }
+            closed = true;
+            document.removeEventListener('keydown', keyHandler, true);
+            if (transferRecordEditorBack === popHandler) transferRecordEditorBack = null;
             overlay.remove();
+            if (historyActive && history.state?.transferTextEditor === historyId) {
+                // Closing this editor consumes only its own history entry;
+                // underlying previews and the home guard must not handle it.
+                const consumeReturn = event => { event.stopImmediatePropagation(); if (transferRecordEditorBack === consumeReturn) transferRecordEditorBack = null; };
+                transferRecordEditorBack = consumeReturn;
+                history.back();
+                setTimeout(() => { if (transferRecordEditorBack === consumeReturn) transferRecordEditorBack = null; },1000);
+            }
             resolve(value);
         };
+        const requestClose = (fromHistory = false) => {
+            if (saving || closed) { if (fromHistory && !closed) pushHistory(); return; }
+            if (!options.guardChanges || input.value === current) { finish(null); return; }
+            if (fromHistory) pushHistory();
+            if (prompt) return;
+            prompt = document.createElement('div'); prompt.className = 'record-editor-unsaved'; prompt.setAttribute('role','alertdialog'); prompt.setAttribute('aria-modal','true'); prompt.setAttribute('aria-label',t('尚有未保存的文本修改'));
+            prompt.innerHTML = `<section class="send-mode-dialog"><h3>${escapeHtml(t('尚有未保存的文本修改'))}</h3><div class="send-mode-actions"><button type="button" class="btn btn-primary" data-dirty-save>${escapeHtml(t('保存'))}</button><button type="button" class="btn btn-secondary" data-dirty-continue>${escapeHtml(t('继续编辑'))}</button><button type="button" class="btn btn-secondary" data-dirty-discard>${escapeHtml(t('放弃'))}</button></div></section>`;
+            overlay.append(prompt);
+            prompt.querySelector('[data-dirty-save]').onclick = () => finish(input.value);
+            prompt.querySelector('[data-dirty-continue]').onclick = () => { clearPrompt(); input.focus(); };
+            prompt.querySelector('[data-dirty-discard]').onclick = () => finish(null);
+            prompt.querySelector('[data-dirty-continue]').focus();
+        };
         overlay.addEventListener('click', event => {
-            if (event.target === overlay || event.target.closest('[data-remark-cancel]')) finish(null);
+            if (event.target === overlay || event.target.closest('[data-remark-cancel]')) requestClose();
             if (event.target.closest('[data-remark-save]')) finish(input.value);
         });
         input.addEventListener('keydown', event => {
             if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') finish(input.value);
-            if (event.key === 'Escape') finish(null);
+            if (event.key === 'Escape' && !options.guardChanges) requestClose();
         });
+        if (options.fullscreen) {
+            const full = document.createElement('button'); full.type = 'button'; full.className = 'record-editor-fullscreen'; full.setAttribute('aria-label',t('全屏编辑')); full.title = t('全屏编辑'); full.setAttribute('aria-pressed','false');
+            full.innerHTML = '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6"/></svg>';
+            overlay.querySelector('h3').append(full);
+            full.onclick = () => { const active = overlay.classList.toggle('record-editor-is-fullscreen'); full.setAttribute('aria-pressed',String(active)); const label=t(active?'退出全屏编辑':'全屏编辑'); full.setAttribute('aria-label',label); full.title=label; input.focus({preventScroll:true}); };
+        }
         document.body.appendChild(overlay);
-        requestAnimationFrame(() => input.focus({ preventScroll: true }));
+        if (options.guardChanges) { pushHistory(); document.addEventListener('keydown',keyHandler,true); transferRecordEditorBack = popHandler; }
+        requestAnimationFrame(() => { if (closed) return; input.focus({ preventScroll: true }); if (options.guardChanges) input.setSelectionRange(input.value.length,input.value.length); });
     });
 }
 

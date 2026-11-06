@@ -180,11 +180,12 @@ test('导入对话框保持到草稿保存成功；失败和中途关闭不静�
         const dialog = { isConnected: true, innerHTML: '', remove() { this.isConnected = false; }, addEventListener() {},
             querySelector(selector) { if (selector.includes('request')) return null; if (!buttons[selector]) buttons[selector] = { textContent: '转入草稿箱编辑', addEventListener: (_, fn) => { listeners[selector] = fn; } }; return buttons[selector]; } };
         const context = vm.createContext({ state: { deviceId: 'device' }, canEditWebZip: () => true, escapeHtml: text => text,
+            requestWebZipEditCredential: async () => 'fixture-edit-credential',
             document: { querySelector: () => null, createElement: () => dialog, body: { append() {} } }, alert: message => alerts.push(message),
             getWebZipBlob: () => loading,
             window: { WebWorkshop: { importPackage: async (...args) => { calls.push(args); if (outcome === 'failure') throw new Error('storage-full'); return outcome === 'cancelled' ? null : { id: 'draft' }; } } }
         });
-        vm.runInContext(block(app, 'function formatWebZipText(', 'function renderWebZipRecordLabels(') + block(app, 'function showWebZipEditDialog(', 'async function publishWebZipUpdate('), context);
+        vm.runInContext(block(app, 'function formatWebZipText(', 'function rememberWebZipEditCredential(') + block(app, 'function showWebZipEditDialog(', 'async function publishWebZipUpdate('), context);
         context.showWebZipEditDialog({ id: 'zip', creatorDeviceId: 'device' }, { messageId: 'message' });
         const selector = '[data-web-zip-action="edit"]', button = buttons[selector];
         const pending = listeners[selector]({ currentTarget: button });

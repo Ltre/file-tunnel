@@ -27,6 +27,7 @@
     }
     function updateBadges(items = read()) {
         const unread = items.filter(item => !item.read).length;
+        document.querySelectorAll('[data-notification-dot]').forEach(node => { node.hidden = !unread; });
         document.querySelectorAll('[data-notification-count]').forEach(node => {
             node.textContent = unread ? String(unread) : '';
             node.hidden = !unread;

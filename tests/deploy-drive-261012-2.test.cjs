@@ -18,6 +18,13 @@ test('真实发布构建覆盖所有网盘入口与hash重写，保留服务端�
     assert.ok(manifest.appShell.includes('/client/icons/streaming.png'));
     const required = ['disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-upload-names', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save', 'disk-saved-location', 'account-ui', 'streaming-console', 'streaming-cache', 'streaming-player', 'streaming-peers', 'streaming-i18n', 'sns-post-i18n', 'sns-post-markdown'];
     const sourcePages = ['index.html', 'disk-share.html', 'disk-collaboration.html', 'sns-dl.html', 'youtube-premium-dl.html'];
+    const scanner=manifest.scripts['client/tunnel-code-scanner.js'];
+    assert.ok(scanner && manifest.appShell.includes(scanner));
+    for(const page of ['index.html','tunnel-entry.html']){
+        const html=fs.readFileSync(path.join(temporary,'pages',page),'utf8');
+        assert.ok(html.includes(scanner),page+' reuses the published shared scanner');
+        assert.ok(!html.includes('/client/tunnel-code-scanner.js'));
+    }
     for (const name of required) {
         const source = 'client/' + name + '.js', asset = manifest.scripts[source];
         assert.match(asset, /^\/assets\/.+\.[a-f0-9]{10}\.min\.js$/);

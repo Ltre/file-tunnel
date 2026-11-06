@@ -26,6 +26,7 @@ const SCRIPT_SOURCES = [
   'client/sns-post-i18n.js',
   'client/sns-post-markdown.js',
   'client/browser-logs.js',
+  'client/tunnel-code-scanner.js',
   'client/tunnel-entry.js',
   'app.js',
   'client/theme-preference.js',

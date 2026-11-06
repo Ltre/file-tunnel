@@ -230,3 +230,4 @@ body[data-theme="lusns"] .sc-overlay{--sc-danger:#bd3559;--sc-danger-soft:#fff0f
 .sc-program-removing{animation:sc-program-slide-out .24s ease-in forwards;pointer-events:none}
 @keyframes sc-program-slide-out{to{transform:translateX(110%);opacity:0}}
 @media(prefers-reduced-motion:reduce){.sc-program-removing{animation:none}}
+.sc-editor-title{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.sc-overlay .sc-editor-title>button{margin-left:auto;font-size:14px;font-weight:400;flex:none}

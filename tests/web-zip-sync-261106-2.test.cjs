@@ -3,7 +3,7 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),fs=requir
 const {createWebZipSync}=require('../server/web-zip-sync');
 const clone=value=>JSON.parse(JSON.stringify(value));
 async function waitUntil(predicate){for(let n=0;n<100;n++){if(predicate())return;await new Promise(resolve=>setTimeout(resolve,10));}assert.ok(predicate(),'webpage synchronization did not settle');}
-function setup(t){
+function setup(t,{withCredentials=false}={}){
     const directory=fs.mkdtempSync(path.join(os.tmpdir(),'web-zip-sync-261106-'));
     t.after(()=>{assert.ok(directory.startsWith(path.join(os.tmpdir(),'web-zip-sync-261106-')));fs.rmSync(directory,{recursive:true,force:true});});
     const filename=path.join(directory,'jobs.json'),records=new Map(),writes=[],logs=[];
@@ -12,8 +12,10 @@ function setup(t){
     records.set('B:copy',{id:'copy',type:'file',sender:'editor',timestamp:20,remark:'copy remark',forwardedFrom:{sessionId:'A',messageId:'origin'},fileInfo:{...clone(file),id:'copy-file',ownerDeviceId:'editor'}});
     const state={available:false,allowed:true,content:true,trusted:true,gate:null},readRecord=(s,id)=>records.get(s+':'+id)||null;
     const dependencies={filename,readRecord,
+        credentials:withCredentials?require('../server/web-zip-credentials').createWebZipCredentials({dataDir:directory}):undefined,
         writeRecord:async(s,previous,next,options={})=>{
             if(s==='A'&&state.gate)await state.gate;
+            if(s==='B'&&state.publishGate)await state.publishGate;
             if(JSON.stringify(readRecord(s,previous.id))!==JSON.stringify(previous)||options.check?.()===false)throw Error('WEB_ZIP_SOURCE_CHANGED');
             records.set(s+':'+previous.id,clone(next));writes.push({sessionId:s,previous:clone(previous),next:clone(next),options});return readRecord(s,previous.id);
         },canPublish:()=>state.allowed,hasContent:()=>state.content,canSync:()=>state.available,isForwardedCopy:()=>state.trusted,log:(...args)=>logs.push(args)};
@@ -85,6 +87,33 @@ test('losing the eligible device while the source write waits keeps the work pen
 test('invalid editors and unavailable new bytes cannot publish or enqueue work',async t=>{
     const f=setup(t);await assert.rejects(f.service.publish({...f.input(),deviceId:'outsider'}),/WEB_ZIP_EDIT_DENIED/);
     f.state.content=false;await assert.rejects(f.service.publish(f.input()),/WEB_ZIP_CONTENT_NOT_READY/);assert.equal(f.writes.length,0);assert.equal(fs.existsSync(f.filename),false);
+});
+
+test('a device-bound edit credential resumes its exact original even when the mirrored source editor list is absent',async t=>{
+    const f=setup(t,{withCredentials:true}),credential=f.service.issueCredential({sessionId:'B',messageId:'copy',fileId:'copy-file',deviceId:'editor'});
+    assert.match(credential,/^we1\./);f.read('A','origin').fileInfo.webZipEditors=[];
+    await f.service.publish({...f.input(),editCredential:credential});assert.equal(f.read('A','origin').fileInfo.id,'original-file');
+    assert.ok(JSON.parse(fs.readFileSync(f.filename)).jobs[0].editCredential);
+    f.restart();f.state.available=true;f.service.topologyChanged();await waitUntil(()=>!f.read('B','copy').fileInfo.webZipPendingSync);
+    assert.equal(f.read('A','origin').fileInfo.id,'new-file');
+});
+
+test('edit credentials reject another device or source anchor, and a newer source revocation prevents queued sync',async t=>{
+    const f=setup(t,{withCredentials:true}),credential=f.service.issueCredential({sessionId:'B',messageId:'copy',fileId:'copy-file',deviceId:'editor'});
+    f.read('B','copy').fileInfo.webZipEditors.push('other-editor');
+    await assert.rejects(f.service.publish({...f.input(),deviceId:'other-editor',editCredential:credential}),/WEB_ZIP_EDIT_CREDENTIAL_INVALID/);
+    const savedOrigin=f.read('B','copy').forwardedFrom;f.read('B','copy').forwardedFrom={sessionId:'A',messageId:'other'};
+    await assert.rejects(f.service.publish({...f.input(),editCredential:credential}),/WEB_ZIP_EDIT_CREDENTIAL_INVALID/);f.read('B','copy').forwardedFrom=savedOrigin;
+    await f.service.publish({...f.input(),editCredential:credential});Object.assign(f.read('A','origin').fileInfo,{webZipEditors:[],webZipPermissionUpdatedAt:Date.now()});
+    f.state.available=true;f.service.topologyChanged();await waitUntil(()=>f.read('B','copy').fileInfo.webZipPendingSync.lastError==='WEB_ZIP_SOURCE_EDIT_DENIED');
+    assert.equal(f.read('A','origin').fileInfo.id,'original-file');
+    assert.throws(()=>f.service.issueCredential({sessionId:'B',messageId:'copy',fileId:'new-file',deviceId:'editor'}),/WEB_ZIP_EDIT_DENIED/);
+});
+
+test('a topology event during publication cannot discard the prepared sync job before the target record commits',async t=>{
+    const f=setup(t);let release;f.state.publishGate=new Promise(resolve=>release=resolve);const publishing=f.service.publish(f.input());
+    await waitUntil(()=>fs.existsSync(f.filename));f.state.available=true;f.service.topologyChanged();await new Promise(resolve=>setTimeout(resolve,25));
+    release();await publishing;await waitUntil(()=>!f.read('B','copy').fileInfo.webZipPendingSync);assert.equal(f.read('A','origin').fileInfo.id,'new-file');
 });
 test('client-claimed source fields alone cannot create a sync job or extend a creator approval to another record',async t=>{
     const f=setup(t);f.state.trusted=false;f.state.available=true;f.read('A','origin').fileInfo.webZipEditors=[];

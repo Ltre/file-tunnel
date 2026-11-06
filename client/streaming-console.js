@@ -724,9 +724,9 @@
                 }
                 if (s.manageable) actions.append(button('操控串流台', () => navigate('control', s.id)));
                 if (view === 'local') {
-                    actions.append(button(s.manageable ? '编辑节目单' : '切换归属账号', () => s.manageable ? navigate('edit', s.id) : accountDialog()));
+                    if (s.manageable) actions.append(button('编辑节目单', () => navigate('edit', s.id)));
                     if (own(s) || !s.ownerId) actions.append(button('邀请与可见性', () => s.manageable ? navigate('access', s.id) : accountDialog()), button('观看者黑名单', () => s.manageable ? navigate('blacklist', s.id) : accountDialog()));
-                    if (!s.ownerId && currentUser) actions.append(button('认领', async () => { await request('/stations/' + s.id + '/ownership', 'POST', { action: 'claim' }); await sync(); }));
+                    if (!s.ownerId && currentUser) actions.append(button('认领', async () => { if (!confirm(t('确认将此串流台认领到当前账号？'))) return; await request('/stations/' + s.id + '/ownership', 'POST', { action: 'claim' }); await sync(); }));
                     if (s.manageable || s.locked) actions.append(button('删除台', async () => { if (!confirm(t('删除台及其配置，保留原始来源文件？'))) return; await request('/stations/' + s.id, 'DELETE'); localStorage.removeItem(key('station:' + s.id)); delete ui.drafts[s.id]; saveUi(); await global.StreamingCache?.updateStation(config.deviceId(),s.id,[]); for (const [k, p] of players) if (k.startsWith(s.id + ':')) { p.close(); players.delete(k); } await refreshList(); }));
                 } else if (view === 'bookmarks') actions.append(button('取消订阅', async () => { await request('/stations/' + s.id + '/bookmark', 'DELETE'); await refreshList(); }));
                 if (s.owner) actions.append(button('创作者主页', () => { ui.creatorName = s.owner.name; navigate('creator', s.owner.id); }));
@@ -848,7 +848,9 @@
         saveUi(); refreshEditorItems?.();
     }
     function editor() {
-        title('创建与编辑串流台'); main.classList.add('sc-editor-page'); const d = draft(), stationId = ui.stationId, actions = document.createElement('div'); actions.className = 'sc-actions sc-editor-actions';
+        const pageTitle = title('创建与编辑串流台'), titleText = document.createElement('span'); titleText.textContent = pageTitle.textContent;
+        pageTitle.classList.add('sc-editor-title'); pageTitle.replaceChildren(titleText, button('⇥ 前往操控此串流台', () => navigate('control', ui.stationId)));
+        main.classList.add('sc-editor-page'); const d = draft(), stationId = ui.stationId, actions = document.createElement('div'); actions.className = 'sc-actions sc-editor-actions';
         const layout = document.createElement('div'); layout.className = 'sc-editor-grid'; const form = document.createElement('section'); form.className = 'sc-card';
         form.innerHTML = `<label>${t('串流台名称')}<input class="sc-name" maxlength="120" value="${esc(d.name)}"></label><label>${t('播放结束')}<select class="sc-loop"><option value="loop">${t('循环节目单')}</option><option value="stop">${t('播完停止')}</option></select></label><label>${t('静态项倒计时')}<select class="sc-countdown-choice">${['top-left', 'top-right', 'bottom-left', 'bottom-right', 'edge'].map((value, i) => '<option value="' + value + '">' + t(['左上', '右上', '左下', '右下', '边缘薄进度条'][i]) + '</option>').join('')}</select></label><p>${t('本机文件会持久缓存在供源设备；网盘与隧道节目保留来源引用。')}</p>`;
         form.querySelector('.sc-loop').value = d.loop ? 'loop' : 'stop'; form.querySelector('.sc-countdown-choice').value = d.countdown;
@@ -1648,6 +1650,7 @@
             globalControls.append(seek, button('调整全局进度', () => command('seek', { position: Number(seek.value) })), button('后退 10 秒', () => command('seek', { position: Math.max(0, (player?.snapshot() || snapshot).playback.position - 10) })), button('快进 10 秒', () => { const state = player?.snapshot() || snapshot, item = state.items.find(item => item.id === state.playback.itemId); return command('seek', { position: Math.min(item?.duration ? item.duration - item.start : item?.stay || 0, state.playback.position + 10) }); }));
             main.append(globalControls); actions.append(button('邀请与可见性', () => navigate('access', snapshot.id)));
             if (snapshot.local) actions.append(button('编辑节目单', () => navigate('edit', snapshot.id)));
+            if (snapshot.local && snapshot.ownerId) actions.append(button('放弃归属', async () => { if (!confirm(t('放弃台归属，保留普通观看许可和订阅？'))) return; await request('/stations/' + snapshot.id + '/ownership', 'POST', { action: 'release' }); navigate('local'); }));
         }
     }
     function offlinePage(s) {
@@ -1665,7 +1668,6 @@
             if (value === 'offline' && !confirm(t('下线将停止服务并保留订阅，继续？'))) return;
             const fresh = await request('/stations/' + stationId + '?manage=1'); await request('/stations/' + stationId + '/visibility', 'POST', { visibility: value, version: fresh.playback.version, confirmReset: reset }); render();
         }, s.visibility === value ? 'selected' : ''));
-        if (s.local && s.ownerId) visibility.append(button('放弃归属', async () => { if (confirm(t('放弃台归属，保留普通观看许可和订阅？'))) { await request('/stations/' + stationId + '/ownership', 'POST', { action: 'release' }); navigate('local'); } }));
         main.append(visibility); const inviteForm = document.createElement('section'); inviteForm.className = 'sc-card';
         inviteForm.innerHTML = `<h2>${t('生成与发送邀请')}</h2><label>${t('有效期（小时，留空为不过期）')}<input class="sc-hours" type="number" min="0.017" step="1" value="24"></label><label><input type="checkbox" class="sc-thumbnail">${t('附带当前媒体缩略图（可用时）')}</label><div class="sc-device-choices"></div><div class="sc-actions"></div>`;
         const inviteStatus = document.createElement('p'); inviteStatus.setAttribute('role', 'status'); inviteForm.append(inviteStatus);

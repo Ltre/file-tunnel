@@ -63,6 +63,7 @@ test('网页 ZIP 更新按消息与版本根标识定位当前文件，拒绝无
     const context = vm.createContext({
         getCurrentSessionMessages:async () => [message], getCollectionFiles:() => [],
         canEditWebZip:() => true, generateId:() => 'next-file',
+        requestWebZipEditCredential:async () => 'fixture-edit-credential',
         createFileInfoFromFile:(_file, options) => ({ ...options, id:options.fileId }),
         state:{ deviceId:'owner', deviceName:'owner', sessionId:'test',socket:{timeout(){return this;},emit(_event,data,ack){ack(null,{ok:true,message:{...message,fileInfo:data.fileInfo}});}} },
         storeAndAnnounceFileAsset:async () => {},

@@ -346,6 +346,11 @@
     }
     // Additive feature translations use the existing English fallback for other locales.
     for (const [source, traditional, en] of [
+        ['加入数据隧道','加入資料隧道','Join a data tunnel'],
+        ['输入朋友提供的暗号，或扫描隧道码','輸入朋友提供的暗號，或掃描隧道碼','Enter a friend’s code, or scan a tunnel code'],
+        ['或进入已加入的隧道','或進入已加入的隧道','Or enter a joined tunnel'],
+        ['已加入的隧道','已加入的隧道','Joined tunnels'],
+        ['暂时无法读取浏览器数据库，已保留本机隧道列表。','暫時無法讀取瀏覽器資料庫，已保留本機隧道列表。','The browser database is unavailable. Your local tunnel list is still available.'],
         [
             "系统日志管理",
             "系統日誌管理",
@@ -757,6 +762,9 @@
         ['退出多选','退出多選','Exit multi-select'],
         ['已复制锚点','已複製錨點','Record links copied'],
         ['编辑文本','編輯文字','Edit text'],
+        ['网页编辑凭据未能取得，请检查连接后重试','無法取得網頁編輯憑據，請檢查連線後重試','Could not obtain webpage editing credentials. Check the connection and retry'],
+        ['全屏编辑','全螢幕編輯','Fullscreen editor'],['退出全屏编辑','退出全螢幕編輯','Exit fullscreen editor'],
+        ['尚有未保存的文本修改','尚有未儲存的文字修改','There are unsaved text changes'],['继续编辑','繼續編輯','Continue editing'],['放弃','放棄','Discard'],
         ['编辑这条纯文本记录','編輯這筆純文字記錄','Edit this text record'],
         ['修改会同步到当前隧道中的这条文本记录。','修改會同步到目前隧道中的這筆文字記錄。','Changes will update this text record in the current tunnel.'],
         ['输入文本内容','輸入文字內容','Enter text'],

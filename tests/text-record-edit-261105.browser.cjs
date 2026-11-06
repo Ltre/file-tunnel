@@ -22,7 +22,7 @@ test('text menu opens the existing modal, retains failed input and applies only 
         ${section('function createRecordActionButton(', 'const selectedHistoryIds =')}
         ${section('function openMessageRecordActionMenu(', 'async function editTransferRecordText(')}
         ${section('async function editTransferRecordText(', 'async function editTransferRecordRemark(')}
-        ${section('function openTransferRecordRemarkEditor(', 'async function chooseForwardTargetSession(')}
+        ${section('let transferRecordEditorBack = null;', 'async function chooseForwardTargetSession(')}
         renderMessageRecordActions(document.querySelector('.message'),message);
     ` });
     await page.locator('.message-record-menu-trigger').click();

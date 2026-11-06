@@ -25,7 +25,10 @@ test('actual publish callback, SQLite persistence and copied-file read gate defe
     };
     vm.runInNewContext(section(server,'function readWebZipRecord(',"io.on('connection',")+';globalThis.service=webZipSync;',context);
     vm.runInContext(section(server,"    socket.on('web-zip-publish',","    socket.on('web-zip-edit-request',"),context);
-    let ack;await handlers.get('web-zip-publish')({sessionId:ids.B,messageId:ids.copy,fileId:ids.oldB,fileInfo:{id:ids.next,name:'updated.html.zip',size:5,type:'application/zip'}},result=>ack=result);
+    let credentialResult;handlers.get('web-zip-edit-credential')({sessionId:ids.B,messageId:ids.copy,fileId:ids.oldB},result=>credentialResult=result);
+    assert.equal(credentialResult.ok,true);assert.match(credentialResult.credential,/^we1\./);
+    assert.equal(JSON.stringify(committed(ids.B,ids.copy)).includes(credentialResult.credential),false,'the private credential must not enter shared record metadata');
+    let ack;await handlers.get('web-zip-publish')({sessionId:ids.B,messageId:ids.copy,fileId:ids.oldB,editCredential:credentialResult.credential,fileInfo:{id:ids.next,name:'updated.html.zip',size:5,type:'application/zip'}},result=>ack=result);
     assert.equal(ack.ok,true);assert.equal(ack.message.fileInfo.webZipPendingSync.sessionId,ids.A);assert.equal(infra.getHistoryMessage(ids.A,ids.origin).fileInfo.id,ids.oldA);assert.equal(sessions.has(ids.A),false,'looking up the original record must not create membership or a live source session');
     assert.equal(committed(ids.B,ids.copy)?.fileInfo.id,ids.next,'publication must commit before returning success, rather than wait for the normal audit debounce');
     sessions.set(ids.A,{devices:new Map([[ids.H,{socketId:'helper-A'}],[ids.R,{socketId:'viewer-A'}]]),history:[{message:original,size:JSON.stringify(original).length}],historySize:JSON.stringify(original).length,fileAssets:new Map(),deletedMessageIds:[]});
@@ -43,6 +46,7 @@ test('actual publish callback, SQLite persistence and copied-file read gate defe
     assert.equal(sessions.get(ids.B).devices.has(ids.R),false,'the source-only viewer is not granted membership in the editing tunnel');
     context.currentSession=ids.A;let rejected;await handlers.get('web-zip-publish')({sessionId:ids.B,messageId:ids.copy,fileId:ids.next,fileInfo:{id:ids.oldB}},result=>rejected=result);
     assert.equal(rejected.ok,false);
+    handlers.get('web-zip-edit-credential')({sessionId:ids.B,messageId:ids.copy,fileId:ids.next},result=>rejected=result);assert.equal(rejected.error,'invalid-session');
     // A later pending update also resumes when the editor arrives directly in
     // A after a restart, with B absent from the live session map.
     const next2='cccccccc-cccc-4ccc-8ccc-cccccccccccc';sockets.get('helper-A').connected=false;context.currentSession=ids.B;
@@ -53,7 +57,7 @@ test('actual publish callback, SQLite persistence and copied-file read gate defe
     sessions.get(ids.A).devices.set(ids.editor,{socketId:'editor-A'});sockets.set('editor-A',{connected:true,data:{deviceId:ids.editor}});
     assert.equal(context.canSyncWebZipSource(ids.editor,ids.A),true);context.service.topologyChanged();
     for(let n=0;n<100&&infra.getHistoryMessage(ids.B,ids.copy).fileInfo.webZipPendingSync;n++)await new Promise(resolve=>setTimeout(resolve,10));
-    assert.equal(infra.getHistoryMessage(ids.A,ids.origin).fileInfo.id,next2);assert.equal(infra.getHistoryMessage(ids.B,ids.copy).fileInfo.webZipPendingSync,undefined);
+    assert.equal(infra.getHistoryMessage(ids.A,ids.origin).fileInfo.id,next2,JSON.stringify(infra.getHistoryMessage(ids.B,ids.copy).fileInfo.webZipPendingSync));assert.equal(infra.getHistoryMessage(ids.B,ids.copy).fileInfo.webZipPendingSync,undefined);
     assert.equal(sessions.get(ids.B).devices.size,0,'loading stored policy must not join the editor to B either');
     const recovered=[];sessions.get(ids.B).devices.set(ids.editor,{socketId:'editor-B'});context.currentSession=ids.B;
     Object.assign(context,{MAX_HISTORY_MESSAGES:100,clientIp:'127.0.0.1',resumePendingSnsMetadataScans(){},historyLog(){},
@@ -61,6 +65,7 @@ test('actual publish callback, SQLite persistence and copied-file read gate defe
     vm.runInContext(section(server,"    socket.on('history-reconcile',","    socket.on('session-history-ack',"),context);
     handlers.get('history-reconcile')({sessionId:ids.B,messages:[copy]});
     assert.equal(recovered[0]?.fileInfo.id,next2,'a stale browser snapshot cannot replace the persisted webpage on a cold server');
+    for(let n=0;n<100&&JSON.parse(fs.readFileSync(path.join(dir,'web-zip-sync.json'))).jobs.length;n++)await new Promise(resolve=>setTimeout(resolve,10));
 });
 test('late pending-state messages cannot replace a completed webpage sync in the actual history update boundary',async()=>{
     const app=fs.readFileSync(path.join(root,'app.js'),'utf8'),start=app.indexOf('const snsMarkdownUpdates =');
@@ -73,10 +78,11 @@ test('late pending-state messages cannot replace a completed webpage sync in the
     await context.apply({id:'copy',webZipUpdateVersion:2,pending:true});assert.equal(record.webZipUpdateVersion,3);assert.equal(record.pending,undefined);assert.deepEqual(written,[2,3]);
 });
 
-test('the real webpage writer retries a failed commit without acknowledging, broadcasting or advancing its version twice',async()=>{
+test('the real webpage writer retries a failed commit without acknowledging, broadcasting or advancing its version twice',async t=>{
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'webzip-writer-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
     const previous={id:'page',sessionId:'A',type:'file',fileInfo:{id:'old',webZip:true}},next={...previous,fileInfo:{id:'new',webZip:true}};
     let stored=previous,flushes=0,committed=false;const delivered=[];
-    const context={require:name=>require(path.join(root,name)),path,SERVER_DATA_DIR:os.tmpdir(),Map,Set,Date,JSON,Buffer,Promise,Error,setImmediate,
+    const context={require:name=>require(path.join(root,name)),path,SERVER_DATA_DIR:directory,Map,Set,Date,JSON,Buffer,Promise,Error,setImmediate,
         console:{warn(){},error(){}},sessions:new Map(),io:{sockets:{sockets:new Map()}},MAX_MESSAGE_SIZE:1048576,MAX_HISTORY_SIZE:24*1048576,
         infraAuditPendingByKey:new Map(),infraAuditQueue:[],infraAuditDrainScheduled:false,INFRA_AUDIT_MAX_ATTEMPTS:3,
         infraStore:{getHistoryMessage:()=>stored,recordHistoryMessage:(_session,message)=>{stored=message;return{updated:true};},flush:()=>{committed=++flushes>1;return committed;}},

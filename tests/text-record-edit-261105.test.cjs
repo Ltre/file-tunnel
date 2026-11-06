@@ -34,6 +34,13 @@ test('text editing rejects wrong tunnels, revoked permissions, missing records a
     assert.equal(f.writes, 0); assert.equal(f.session.history[0].message, f.original);
 });
 
+test('text edits remove only trailing blank lines, preserve internal layout and make a blank-line-only retry harmless', () => {
+    const f=fixture(),result=f.call({sessionId:'tunnel',messageId:'text-record',baseText:'old',text:'  first\n\n  second  \r\n\t\n'});
+    assert.equal(result.message.text,'  first\n\n  second  ');
+    assert.equal(f.call({sessionId:'tunnel',messageId:'text-record',baseText:'old',text:'  first\n\n  second  \n\n'}).ok,true);
+    assert.equal(f.writes,1);
+});
+
 test('a delayed text acknowledgement cannot overwrite a newer local revision', async () => {
     const app = fs.readFileSync(require('node:path').join(__dirname, '../app.js'), 'utf8');
     const start = app.indexOf('async function applyHistoryMessageUpdate('), end = app.indexOf('async function updateHistoryMessage(', start);

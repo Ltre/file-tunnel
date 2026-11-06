@@ -12,9 +12,9 @@ const equivalent=(a,b)=>a&&b&&a.creatorDeviceId===b.creatorDeviceId&&a.name===b.
 const version=file=>({id:file.id,revision:revision(file)});
 const failure=code=>{throw Error(code);};
 function replaceFile(message,id,file){const next=clone(message);if(next.type==='file')next.fileInfo=file;else next.collection.files=next.collection.files.map(value=>value.id===id?file:value);return next;}
-function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent,canSync,isForwardedCopy=()=>false,log=()=>{}}){
+function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent,canSync,credentials,isForwardedCopy=()=>false,log=()=>{}}){
     let unavailable=false,saving=Promise.resolve(),scheduled=false,changed=false;
-    const jobs=new Map(),running=new Map();
+    const jobs=new Map(),running=new Map(),publishing=new Set();
     try{const saved=readJson(filename,{version:1,jobs:[]});if(saved.version!==1||!Array.isArray(saved.jobs))throw Error('invalid journal');for(const job of saved.jobs){if(!job?.key||!job.file?.id||!job.sessionId||!job.messageId)throw Error('invalid job');jobs.set(job.key,job);}}
     catch(error){unavailable=true;log('web-zip-sync-storage-unreadable',error);}
     const persist=()=>{const snapshot={version:1,jobs:[...jobs.values()].map(clone)};saving=saving.catch(()=>{}).then(()=>writeJsonAsync(filename,snapshot));return saving;};
@@ -34,6 +34,16 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
         return{...clone(next),id:input.id,name:input.name,type:input.type,size:input.size,timestamp:Date.now(),ownerDeviceId:deviceId,sender:deviceId,isAsset:true,webZip:true,
             webZipHideFrame:input.webZipHideFrame===true,webZipFullscreen:input.webZipFullscreen===true,webZipRevision:revision(file)+1,replacesFileId:file.id,webZipUpdatedAt:Date.now()};
     }
+    const scopeOf=(sessionId,messageId,file,deviceId,origin)=>({sessionId,messageId,deviceId,creatorDeviceId:file.creatorDeviceId,
+        rootId:origin?.file?.webZipRootId||origin?.file?.id||file.webZipRootId||file.id,sourceSessionId:origin?.sessionId||sessionId,sourceMessageId:origin?.messageId||messageId,
+        permissionAt:file.webZipPermissionUpdatedAt,sourcePermissionAt:origin?.file?.webZipPermissionUpdatedAt});
+    function issueCredential({sessionId,messageId,fileId,deviceId}){
+        const message=readRecord(sessionId,messageId),file=files(message).find(value=>value.id===fileId);
+        if(!webpage(file)||!canEdit(file,deviceId)||!canPublish(sessionId,deviceId))failure('WEB_ZIP_EDIT_DENIED');
+        const origin=sourceOf(sessionId,message,file);
+        if(origin?.file&&!canEdit(origin.file,deviceId)&&Number(origin.file.webZipPermissionUpdatedAt||0)>Number(file.webZipPermissionUpdatedAt||0))failure('WEB_ZIP_EDIT_DENIED');
+        return credentials?.issue(scopeOf(sessionId,messageId,file,deviceId,origin))||'';
+    }
     async function mark(job,error){
         if(jobs.get(job.key)!==job)return;
         const message=readRecord(job.sessionId,job.messageId),file=files(message).find(value=>value.id===job.file.id);
@@ -49,7 +59,7 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
         if(jobs.get(job.key)===job){jobs.delete(job.key);try{await persist();}catch(error){if(!jobs.has(job.key))jobs.set(job.key,job);throw error;}topologyChanged();}
     }
     async function sync(job){
-        if(jobs.get(job.key)!==job)return;
+        if(jobs.get(job.key)!==job||publishing.has(job))return;
         const message=readRecord(job.sessionId,job.messageId),file=files(message).find(value=>value.id===job.file.id);
         if(!file){jobs.delete(job.key);await persist();return;}
         if(!canSync(job.deviceId,job.origin.sessionId))return;
@@ -59,7 +69,9 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
         const candidates=files(original).filter(value=>webpage(value)&&value.creatorDeviceId===job.file.creatorDeviceId);
         const current=candidates.find(value=>value.id===job.file.id)||candidates.find(value=>value.id===job.base?.id)||candidates.find(value=>value.webZipRootId===job.file.webZipRootId||value.id===job.file.webZipRootId)||candidates.find(value=>equivalent(value,job.previous));
         if(!current)return mark(job,'WEB_ZIP_SOURCE_CHANGED');
-        if(!canEdit(current,job.deviceId))return mark(job,'WEB_ZIP_SOURCE_EDIT_DENIED');
+        const scope=scopeOf(job.sessionId,job.messageId,file,job.deviceId,{...job.origin,file:current});
+        const credentialValid=credentials?.verify(job.editCredential,scope);
+        if(!canEdit(current,job.deviceId)&&!credentialValid)return mark(job,'WEB_ZIP_SOURCE_EDIT_DENIED');
         if(current.webZipPendingSync)return mark(job,'WEB_ZIP_SOURCE_BUSY');
         if(current.id!==job.file.id){
             const expected=job.base|| (equivalent(current,job.previous)?version(current):null);
@@ -89,27 +101,31 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
         for(const [jobKey,job]of jobs)if(job.sessionId===sessionId&&job.messageId===messageId&&!ids.has(job.file.id)){jobs.delete(jobKey);removed=true;}
         if(removed)persist().catch(error=>log('web-zip-sync-cleanup-failed',error));
     }
-    async function publish({sessionId,messageId,fileId,fileInfo,deviceId}){
+    async function publish({sessionId,messageId,fileId,fileInfo,deviceId,editCredential}){
         const message=readRecord(sessionId,messageId),current=files(message).find(value=>value.id===fileId);
         const retried=files(message).find(value=>value.id===fileInfo?.id&&value.replacesFileId===fileId&&value.ownerDeviceId===deviceId);
         if(retried&&canEdit(retried,deviceId)&&canPublish(sessionId,deviceId)){const job=[...jobs.values()].find(value=>value.file.id===retried.id&&value.sessionId===sessionId&&value.messageId===messageId);if(job)await attempt(job);return readRecord(sessionId,messageId);}
         if(!webpage(current)||!canEdit(current,deviceId)||!canPublish(sessionId,deviceId))failure('WEB_ZIP_EDIT_DENIED');
         if(!fileInfo?.id||fileInfo.id===fileId||!String(fileInfo.name||'').toLowerCase().endsWith('.html.zip')||!Number.isSafeInteger(fileInfo.size)||fileInfo.size<0||!hasContent(sessionId,deviceId,fileInfo))failure('WEB_ZIP_CONTENT_NOT_READY');
         const origin=sourceOf(sessionId,message,current),next=ownedCopy(current,fileInfo,deviceId);
+        const scope=scopeOf(sessionId,messageId,current,deviceId,origin);
+        if(editCredential&&credentials&&!credentials.verify(editCredential,scope))failure('WEB_ZIP_EDIT_CREDENTIAL_INVALID');
+        if(credentials)editCredential=editCredential||issueCredential({sessionId,messageId,fileId,deviceId});
         if(origin&&unavailable)failure('WEB_ZIP_SYNC_STORAGE');
         next.webZipRootId=origin?.file?.webZipRootId||origin?.file?.id||current.webZipRootId||current.id;
         let job,previousJob;
         if(origin){
             const jobKey=key(sessionId,messageId,{...current,webZipRootId:next.webZipRootId});
             previousJob=jobs.get(jobKey);
-            job={key:jobKey,sessionId,messageId,deviceId,origin:{sessionId:origin.sessionId,messageId:origin.messageId},file:next,
+            job={key:jobKey,sessionId,messageId,deviceId,origin:{sessionId:origin.sessionId,messageId:origin.messageId},file:next,editCredential,
                 previous:{id:current.id,name:current.name,type:current.type,size:current.size,creatorDeviceId:current.creatorDeviceId,webZipDraftId:current.webZipDraftId,webZipRevision:revision(current)},
                 base:previousJob?.base||current.webZipSourceVersion||(equivalent(current,origin.file)?version(origin.file):null)};
-            next.webZipPendingSync={state:'pending',sessionId:origin.sessionId,messageId:origin.messageId};jobs.set(jobKey,job);
-            try{await persist();}catch(error){if(previousJob)jobs.set(jobKey,previousJob);else jobs.delete(jobKey);throw error;}
+            next.webZipPendingSync={state:'pending',sessionId:origin.sessionId,messageId:origin.messageId};publishing.add(job);jobs.set(jobKey,job);
+            try{await persist();}catch(error){publishing.delete(job);if(previousJob)jobs.set(jobKey,previousJob);else jobs.delete(jobKey);throw error;}
         }
         try{await writeRecord(sessionId,message,replaceFile(message,fileId,next),{check:()=>canPublish(sessionId,deviceId)&&canEdit(files(readRecord(sessionId,messageId)).find(value=>value.id===fileId),deviceId)});}
         catch(error){if(job&&jobs.get(job.key)===job){if(previousJob)jobs.set(job.key,previousJob);else jobs.delete(job.key);await persist();}throw error;}
+        finally{if(job)publishing.delete(job);}
         if(job)await attempt(job);
         return readRecord(sessionId,messageId);
     }
@@ -130,6 +146,6 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
         }
         topologyChanged();return readRecord(sessionId,messageId);
     }
-    return{publish,approve,needsApproval,topologyChanged,recordChanged};
+    return{publish,approve,needsApproval,issueCredential,topologyChanged,recordChanged};
 }
 module.exports={createWebZipSync};

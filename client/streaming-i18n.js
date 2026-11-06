@@ -3,6 +3,7 @@
     // Extend the shared catalog before i18n.js starts. Existing native-language
     // translations win; new terms use the runtime's established English fallback.
     const rows = [
+        ['⇥ 前往操控此串流台','⇥ Control this station'],['确认将此串流台认领到当前账号？','Claim this station for the current account?'],
         ['确认移除','Confirm removal'],['取消移除','Cancel removal'],
         ['短码不可用','Short code unavailable'],['正在读取短码…','Reading the short code…'],
         ['邀请已失效','Invitation is no longer valid'],['暂时无法使用此邀请','This invitation cannot be used right now'],
