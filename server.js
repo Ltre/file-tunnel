@@ -9315,6 +9315,84 @@ const snsPostPublisher = require('./server/sns-post-markdown').createTunnelSnsPo
     }
 });
 
+function readWebZipRecord(sessionId, messageId) {
+    const session = sessions.get(sessionId);
+    if (session?.deletedMessageIds?.includes(messageId)) return null;
+    return getHistoryMessageEntry(session, messageId)?.message || infraStore?.getHistoryMessage(sessionId, messageId) || null;
+}
+
+function writeWebZipRecord(sessionId, previous, next, options = {}) {
+    return new Promise((resolve, reject) => {
+        let outcome, prepared;
+        enqueueInfraAudit(() => {
+            const current = readWebZipRecord(sessionId, previous.id);
+            if (!current || (JSON.stringify(current) !== JSON.stringify(previous) && (!prepared || JSON.stringify(current) !== JSON.stringify(prepared))) || options.check?.() === false) {
+                outcome = { error: 'WEB_ZIP_SOURCE_CHANGED' }; return;
+            }
+            const message = prepared || createHistoryMessage(next);
+            if (!prepared) {
+                message.sessionId = sessionId;
+                message.webZipUpdateVersion = (Number(current.webZipUpdateVersion) || 0) + 1;
+                prepared = message;
+            }
+            const size = Buffer.byteLength(JSON.stringify(message), 'utf8');
+            if (size > MAX_MESSAGE_SIZE || size > MAX_HISTORY_SIZE) { outcome = { error:'WEB_ZIP_CONTENT_TOO_LARGE' }; return; }
+            const saved = infraStore?.recordHistoryMessage(sessionId, message, { source: options.source || 'web-zip-updated' });
+            if (!saved || saved.reason === 'deleted-tombstone') { outcome = { error:'WEB_ZIP_SOURCE_MISSING' }; return; }
+            // These records acknowledge a publication or finish a persisted
+            // sync job, so do not wait for the ordinary audit batch to commit.
+            if (infraStore.flush?.() === false) throw Error('WEB_ZIP_SAVE_FAILED');
+            const session = sessions.get(sessionId), index = session?.history?.findIndex(entry => entry.message.id === previous.id) ?? -1;
+            if (index >= 0) {
+                const entry = session.history[index];
+                session.history[index] = { ...entry, message, size, ...(options.copyFromSessionId ? { forwardedSourceSessionId:options.copyFromSessionId } : {}) };
+                session.historySize = Math.max(0, session.historySize - entry.size + size); session.lastActivity = Date.now();
+                const incoming = new Set((message.type === 'file' ? [message.fileInfo] : message.collection?.files || []).map(file => file.id));
+                for (const file of previous.type === 'file' ? [previous.fileInfo] : previous.collection?.files || []) {
+                    if (!incoming.has(file.id) && !isFileAssetStillReferenced(session, file.id)) session.fileAssets?.delete(file.id);
+                }
+            }
+            emitToReadableSessionDevices(session, 'message-updated', { message, sessionId });
+            scheduleSessionHistoryBroadcast(sessionId, 'web-zip-updated'); outcome = { message };
+        }, '', { onSuccess: () => outcome?.error ? reject(Error(outcome.error)) : resolve(outcome.message),
+            onFinalFailure: () => reject(Error('WEB_ZIP_SAVE_FAILED')) });
+    });
+}
+
+function canSyncWebZipSource(deviceId, sourceSessionId) {
+    const source = sessions.get(sourceSessionId);
+    const online = id => { const member = source?.devices?.get(id), peer = io.sockets.sockets.get(member?.socketId); return Boolean(peer?.connected && peer.data?.deviceId === id && canUseTunnelCapability(source,id,'read')); };
+    if (online(deviceId)) return true;
+    const visible = new Set(getNearbyCandidates(deviceId).map(value => value.deviceId));
+    for (const session of sessions.values()) {
+        const member = session.devices.get(deviceId), peer = io.sockets.sockets.get(member?.socketId);
+        if (peer?.connected && peer.data?.deviceId === deviceId && canUseTunnelCapability(session,deviceId,'read')) for (const [id, other] of session.devices) {
+            const socket = io.sockets.sockets.get(other.socketId);
+            if (socket?.connected && socket.data?.deviceId === id) visible.add(id);
+        }
+    }
+    return [...visible].some(id => online(id));
+}
+
+const webZipSync = require('./server/web-zip-sync').createWebZipSync({
+    filename: path.join(SERVER_DATA_DIR, 'web-zip-sync.json'), readRecord: readWebZipRecord, writeRecord: writeWebZipRecord,
+    isForwardedCopy: (sessionId,messageId,file,origin) => {
+        const entry = getHistoryMessageEntry(sessions.get(sessionId),messageId);
+        if (entry?.forwardedSourceSessionId === origin.sessionId && file.backupSourceSessionId === origin.sessionId && file.forwardedToSessionId === sessionId) return true;
+        const saved = infraStore?.get('SELECT source, payload_json, deleted_at FROM transfer_records WHERE session_id = ? AND message_id = ?', [sessionId,messageId]);
+        if (!saved || saved.deleted_at || saved.source !== 'cross-tunnel-forward') return false;
+        try { const record = JSON.parse(saved.payload_json); return record.forwardedFrom?.sessionId === origin.sessionId && record.forwardedFrom?.messageId === origin.messageId &&
+            (record.type === 'file' ? [record.fileInfo] : record.collection?.files || []).some(value => value.id === file.id && value.creatorDeviceId === file.creatorDeviceId); }
+        catch (_) { return false; }
+    },
+    canPublish: (sessionId, deviceId) => {
+        const session = sessions.get(sessionId) || (infraStore?.getTunnel(sessionId) ? getOrCreateTelegramSession(sessionId) : null);
+        return ['read','sendWebZip'].every(capability => canUseTunnelCapability(session,deviceId,capability));
+    },
+    hasContent: (sessionId, deviceId, file) => { const asset = sessions.get(sessionId)?.fileAssets?.get(file.id); return Boolean(asset?.providers?.has(deviceId) && asset.metadata.name === file.name && Number(asset.metadata.size) === file.size && asset.metadata.type === file.type); },
+    canSync: canSyncWebZipSource, log: (event, details) => console.warn(`[${event}]`, details)
+});
+
 io.on('connection', (socket) => {
     const clientIp = getSocketClientIp(socket);
     const trustedInternalClient = Boolean(vclientControl?.isDataSocketAuthenticated(socket));
@@ -9480,6 +9558,18 @@ io.on('connection', (socket) => {
         });
     });
 
+    socket.on('web-zip-publish', async (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            const sessionId = data?.sessionId, deviceId = currentDevice;
+            if (sessionId !== currentSession || !sessions.get(sessionId)?.devices.has(deviceId) ||
+                ![data?.messageId,data?.fileId,data?.fileInfo?.id].every(isValidDeviceId)) return respond({ok:false,error:'WEB_ZIP_UPDATE_INVALID'});
+            if (!checkMessageRate()) return respond({ok:false,error:'rate-limited'});
+            const message = await webZipSync.publish({sessionId,deviceId,messageId:data.messageId,fileId:data.fileId,fileInfo:data.fileInfo});
+            respond({ok:true,message});
+        } catch (error) { respond({ok:false,error:/^WEB_ZIP_[A-Z_]+$/.test(error.message)?error.message:'WEB_ZIP_SAVE_FAILED'}); }
+    });
+
     socket.on('web-zip-edit-request', (data, ack) => {
         const respond = typeof ack === 'function' ? ack : () => {};
         try {
@@ -9497,9 +9587,9 @@ io.on('connection', (socket) => {
             }
             const creatorDeviceId = sanitizeString(fileInfo?.creatorDeviceId || '', 80);
             if (!fileInfo || !creatorDeviceId || creatorDeviceId === currentDevice) return respond({ ok:false, error:'permission-request-not-required' });
-            if (Array.isArray(fileInfo.webZipEditors) && fileInfo.webZipEditors.includes(currentDevice)) return respond({ ok:true, alreadyApproved:true, delivered:true });
+            if (!webZipSync.needsApproval(sessionId,messageId,fileId,currentDevice)) return respond({ ok:true, alreadyApproved:true, delivered:true });
             const requestId = crypto.randomUUID();
-            const request = { requestId, sessionId, messageId, fileId, fileName:sanitizeString(fileInfo.name || '网页 ZIP', 240), creatorDeviceId, requesterDeviceId:currentDevice, requesterName:sanitizeString(session.devices.get(currentDevice)?.deviceName || '', 80), createdAt:Date.now() };
+            const request = { requestId, sessionId, messageId, fileId, webZipRootId:fileInfo.webZipRootId || fileInfo.id, fileName:sanitizeString(fileInfo.name || '网页 ZIP', 240), creatorDeviceId, requesterDeviceId:currentDevice, requesterName:sanitizeString(session.devices.get(currentDevice)?.deviceName || '', 80), createdAt:Date.now() };
             webZipEditRequests.set(requestId, request);
             setTimeout(() => webZipEditRequests.delete(requestId), 7 * 24 * 60 * 60 * 1000).unref?.();
             const queuedNotification=queueDeviceNotification(creatorDeviceId,'web-zip-edit-request',request);
@@ -9507,7 +9597,7 @@ io.on('connection', (socket) => {
         } catch (error) { respond({ ok:false, error:'permission-request-failed' }); }
     });
 
-    socket.on('web-zip-edit-response', (data, ack) => {
+    socket.on('web-zip-edit-response', async (data, ack) => {
         const respond = typeof ack === 'function' ? ack : () => {};
         try {
             const requestId=String(data?.requestId||'');
@@ -9519,20 +9609,9 @@ io.on('connection', (socket) => {
             const approved = data?.approved === true;
             let updatedMessage = session.history[historyIndex].message;
             if (approved) {
-                updatedMessage = createHistoryMessage(updatedMessage);
-                const fileInfo = updatedMessage.type === 'file' ? updatedMessage.fileInfo : (updatedMessage.collection?.files || []).find(file => file?.id === request.fileId);
-                if (!fileInfo || fileInfo.creatorDeviceId !== currentDevice) return respond({ ok:false, error:'not-web-zip-creator' });
-                fileInfo.webZip = true;
-                fileInfo.webZipEditors = Array.from(new Set([...(Array.isArray(fileInfo.webZipEditors) ? fileInfo.webZipEditors : []), request.requesterDeviceId]));
-                fileInfo.webZipPermissionUpdatedAt = Date.now();
-                const size = Buffer.byteLength(JSON.stringify(updatedMessage), 'utf8');
-                const previous = session.history[historyIndex];
-                session.history[historyIndex] = { message:updatedMessage, size };
-                session.historySize = Math.max(0, session.historySize - previous.size + size);
-                persistHistoryAudit(request.sessionId, session, updatedMessage, 'web-zip-editor-approved');
+                updatedMessage = await webZipSync.approve({ sessionId:request.sessionId, messageId:request.messageId,
+                    fileId:request.fileId,rootId:request.webZipRootId || request.fileId,creatorDeviceId:currentDevice,deviceId:request.requesterDeviceId });
                 socket.emit('message-updated', { message:updatedMessage });
-                emitToReadableSessionDevices(session, 'message-updated', { message:updatedMessage }, currentDevice);
-                scheduleSessionHistoryBroadcast(request.sessionId, 'web-zip-editor-approved');
             }
             queueDeviceNotification(request.requesterDeviceId,'web-zip-edit-response',{ requestId:request.requestId, approved, fileId:request.fileId, fileName:request.fileName, message:approved ? updatedMessage : undefined });
             webZipEditRequests.delete(request.requestId);
@@ -9666,6 +9745,7 @@ io.on('connection', (socket) => {
         });
         socket.data.nearbyDeviceId = deviceId;
         emitNearbyCandidates(deviceId);
+        webZipSync.topologyChanged();
     });
     
     // 加入会话
@@ -9846,6 +9926,7 @@ io.on('connection', (socket) => {
             socket.join(sessionId);
             
             console.log(`Device ${deviceName} (${deviceId}) joined session ${sessionId}`);
+            webZipSync.topologyChanged();
             
             // 通知会话中的其他设备
             if (!existingDevice) {
@@ -10466,6 +10547,7 @@ io.on('connection', (socket) => {
                 },
                 typeof ack === 'function' ? '' : `history-delete:${sessionId}:${messageId}`, {
                     onSuccess: () => {
+                        if (record?.fileInfo?.webZipPendingSync || record?.collection?.files?.some(file => file.webZipPendingSync)) webZipSync.recordChanged(sessionId,messageId);
                         emitToReadableSessionDevices(session, 'message-deleted', { messageId }, deletingDevice);
                         ack?.({ ok: true });
                     },
@@ -10527,12 +10609,23 @@ io.on('connection', (socket) => {
                 if (contentChanged && previousFile.creatorDeviceId !== currentDevice && !editors.includes(currentDevice)) {
                     return socket.emit('permission-denied', { capability:'webZipEdit' });
                 }
+                if (contentChanged) {
+                    webZipSync.publish({ sessionId,deviceId:currentDevice,messageId:existingMessage.id,fileId:previousFile.id,fileInfo:incomingFile })
+                        .catch(error => emitSocketError('web-zip-update-failed',/^WEB_ZIP_[A-Z_]+$/.test(error.message)?error.message:'WEB_ZIP_SAVE_FAILED'));
+                    return;
+                }
                 incomingFile.webZip = true;
                 incomingFile.creatorDeviceId = previousFile.creatorDeviceId;
                 incomingFile.creatorDeviceName = previousFile.creatorDeviceName || incomingFile.creatorDeviceName || '';
                 incomingFile.webZipEditors = editors;
                 incomingFile.webZipRootId = previousFile.webZipRootId || previousFile.id;
                 if (incomingFile.id !== previousFile.id) incomingFile.replacesFileId = previousFile.id;
+                for (const field of ['webZipPendingSync','webZipSourceVersion','webZipRevision','webZipUpdatedAt','backupSourceSessionId','forwardedToSessionId','forwardedSourceGrant','ownerDeviceId']) {
+                    if (previousFile[field] === undefined) delete incomingFile[field]; else incomingFile[field] = JSON.parse(JSON.stringify(previousFile[field]));
+                }
+                if (existingMessage.forwardedFrom) message.forwardedFrom = { ...existingMessage.forwardedFrom }; else delete message.forwardedFrom;
+                message.sessionId = sessionId;
+                message.webZipUpdateVersion = (Number(existingMessage.webZipUpdateVersion) || 0) + 1;
             }
             const historyMessage = preserveNewestTelegramFileIds(
                 session.history[historyIndex].message,
@@ -10772,6 +10865,10 @@ io.on('connection', (socket) => {
                     rejectedCount++;
                     continue;
                 }
+                // A cold runtime must recover a confirmed webpage publication,
+                // including its pending sync state, from the durable record.
+                const savedWebZip = !session.history.some(entry => entry.message.id === message.id) && infraStore?.getHistoryMessage?.(sessionId,message.id);
+                if (savedWebZip?.webZipUpdateVersion) message = savedWebZip;
                 if (message.type === 'markdown' || message.markdownAttachments || message.snsMarkdownProgress || message.snsMarkdownRevision) {
                     // A browser snapshot cannot create or change server-owned attachments.
                     const live = getHistoryMessageEntry(session, message.id)?.message;

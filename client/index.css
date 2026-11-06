@@ -1033,6 +1033,8 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
 .file-info {
     flex: 1;
 }
+.web-zip-record-meta {display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:4px;font-size:12px;line-height:1.4;color:var(--text-muted,#68748b);overflow-wrap:anywhere;}
+.web-zip-sync-pending {color:var(--ui-accent,#6857c6);}
 
 .editor-file-reference-picker {
     display: flex;

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v129-content-v8-resource-mini-tabs-261106-1';
+const CACHE_NAME = 'instant-tunnel-v130-content-v8-web-zip-sync-feedback-261106-2';
 const APP_SHELL = [
     '/',
     '/index.html',

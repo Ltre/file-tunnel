@@ -20,6 +20,11 @@ function fixture() {
         section('async function handleSessionHistory(', 'async function getCurrentSessionMessages('), context);
     return {context,state,stored,rendered,writes,recovery,emitted,deleted,run:data=>context.handleSessionHistory(data)};
 }
+test('webpage snapshots use the ordered update boundary, including a first snapshot with an older unversioned ZIP',async()=>{
+    const f=fixture(),updates=[];f.context.applyHistoryMessageUpdate=async message=>updates.push(message);
+    await f.run({sessionId:'tunnel-B',messages:[{id:'webpage',type:'file',fileInfo:{id:'zip',name:'page.html.zip',webZip:true}}]});
+    assert.equal(updates.length,1);assert.equal(f.writes.length,0,'a raw snapshot write must not race a newer webpage publication');
+});
 
 test('new B never renders or recovers A records already stored under their original tunnel', async()=>{
     const f=fixture();

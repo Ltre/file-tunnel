@@ -4917,6 +4917,22 @@ function getFileDisplayName(fileInfo) {
     return String(fileInfo?.name || '').replace(/\.html\.zip$/i, '');
 }
 
+function formatWebZipText(source, ...values) {
+    return (window.TunnelI18n?.t(source) || source).replace(/\{(\d+)\}/g, (_, i) => values[i]);
+}
+
+function renderWebZipRecordLabels(fileInfo) {
+    if (!fileInfo?.webZip && !/\.html\.zip$/i.test(fileInfo?.name || '')) return '';
+    const labels = [];
+    if (fileInfo.creatorDeviceId && fileInfo.creatorDeviceId !== state.deviceId) labels.push(`<span>${escapeHtml(formatWebZipText('由 设备{0} 创建',fileInfo.creatorDeviceId.slice(-4)))}</span>`);
+    if (fileInfo.webZipPendingSync) {
+        const messages = {WEB_ZIP_SOURCE_MISSING:'原网页记录已不存在，尚未同步',WEB_ZIP_SOURCE_CHANGED:'原网页版本已变化，尚未覆盖，请核对原网页',WEB_ZIP_SOURCE_BUSY:'原网页仍有待同步事项，暂未覆盖',WEB_ZIP_SOURCE_EDIT_DENIED:'原网页尚未授予本设备编辑权限，请向创建者申请',WEB_ZIP_EDIT_DENIED:'本设备的网页编辑权限已变化，尚未同步'};
+        const hint = messages[fileInfo.webZipPendingSync.lastError] || '等待本设备加入来源隧道，或等待可见的在线设备进入来源隧道';
+        labels.push(`<span class="web-zip-sync-pending" title="${escapeHtml(formatWebZipText(hint))}">${escapeHtml(formatWebZipText('待同步到原网页'))}</span>`);
+    }
+    return labels.length ? `<div class="web-zip-record-meta">${labels.join('')}</div>` : '';
+}
+
 function webZipNewTabBadge(fileInfo) {
     return /\.html\.zip$/i.test(String(fileInfo?.name || '')) && fileInfo.webZipFullscreen !== true
         ? '<span class="web-zip-new-tab-badge" aria-label="在新标签页打开" title="在新标签页打开">↗</span>' : '';
@@ -4949,11 +4965,12 @@ function openWebZipStandalone(fileInfo, options = {}) {
 
 function showWebZipEditDialog(fileInfo, context = {}) {
     document.querySelector('.web-zip-edit-dialog')?.remove();
-    const owner = fileInfo.creatorDeviceName || fileInfo.creatorDeviceId || '未知设备';
+    const owner = fileInfo.creatorDeviceName || (fileInfo.creatorDeviceId ? '设备' + fileInfo.creatorDeviceId.slice(-4) : '未知设备');
     const isOwner = fileInfo.creatorDeviceId === state.deviceId, allowed = canEditWebZip(fileInfo);
     const dialog = document.createElement('div'); dialog.className = 'web-zip-edit-dialog';
-    const message = isOwner ? '本设备是该网页 ZIP 的所有者。' : allowed ? `该文件的所有权来自设备“${owner}”，本设备已经获得编辑授权。` : `该文件的所有权来自设备“${owner}”，本设备还没有编辑权限。`;
-    dialog.innerHTML = `<section role="dialog" aria-modal="true" aria-labelledby="webZipEditTitle"><button type="button" class="web-zip-dialog-close" aria-label="关闭">×</button><h3 id="webZipEditTitle">编辑此网页</h3><p>${escapeHtml(message)}</p><div class="web-zip-dialog-actions">${allowed ? '<button type="button" data-web-zip-action="edit" class="primary">转入草稿箱编辑</button>' : '<button type="button" data-web-zip-action="request" class="primary">向所有者申请编辑权限</button>'}<button type="button" data-web-zip-action="copy">创建我的副本</button></div></section>`;
+    const message = formatWebZipText(isOwner ? '本设备是该网页 ZIP 的创建者。' : allowed ? '该网页由“{0}”创建，本设备已经获得编辑授权。' : '该网页由“{0}”创建，本设备还没有编辑权限。',owner);
+    const request = !allowed || fileInfo.webZipPendingSync?.lastError === 'WEB_ZIP_SOURCE_EDIT_DENIED';
+    dialog.innerHTML = `<section role="dialog" aria-modal="true" aria-labelledby="webZipEditTitle"><button type="button" class="web-zip-dialog-close" aria-label="关闭">×</button><h3 id="webZipEditTitle">编辑此网页</h3><p>${escapeHtml(message)}</p><div class="web-zip-dialog-actions">${allowed ? '<button type="button" data-web-zip-action="edit" class="primary">转入草稿箱编辑</button>' : ''}${request ? `<button type="button" data-web-zip-action="request" class="primary">${escapeHtml(formatWebZipText('向创建者申请编辑权限'))}</button>` : ''}<button type="button" data-web-zip-action="copy">创建我的副本</button></div></section>`;
     document.body.append(dialog);
     const close = () => dialog.remove(); dialog.querySelector('.web-zip-dialog-close').onclick = close;
     dialog.addEventListener('click', event => { if (event.target === dialog) close(); });
@@ -4972,6 +4989,7 @@ function showWebZipEditDialog(fileInfo, context = {}) {
 }
 
 async function publishWebZipUpdate(file, draft) {
+    const sessionId = state.sessionId;
     const messages = await getCurrentSessionMessages();
     const message = draft.sourceMessageId
         ? messages.find(item => item.id === draft.sourceMessageId)
@@ -4986,6 +5004,7 @@ async function publishWebZipUpdate(file, draft) {
     ));
     if (!current) throw new Error('原记录已换成其它文件，不能将此草稿覆盖到不相关的记录');
     if (!canEditWebZip(current)) throw new Error('当前设备没有该网页 ZIP 的编辑权限');
+    if (state.sessionId !== sessionId) throw new Error(formatWebZipText('隧道已切换，请回到原隧道重新发布网页'));
     const nextFileId = generateId();
     // The previous record describes the old physical ZIP. Carrying these
     // fields forward overwrites the new Blob metadata and makes the cache
@@ -5018,11 +5037,17 @@ async function publishWebZipUpdate(file, draft) {
     await storeAndAnnounceFileAsset(file, fileInfo);
     const locallyStoredVersion = await materializeCachedFileRecord(await getFromStore('files', fileInfo.id));
     if (!hasCompleteFileCache(locallyStoredVersion, fileInfo)) throw new Error('网页 ZIP 新版本未能完整写入本机缓存');
-    const next = JSON.parse(JSON.stringify(message));
-    if (next.type === 'file') next.fileInfo = fileInfo;
-    else next.collection.files = next.collection.files.map(item => item.id === current.id ? fileInfo : item);
-    await updateHistoryMessage(next);
-    await refreshFileMessage(fileInfo.id);
+    if (state.sessionId !== sessionId) throw new Error(formatWebZipText('隧道已切换，请回到原隧道重新发布网页'));
+    const confirmed = await new Promise((resolve,reject) => state.socket.timeout(15000).emit('web-zip-publish', {
+        sessionId,messageId:message.id,fileId:current.id,fileInfo
+    }, (error,response) => {
+        if (error || !response?.ok || !response.message) {
+            const labels = {WEB_ZIP_EDIT_DENIED:'网页编辑权限已变化，请向创建者重新申请',WEB_ZIP_SOURCE_CHANGED:'网页记录已变化，请重新导入后发布',WEB_ZIP_CONTENT_NOT_READY:'网页缓存尚未就绪，请重试发布',WEB_ZIP_SYNC_STORAGE:'待同步事项保存失败，请稍后重试'};
+            return reject(new Error(formatWebZipText(labels[response?.error] || '网页更新未确认，请保留草稿并重试') + ' [' + (response?.error || 'WEB_ZIP_UPDATE_UNCONFIRMED') + ']'));
+        }
+        resolve(response.message);
+    }));
+    if (state.sessionId === sessionId) { await applyHistoryMessageUpdate(confirmed); await refreshFileMessage(fileInfo.id); }
     recentlyPublishedWebZipMessages.set(fileInfo.id, message.id);
     enqueueFileCacheCleanup([current.id], 'web-zip-version-replaced');
     return fileInfo.id;
@@ -7053,7 +7078,8 @@ async function handleSessionHistory(data) {
             // different IndexedDB scope just because its message ID matches.
             if (!belongsToSession(existing) || isHistoryMessageDeleted(message.id, sessionId)) continue;
             acceptedMessages.push({ ...message, sessionId });
-            if (message.snsMarkdownRevision && (!existing || isAuthoritativeHistoryMessageChanged(existing, message))) {
+            if ((message.snsMarkdownRevision || message.webZipUpdateVersion || message.fileInfo?.webZip || message.collection?.files?.some(file => file.webZip)) &&
+                (!existing || isAuthoritativeHistoryMessageChanged(existing, message))) {
                 await applyHistoryMessageUpdate(message, { remote: true, snapshot: true });
                 if (existing) duplicates++;
                 else restored++;
@@ -9050,6 +9076,10 @@ async function shareFileMagnet(messageId) {
 }
 
 function renderFileMessageActions(messageEl, fileInfo, cacheState = {}) {
+    if (fileInfo.creatorDeviceId) messageEl.webZipLabelInfo = { id:fileInfo.id,creatorDeviceId:fileInfo.creatorDeviceId,webZipPendingSync:fileInfo.webZipPendingSync };
+    const labelInfo = messageEl.webZipLabelInfo?.id === fileInfo.id ? { ...fileInfo,...messageEl.webZipLabelInfo } : fileInfo;
+    messageEl.querySelector('.web-zip-record-meta')?.remove();
+    messageEl.querySelector('.file-info')?.insertAdjacentHTML('beforeend', renderWebZipRecordLabels(labelInfo));
     messageEl.querySelector('.file-actions')?.remove();
     messageEl.querySelector('.file-cache-retry')?.remove();
 
@@ -13192,6 +13222,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
     const name = document.createElement('div');
     name.className = 'collection-file-name';
     name.textContent = getFileDisplayName(fileInfo) || '未知文件';
+    name.insertAdjacentHTML('beforeend',renderWebZipRecordLabels(fileInfo));
     const size = document.createElement('div');
     size.className = 'collection-file-size';
     size.textContent = formatFileSize(Number(fileInfo.size) || 0);
@@ -13849,9 +13880,19 @@ async function deleteHistoryMessage(messageIds) {
 }
 
 const snsMarkdownUpdates = new Map();
+const webZipMessageUpdates = new Map();
 async function applyHistoryMessageUpdate(message, options = {}) {
     if (!message?.id) return;
     const sessionId = state.sessionId;
+    if ((message.webZipUpdateVersion || message.fileInfo?.webZip || message.collection?.files?.some(file => file.webZip)) && !options.orderedWebZipUpdate) {
+        const key = `${sessionId}:${message.id}`;
+        const pending = (webZipMessageUpdates.get(key) || Promise.resolve()).catch(() => {}).then(() => {
+            if (state.sessionId === sessionId) return applyHistoryMessageUpdate(message, { ...options, orderedWebZipUpdate: true });
+        });
+        webZipMessageUpdates.set(key, pending);
+        try { return await pending; }
+        finally { if (webZipMessageUpdates.get(key) === pending) webZipMessageUpdates.delete(key); }
+    }
     if (message.snsMarkdownRevision && !options.orderedSnsUpdate) {
         const key = `${sessionId}:${message.id}`;
         const pending = (snsMarkdownUpdates.get(key) || Promise.resolve()).catch(() => {}).then(() => {
@@ -13866,6 +13907,7 @@ async function applyHistoryMessageUpdate(message, options = {}) {
     const previous = await getFromStore('messages', message.id).catch(() => null);
     if (!canUpdate()) return;
     if ((Number(message.snsMarkdownRevision) || 0) < (Number(previous?.snsMarkdownRevision) || 0)) return;
+    if ((Number(message.webZipUpdateVersion) || 0) < (Number(previous?.webZipUpdateVersion) || 0)) return;
     if (message.type === 'markdown' && previous?.type === 'markdown' && (Number(message.markdownVersion) || 1) < (Number(previous.markdownVersion) || 1)) return;
     if (message.type === 'text' && previous?.type === 'text' && (Number(message.textVersion) || 1) < (Number(previous.textVersion) || 1)) return;
     if (previous) {
@@ -14942,7 +14984,8 @@ function requestMissingResourceCaches() {
     const sessionId = state.sessionId;
     const task = (async () => {
         const resources = await getSessionResourceInventory();
-        const stats = { requested: 0, pending: 0, cached: 0, failed: 0, stopped: false };
+        const stats = { requested: 0, pending: 0, cached: 0, failed: 0, stopped: false,
+            missing: new Set(resources.filter(resource => !resource.hasReadableLocalSource).map(resource => resource.id)).size };
         const seen = new Set();
         for (const resource of resources) {
             if (state.sessionId !== sessionId || !state.socket?.connected) { stats.stopped = true; break; }
@@ -14961,6 +15004,19 @@ function requestMissingResourceCaches() {
     })().finally(() => { if (missingCacheRestoreBatch === task) missingCacheRestoreBatch = null; });
     missingCacheRestoreBatch = task;
     return task;
+}
+
+function formatResourceCacheRestoreSummary(stats) {
+    const text = (source, ...values) => (window.TunnelI18n?.t(source) || source).replace(/\{(\d+)\}/g, (_, i) => values[i]);
+    if (!stats.missing) return text('当前会话没有缺失缓存，无需获取。');
+    const parts = [text('发现 {0} 个缺失缓存', stats.missing)];
+    if (stats.requested) parts.push(text('已发起 {0} 个获取请求', stats.requested));
+    if (stats.pending) parts.push(text('{0} 个已有获取任务，未重复请求', stats.pending));
+    if (stats.cached) parts.push(text('{0} 个在检查期间已就绪', stats.cached));
+    if (stats.failed) parts.push(text('{0} 个请求发起失败，可重试', stats.failed));
+    return parts.join('；') + (stats.stopped
+        ? text('；隧道连接已变化，已停止追加请求')
+        : stats.requested || stats.pending ? text('。获取完成后，可刷新列表查看缓存状态。') : '。');
 }
 
 async function deleteUnreferencedResource(resource) {
@@ -15334,10 +15390,7 @@ async function showResourceBrowser(options = {}) {
         try {
             const stats = await requestMissingResourceCaches();
             if (state.sessionId !== sessionId) return;
-            const text = '已请求 {0} 个，已有任务 {1} 个，本机已就绪 {2} 个，失败 {3} 个；请求已发起不代表缓存已就绪';
-            const values = [stats.requested, stats.pending, stats.cached, stats.failed];
-            showAppToast((window.TunnelI18n?.t(text, ...values) || text.replace(/\{(\d+)\}/g, (_, i) => values[i])) +
-                (stats.stopped ? (window.TunnelI18n?.t('；隧道连接已变化，已停止追加请求') || '；隧道连接已变化，已停止追加请求') : ''));
+            showAppToast(formatResourceCacheRestoreSummary(stats));
             if (modal.isConnected) await render({ reload: true, preserveScroll: true });
         } catch (err) {
             showAppToast(err.message);

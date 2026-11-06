@@ -640,11 +640,11 @@
         } finally { clearTimeout(timer); if (dialog === current && !valid()) closeDialog(); }
     }
     function bindProgramSources(container, getStation, isCurrent) {
-        let timer, start, pressed = false, suppressUntil = 0;
+        let timer, start, pressed = false, suppressUntil = 0, heldPointer;
         const events = new AbortController(), options = { signal:events.signal };
         const cancel = () => { clearTimeout(timer); start = null; };
         const target = event => {
-            if (event.target.closest('button,input,select,a')) return null;
+            if (event.target.closest('input,select,a')) return null;
             const station = getStation(), row = event.target.closest('.sc-watch-item');
             const item = station.items.find(value => value.id === row?.dataset.itemId);
             return item && ['disk','tunnel'].includes(item.sourceKind) ? {item,station} : null;
@@ -653,18 +653,31 @@
         container.addEventListener('contextmenu', event => {
             const value = target(event); if (!value) return;
             event.preventDefault(); event.stopPropagation();
-            if (!pressed) show(value);
+            if (!pressed) {
+                if (start && event.pointerType !== 'mouse') { pressed = true; heldPointer = start.id; suppressUntil = Date.now() + 1000; }
+                show(value);
+            }
         }, options);
+        // Opening a modal can retarget the same touch's native contextmenu to
+        // the backdrop instead of the row. Keep only that gesture suppressed.
+        document.addEventListener('contextmenu', event => {
+            if ((heldPointer !== undefined || Date.now() < suppressUntil) && event.pointerType !== 'mouse') {
+                event.preventDefault(); event.stopPropagation();
+            }
+        }, { ...options, capture: true });
         container.addEventListener('selectstart', event => { if (target(event)) event.preventDefault(); }, options);
         container.addEventListener('pointerdown', event => {
             pressed = false;
             const value = target(event); if (event.pointerType === 'mouse' || !value) return;
-            cancel(); start = { x:event.clientX, y:event.clientY };
+            cancel(); start = { id:event.pointerId, x:event.clientX, y:event.clientY };
             container.setPointerCapture?.(event.pointerId);
-            timer = setTimeout(() => { pressed = true; suppressUntil = Date.now() + 1000; show(value); }, 550);
+            timer = setTimeout(() => { pressed = true; heldPointer = event.pointerId; suppressUntil = Date.now() + 1000; show(value); }, 550);
         }, options);
         container.addEventListener('pointermove', event => { if (start && Math.hypot(event.clientX-start.x,event.clientY-start.y)>10) cancel(); }, options);
         container.addEventListener('pointerup', cancel, options); container.addEventListener('pointercancel', cancel, options);
+        for (const name of ['pointerup', 'pointercancel']) document.addEventListener(name, event => {
+            if (heldPointer === event.pointerId) { heldPointer = undefined; suppressUntil = Date.now() + 700; }
+        }, { ...options, capture: true });
         container.addEventListener('click', event => { if (Date.now()<suppressUntil) { event.preventDefault(); event.stopPropagation(); } }, { ...options, capture:true });
         return () => { cancel(); events.abort(); };
     }

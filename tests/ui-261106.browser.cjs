@@ -67,7 +67,7 @@ test('resource browser bulk action stays visible and in the viewport on desktop,
             const bad=await page.locator('.resource-browser-controls').evaluate(node=>[...node.children].filter(n=>{const r=n.getBoundingClientRect();return r.left<0||r.right>innerWidth+1;}).map(n=>n.textContent));
             assert.deepEqual(bad,[],String(width));
         }
-        await button.click();assert.match(await page.locator('#toast').textContent(),/已请求 0 个.*不代表缓存已就绪/);assert.equal(await button.isEnabled(),true);assert.deepEqual(errors,[]);
+        await button.click();assert.match(await page.locator('#toast').textContent(),/没有缺失缓存.*无需获取/);assert.equal(await button.isEnabled(),true);assert.deepEqual(errors,[]);
     }finally{await page.close();}
 });
 test('miniature follows real portrait/landscape images, video metadata and fallback text across programme changes',async()=>{

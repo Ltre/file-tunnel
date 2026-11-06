@@ -184,7 +184,7 @@ test('导入对话框保持到草稿保存成功；失败和中途关闭不静�
             getWebZipBlob: () => loading,
             window: { WebWorkshop: { importPackage: async (...args) => { calls.push(args); if (outcome === 'failure') throw new Error('storage-full'); return outcome === 'cancelled' ? null : { id: 'draft' }; } } }
         });
-        vm.runInContext(block(app, 'function showWebZipEditDialog(', 'async function publishWebZipUpdate('), context);
+        vm.runInContext(block(app, 'function formatWebZipText(', 'function renderWebZipRecordLabels(') + block(app, 'function showWebZipEditDialog(', 'async function publishWebZipUpdate('), context);
         context.showWebZipEditDialog({ id: 'zip', creatorDeviceId: 'device' }, { messageId: 'message' });
         const selector = '[data-web-zip-action="edit"]', button = buttons[selector];
         const pending = listeners[selector]({ currentTarget: button });
