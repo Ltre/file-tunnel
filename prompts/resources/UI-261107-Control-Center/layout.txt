@@ -1,0 +1,119 @@
+┌─────────────────────────────────────────┐
+│ ┌─────────────────┐ ┌─────────────────┐ │
+│ │ 功能磁贴        │ │ 传输进度        │ │
+│ │ ▣  ▣  ▣  ▣     │ │ 任务及进度      │ │
+│ │ ▣  ▣  ▣  ▣     │ │                 │ │
+│ │                 │ ├─────────────────┤ │
+│ │ 切换隧道       │ │ 未读消息        │ │
+│ │       ⌃         │ │                 │ │
+│ │ 隧道列表        │ │ 通知列表        │ │
+│ │       ⌄         │ │                 │ │
+│ │                 │ │                 │ │
+│ │ 功能磁贴        │ │                 │ │
+│ └─────────────────┘ └─────────────────┘ │
+└─────────────────────────────────────────┘
+
+
+问：
+
+
+方案A可以。传输进度实际并不会占用很多行，印象中好像是最多4～5个progress。
+左侧的功能磁贴继续支持拖动排序，拖动时磁贴要顺滑地跟随鼠标或手指，被拖动的磁贴即将碰撞别的磁贴A时，磁贴A要以拖动磁贴运动方向之反方向顺滑移动以让出位置。不要像窄屏端那样随意将磁贴拖动到`隧道切换`下方。`切换隧道`旁边的“X”按钮要移动到控制中心的全局右上角。左侧区域的宽度要稍微比窄屏控制中心多15%宽度。
+左侧和右侧的宽度都保持一致，左侧和右侧要对调，即右侧区域显示磁贴+隧道切换，这样会符合右手习惯。
+
+你根据目前最新的代码，设计原型，先出一个Lumen主题的，保存SVG到 prompts/resources/UI-261107-Control-Center/Lumen
+
+
+
+
+答：
+
+
+
+
+已按方案 A 完成 Lumen 宽屏控制中心原型：
+
+- [查看控制中心 SVG](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Lumen/control-center.svg)
+- [查看磁贴拖动排序示意 SVG](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Lumen/drag-order.svg)
+
+![Lumen 宽屏控制中心原型](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Lumen/control-center.svg)
+
+原型中左右两栏均为 460px，右侧控制区比现有窄屏的 400px 宽约 15%；全局关闭按钮位于右上角。左侧以四条传输任务展示常见密度，并展示未读消息。
+
+拖动图用三个静态状态说明跟随、反向让位和松手后的排序；**SVG 本身不包含可操作的拖动动画**。两个文件通过了 SVG 格式检查，浏览器实际渲染检查未能完成。
+
+
+
+问：
+
+
+继续照着你设计好的Lumen，完善适配其它主题配色的宽屏控制中心，分别保存SVG到 prompts\resources\UI-261107-Control-Center\{主题名}\目录中
+
+
+
+
+答：
+
+
+
+已完成其余六个主题的宽屏控制中心原型。每个主题包含主体和磁贴拖动排序示意：
+
+| 主题 | 主体原型 | 拖动示意 |
+|---|---|---|
+| Orbit | [控制中心](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Orbit/control-center.svg) | [拖动排序](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Orbit/drag-order.svg) |
+| Classic | [控制中心](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Classic/control-center.svg) | [拖动排序](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Classic/drag-order.svg) |
+| Atelier | [控制中心](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Atelier/control-center.svg) | [拖动排序](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Atelier/drag-order.svg) |
+| Social | [控制中心](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Social/control-center.svg) | [拖动排序](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Social/drag-order.svg) |
+| Blamen | [控制中心](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Blamen/control-center.svg) | [拖动排序](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Blamen/drag-order.svg) |
+| Lusns | [控制中心](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Lusns/control-center.svg) | [拖动排序](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Lusns/drag-order.svg) |
+
+各版采用当前代码中的主题配色，并保留 Lumen 原型的布局、尺寸和内容。12 个 SVG 均通过格式及布局结构检查；**尚未进行浏览器实际渲染检查**。拖动图仍是静态分步示意。
+
+传输进度面板无法容纳所有进度条时，应该显示纵向滚动条，滚动条不要太丑，要自然
+
+
+
+
+答：
+
+
+已修正七个主题的控制中心原型，并为每个主题增加传输进度状态补充图。
+
+主图现在展示实际代码中的任务总数、进行中、停滞、准备传输和等待计数；任务行展示发送／接收方向、文件名、百分比及传输链路。示例有 7 项任务，超出面板的部分通过**细轨道、圆角滑块的纵向滚动条**查看，不把任务数限制为 4～5 个。
+
+| 主题 | 更新后的控制中心 | 进度状态补充图 |
+|---|---|---|
+| Lumen | [主体](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Lumen/control-center.svg) | [状态说明](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Lumen/transfer-progress-states.svg) |
+| Orbit | [主体](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Orbit/control-center.svg) | [状态说明](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Orbit/transfer-progress-states.svg) |
+| Classic | [主体](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Classic/control-center.svg) | [状态说明](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Classic/transfer-progress-states.svg) |
+| Atelier | [主体](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Atelier/control-center.svg) | [状态说明](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Atelier/transfer-progress-states.svg) |
+| Social | [主体](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Social/control-center.svg) | [状态说明](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Social/transfer-progress-states.svg) |
+| Blamen | [主体](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Blamen/control-center.svg) | [状态说明](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Blamen/transfer-progress-states.svg) |
+| Lusns | [主体](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Lusns/control-center.svg) | [状态说明](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/Lusns/transfer-progress-states.svg) |
+
+补充图展示了滚动到底部、方向未知、链路为空和进度达到 100% 等情况。当前代码只在综合计数中显示“停滞”，任务行本身继续显示百分比和链路。
+
+SVG 格式及关键内容已检查；滚动条是静态原型，尚未进行浏览器实际渲染检查。运行代码没有修改。
+
+
+
+问：
+
+
+
+你在UI-261107-Control-Center目录中再写一个总览的html，用来引导介绍各个主题下的主体、拖动排序、状态说明 的 UI
+
+
+
+答：
+
+
+
+
+已创建 [宽屏控制中心原型总览](D:/Workspace/github/Ltre/file-tunnel/prompts/resources/UI-261107-Control-Center/index.html)。
+
+页面可切换七个主题，预览主体、拖动排序和传输进度状态图，也可以直接打开对应 SVG。已检查 21 个图纸链接及页面脚本语法；尚未进行浏览器实际渲染检查。
+
+
+
+

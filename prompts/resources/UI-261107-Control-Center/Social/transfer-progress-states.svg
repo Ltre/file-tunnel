@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1050" viewBox="0 0 1600 1050" role="img" aria-labelledby="title desc">
+<title id="title">Social 控制中心传输进度补充状态</title>
+<desc id="desc">说明列表滚动后的进度行、方向、链路、综合计数、完成以及无进度行时的抽屉状态。</desc>
+<defs><linearGradient id="bar"><stop stop-color="#1877f2"/><stop offset="1" stop-color="#42b72a"/></linearGradient><style>text{font-family:'Microsoft YaHei','Segoe UI',sans-serif;fill:#1c1e21}.muted{fill:#65676b}.label{font-weight:700;font-size:20px}.small{font-size:15px}.tiny{font-size:13px}.file{font-size:14px;font-weight:600}</style></defs>
+<rect width="1600" height="1050" fill="#f0f2f5"/>
+<text x="60" y="62" font-size="25" font-weight="700">传输进度 · 补充状态</text>
+<text x="60" y="93" class="small muted">与控制中心主体采用同一组七项任务：此处展示向下滚动及其他实际状态。</text>
+<!-- Left: bottom portion of the same scrollable progress list. -->
+<rect x="60" y="130" width="460" height="296" rx="14" fill="#ffffff" stroke="#d8dce2"/>
+<text x="80" y="158" class="label">传输进度</text>
+<text x="80" y="179" class="tiny muted">7 个任务 · 进行中 3 · 1 个停滞</text>
+<text x="80" y="197" class="tiny muted">2 个准备传输 · 1 个等待</text>
+<path d="M80 205H500" stroke="#d8dce2"/>
+<g><text x="82" y="229" font-size="13" style="fill:#159a55">▼</text><text x="100" y="229" class="file">照片合集.zip</text><text x="498" y="229" text-anchor="end" class="small muted">26% · P2P</text><rect x="82" y="238" width="416" height="8" rx="4" fill="#e4e6eb"/><rect x="82" y="238" width="108" height="8" rx="4" fill="url(#bar)"/></g>
+<g><text x="82" y="279" font-size="13" style="fill:#d63d3d">▲</text><text x="100" y="279" class="file">音乐素材.wav</text><text x="498" y="279" text-anchor="end" class="small muted">0% · P2P</text><rect x="82" y="288" width="416" height="8" rx="4" fill="#e4e6eb"/></g>
+<g><text x="82" y="329" font-size="13" style="fill:#159a55">▼</text><text x="100" y="329" class="file">会议录制.mp4</text><text x="498" y="329" text-anchor="end" class="small muted">0% · multi-source P2P</text><rect x="82" y="338" width="416" height="8" rx="4" fill="#e4e6eb"/></g>
+<g><text x="82" y="379" font-size="13" style="fill:#159a55">▼</text><text x="100" y="379" class="file">分享资料.zip</text><text x="498" y="379" text-anchor="end" class="small muted">0%</text><rect x="82" y="388" width="416" height="8" rx="4" fill="#e4e6eb"/></g>
+<rect x="507" y="213" width="4" height="184" rx="2" fill="#d8dce2" opacity=".55"/><rect x="507" y="292" width="4" height="105" rx="2" fill="#65676b" opacity=".48"/>
+<text x="60" y="455" class="small muted">滚动条仅在列表内容超出面板时出现；轨道和滑块采用柔和的主题色。</text>
+<!-- Annotation outside the product UI. -->
+<rect x="555" y="130" width="985" height="296" rx="14" fill="#ffffff" stroke="#d8dce2"/>
+<text x="580" y="164" class="label">计数和状态的对应关系</text>
+<text x="580" y="202" class="small">总数：只统计实际存在的进度任务行；不会把发现、建链或队列快照直接当成进度行。</text>
+<text x="580" y="238" class="small">进行中：移动中的任务在最近 15 秒内有进度增长；没有近期增长的移动任务计入停滞。</text>
+<text x="580" y="274" class="small">准备传输：任务已建立进度行但尚未推进；等待：任务行被判定为排队状态。</text>
+<text x="580" y="310" class="small">顺序：进行中优先；停滞按准备传输的排序级别处理，随后是等待和完成。</text>
+<text x="580" y="346" class="small">单行显示方向、文件名、百分比和可用的链路名；停滞本身不会额外显示在单行。</text>
+<text x="580" y="382" class="small muted">▲ 发送　▼ 接收；方向未知时不显示图标。点击进度行可定位对应传输记录。</text>
+<!-- Edge states -->
+<rect x="60" y="495" width="720" height="390" rx="14" fill="#ffffff" stroke="#d8dce2"/>
+<text x="84" y="532" class="label">其他行内状态</text>
+<path d="M84 549H756" stroke="#d8dce2"/>
+<text x="84" y="581" class="small muted">方向未知、链路信息为空时</text>
+<text x="84" y="611" class="file">本地文件.pdf</text><text x="496" y="611" text-anchor="end" class="small muted">0%</text>
+<rect x="84" y="622" width="412" height="8" rx="4" fill="#e4e6eb"/>
+<text x="84" y="681" class="small muted">进度达到 100% 时可能短暂显示</text>
+<text x="84" y="711" font-size="13" style="fill:#d63d3d">▲</text><text x="102" y="711" class="file">完成的文件.zip</text><text x="496" y="711" text-anchor="end" class="small muted">100% · P2P</text>
+<rect x="84" y="722" width="412" height="8" rx="4" fill="#e4e6eb"/><rect x="84" y="722" width="412" height="8" rx="4" fill="url(#bar)"/>
+<text x="84" y="786" class="small muted">文件资源传输的完成行通常约 800 毫秒后移除；100% 不单独作为成功提示。</text>
+<text x="84" y="821" class="small muted">无进度行时，当前抽屉通常隐藏；不显示虚构的排队任务。</text>
+<rect x="805" y="495" width="735" height="390" rx="14" fill="#ffffff" stroke="#d8dce2"/>
+<text x="830" y="532" class="label">链路文案示例</text>
+<path d="M830 549H1515" stroke="#d8dce2"/>
+<text x="830" y="589" class="small">P2P</text><text x="830" y="626" class="small">Socket.IO relay</text><text x="830" y="663" class="small">multi-source P2P</text><text x="830" y="700" class="small">multi-source Socket.IO relay</text>
+<text x="830" y="756" class="small muted">状态文案由具体传输链路产生，无法确定时可以为空。</text>
+<text x="830" y="791" class="small muted">百分比和状态过长时，沿用文件名及状态区域的省略规则。</text>
+<text x="60" y="941" class="small muted">此图是状态说明；滚动和点击行为将在实现阶段完成，不代表当前 SVG 可交互。</text>
+</svg>

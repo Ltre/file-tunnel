@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>宽屏控制中心 · 原型总览</title>
+  <style>
+    :root{color-scheme:light;--ink:#202942;--muted:#66718a;--line:#e1e6f0;--accent:#5347e8;--paper:#fff;--soft:#f5f7fc}
+    *{box-sizing:border-box}
+    body{margin:0;background:#f4f6fb;color:var(--ink);font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif;line-height:1.55}
+    a{color:#493bd2;text-decoration:none}a:hover{text-decoration:underline}button,select{font:inherit}button:focus-visible,select:focus-visible,a:focus-visible{outline:3px solid #968cff;outline-offset:3px}
+    .wrap{width:min(1440px,calc(100% - 48px));margin:auto}
+    .masthead{padding:30px 0 26px;border-bottom:1px solid var(--line);background:linear-gradient(110deg,#fff,#f4f5ff)}
+    .eyebrow{margin:0 0 8px;color:var(--accent);font-size:12px;font-weight:750;letter-spacing:.12em}
+    h1{margin:0;font-size:clamp(24px,3.2vw,34px);line-height:1.2;letter-spacing:-.02em}
+    .intro{max-width:850px;margin:12px 0 0;color:var(--muted);font-size:15px}
+    main{padding:28px 0 46px}.layout{display:grid;grid-template-columns:minmax(240px,290px) minmax(0,1fr);gap:20px;align-items:start}
+    .card{border:1px solid var(--line);border-radius:16px;background:var(--paper);box-shadow:0 8px 26px #34477c09}
+    .guide{padding:20px}.guide h2,.catalog h2{margin:0;font-size:17px}.guide p{margin:6px 0 0;color:var(--muted);font-size:13px}
+    .guide-list{display:grid;gap:17px;margin:22px 0 0;padding:0;list-style:none}.guide-list li{display:grid;grid-template-columns:27px minmax(0,1fr);gap:10px}.number{display:grid;place-items:center;width:25px;height:25px;border-radius:9px;background:#eeedff;color:var(--accent);font-size:12px;font-weight:700}.guide-list strong{display:block;font-size:14px}.guide-list span:last-child{display:block;color:var(--muted);font-size:12px}
+    .note{margin-top:20px;padding:12px;border-radius:10px;background:#f5f7fc;color:var(--muted);font-size:12px}
+    .preview{overflow:hidden;min-width:0}.preview-head{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:end;gap:14px;padding:19px 20px 15px}.preview-head h2{margin:0;font-size:17px}.preview-head p{margin:4px 0 0;color:var(--muted);font-size:13px}.picker{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--muted)}select{min-width:140px;padding:8px 30px 8px 10px;color:var(--ink);background:#fff;border:1px solid #d8dfed;border-radius:9px}
+    .views{display:flex;flex-wrap:wrap;gap:7px;padding:0 20px 16px}.views button{padding:8px 12px;border:1px solid var(--line);border-radius:9px;background:#f8f9fd;color:#515e77;cursor:pointer;font-size:13px}.views button[aria-pressed="true"]{color:#4639ce;background:#eeedff;border-color:#cfcafc}
+    .canvas{padding:14px;background:#edf0f6;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}figure{margin:0}.canvas img{display:block;width:100%;height:auto;background:#fff;border-radius:8px;box-shadow:0 3px 15px #27355513}.preview-foot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:13px 20px;font-size:13px}.preview-foot span{color:var(--muted)}.preview-foot a{font-weight:650}
+    .catalog{margin-top:28px}.catalog>p{margin:6px 0 15px;color:var(--muted);font-size:13px}.theme-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}.theme-card{padding:16px}.theme-card header{display:flex;align-items:center;gap:10px;margin-bottom:12px}.swatch{width:27px;height:27px;border-radius:9px;border:1px solid #1a29411a;background:var(--swatch)}.theme-card h3{margin:0;font-size:15px}.theme-card nav{display:flex;flex-wrap:wrap;gap:8px 12px;font-size:13px}.theme-card nav a{white-space:nowrap}
+    footer{padding:0 0 30px;color:var(--muted);font-size:12px}
+    @media(max-width:760px){.wrap{width:min(100% - 28px,1440px)}.masthead{padding:24px 0}.layout{grid-template-columns:1fr}.guide-list{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-top:15px}.guide{padding:16px}.note{margin-top:14px}.preview-head{align-items:start}.picker{width:100%;justify-content:space-between}.picker select{flex:1;max-width:220px}.canvas{padding:8px}.theme-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}}
+  </style>
+</head>
+<body>
+  <header class="masthead"><div class="wrap">
+    <p class="eyebrow">UI PROTOTYPES · 261107</p>
+    <h1>宽屏控制中心原型总览</h1>
+    <p class="intro">选择主题和图纸，查看控制中心布局、磁贴拖动排序及传输进度的补充状态。各主题使用同一套布局，分别适配现有主题配色。</p>
+  </div></header>
+  <main class="wrap">
+    <div class="layout">
+      <aside class="card guide" aria-labelledby="guide-title">
+        <h2 id="guide-title">图纸导览</h2>
+        <p>每个主题包含三张 SVG。</p>
+        <ol class="guide-list">
+          <li><span class="number">01</span><div><strong>控制中心主体</strong><span>左侧传输进度与未读消息，右侧功能磁贴与隧道列表。</span></div></li>
+          <li><span class="number">02</span><div><strong>拖动排序</strong><span>按住、拖动让位、松手后的三个示意状态。</span></div></li>
+          <li><span class="number">03</span><div><strong>传输进度状态</strong><span>列表滚动、任务计数、方向、链路及其他状态。</span></div></li>
+        </ol>
+        <div class="note">这些 SVG 是静态设计稿。拖动、滚动和按钮行为以图中示意为准，不能直接操作。</div>
+      </aside>
+      <section class="card preview" id="preview" aria-labelledby="preview-title">
+        <div class="preview-head"><div><h2 id="preview-title">图纸预览</h2><p>切换主题和图纸，或打开原始 SVG 放大查看。</p></div><label class="picker" for="theme"><span>主题</span><select id="theme"><option>Lumen</option><option>Orbit</option><option>Classic</option><option>Atelier</option><option>Social</option><option>Blamen</option><option>Lusns</option></select></label></div>
+        <div class="views" role="group" aria-label="选择图纸">
+          <button type="button" data-view="control-center" aria-pressed="true">控制中心主体</button><button type="button" data-view="drag-order" aria-pressed="false">拖动排序</button><button type="button" data-view="transfer-progress-states" aria-pressed="false">传输进度状态</button>
+        </div>
+        <figure><div class="canvas"><img id="preview-image" src="Lumen/control-center.svg" alt="Lumen 主题：控制中心主体原型"></div><figcaption class="preview-foot"><span id="preview-label" aria-live="polite">Lumen · 控制中心主体</span><a id="open-svg" href="Lumen/control-center.svg" target="_blank" rel="noopener">打开当前 SVG ↗</a></figcaption></figure>
+      </section>
+    </div>
+    <section class="catalog" aria-labelledby="catalog-title">
+      <h2 id="catalog-title">全部主题</h2><p>点击图纸名称可在上方预览；也可以使用链接在新标签页中打开。</p>
+      <div class="theme-grid">
+        <article class="card theme-card" data-theme="Lumen"><header><span class="swatch" style="--swatch:linear-gradient(135deg,#f5f7ff,#a79ef5)"></span><h3>Lumen</h3></header><nav aria-label="Lumen 图纸"><a href="Lumen/control-center.svg" data-view="control-center">主体</a><a href="Lumen/drag-order.svg" data-view="drag-order">拖动排序</a><a href="Lumen/transfer-progress-states.svg" data-view="transfer-progress-states">进度状态</a></nav></article>
+        <article class="card theme-card" data-theme="Orbit"><header><span class="swatch" style="--swatch:linear-gradient(135deg,#202739,#b3a6ff)"></span><h3>Orbit</h3></header><nav aria-label="Orbit 图纸"><a href="Orbit/control-center.svg" data-view="control-center">主体</a><a href="Orbit/drag-order.svg" data-view="drag-order">拖动排序</a><a href="Orbit/transfer-progress-states.svg" data-view="transfer-progress-states">进度状态</a></nav></article>
+        <article class="card theme-card" data-theme="Classic"><header><span class="swatch" style="--swatch:linear-gradient(135deg,#eef2f7,#52627f)"></span><h3>Classic</h3></header><nav aria-label="Classic 图纸"><a href="Classic/control-center.svg" data-view="control-center">主体</a><a href="Classic/drag-order.svg" data-view="drag-order">拖动排序</a><a href="Classic/transfer-progress-states.svg" data-view="transfer-progress-states">进度状态</a></nav></article>
+        <article class="card theme-card" data-theme="Atelier"><header><span class="swatch" style="--swatch:linear-gradient(135deg,#f7f3ec,#60796f)"></span><h3>Atelier</h3></header><nav aria-label="Atelier 图纸"><a href="Atelier/control-center.svg" data-view="control-center">主体</a><a href="Atelier/drag-order.svg" data-view="drag-order">拖动排序</a><a href="Atelier/transfer-progress-states.svg" data-view="transfer-progress-states">进度状态</a></nav></article>
+        <article class="card theme-card" data-theme="Social"><header><span class="swatch" style="--swatch:linear-gradient(135deg,#f0f2f5,#1877f2)"></span><h3>Social</h3></header><nav aria-label="Social 图纸"><a href="Social/control-center.svg" data-view="control-center">主体</a><a href="Social/drag-order.svg" data-view="drag-order">拖动排序</a><a href="Social/transfer-progress-states.svg" data-view="transfer-progress-states">进度状态</a></nav></article>
+        <article class="card theme-card" data-theme="Blamen"><header><span class="swatch" style="--swatch:linear-gradient(135deg,#eeeeee,#aeb8ce)"></span><h3>Blamen</h3></header><nav aria-label="Blamen 图纸"><a href="Blamen/control-center.svg" data-view="control-center">主体</a><a href="Blamen/drag-order.svg" data-view="drag-order">拖动排序</a><a href="Blamen/transfer-progress-states.svg" data-view="transfer-progress-states">进度状态</a></nav></article>
+        <article class="card theme-card" data-theme="Lusns"><header><span class="swatch" style="--swatch:linear-gradient(135deg,#e5f0ff,#5545d8)"></span><h3>Lusns</h3></header><nav aria-label="Lusns 图纸"><a href="Lusns/control-center.svg" data-view="control-center">主体</a><a href="Lusns/drag-order.svg" data-view="drag-order">拖动排序</a><a href="Lusns/transfer-progress-states.svg" data-view="transfer-progress-states">进度状态</a></nav></article>
+      </div>
+      <noscript><p>当前未启用 JavaScript：请使用上面的图纸链接直接打开 SVG。</p></noscript>
+    </section>
+  </main>
+  <footer class="wrap">宽屏控制中心 · 静态原型总览</footer>
+  <script>
+    (() => {
+      const theme = document.getElementById('theme');
+      const image = document.getElementById('preview-image');
+      const label = document.getElementById('preview-label');
+      const open = document.getElementById('open-svg');
+      const buttons = [...document.querySelectorAll('.views button')];
+      const names = { 'control-center': '控制中心主体', 'drag-order': '拖动排序', 'transfer-progress-states': '传输进度状态' };
+      let view = 'control-center';
+      function update() {
+        const path = `${theme.value}/${view}.svg`;
+        const description = `${theme.value} · ${names[view]}`;
+        image.src = path;
+        image.alt = `${description}原型`;
+        label.textContent = description;
+        open.href = path;
+        buttons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.view === view)));
+      }
+      theme.addEventListener('change', update);
+      buttons.forEach(button => button.addEventListener('click', () => { view = button.dataset.view; update(); }));
+      document.querySelectorAll('.theme-card nav a').forEach(link => link.addEventListener('click', event => {
+        if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        theme.value = link.closest('.theme-card').dataset.theme;
+        view = link.dataset.view;
+        update();
+        document.getElementById('preview').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }));
+    })();
+  </script>
+</body>
+</html>
