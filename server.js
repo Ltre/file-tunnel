@@ -10218,10 +10218,6 @@ io.on('connection', (socket) => {
             delete message.markdownAttachments;
             delete message.snsMarkdownProgress;
             delete message.snsMarkdownRevision;
-            if (existingMessage.type === 'text' && (message.type !== 'text' || message.text !== existingMessage.text)) return;
-            if (existingMessage.type === 'text') for (const field of ['textVersion', 'textEditedAt', 'textEditorDeviceId']) {
-                if (existingMessage[field] !== undefined) message[field] = existingMessage[field];
-            }
             const requiredCapability = tunnelMessageCapabilities(message).find(capability => !canUseTunnelCapability(session, currentDevice, capability));
             if (requiredCapability) {
                 return socket.emit('permission-denied', { capability: requiredCapability });
@@ -10493,6 +10489,10 @@ io.on('connection', (socket) => {
             const historyIndex = session.history.findIndex(entry => entry.message.id === message.id);
             if (historyIndex < 0) return;
             const existingMessage = session.history[historyIndex].message;
+            if (existingMessage.type === 'text' && (message.type !== 'text' || message.text !== existingMessage.text)) return;
+            if (existingMessage.type === 'text') for (const field of ['textVersion', 'textEditedAt', 'textEditorDeviceId']) {
+                if (existingMessage[field] !== undefined) message[field] = existingMessage[field];
+            }
             if (existingMessage.type === 'markdown' || message.type === 'markdown') {
                 if (existingMessage.type !== 'markdown' || message.type !== 'markdown' || typeof message.favorite !== 'boolean' ||
                     !canUseTunnelCapability(session, currentDevice, 'read')) return;

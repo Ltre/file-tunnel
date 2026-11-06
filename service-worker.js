@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v128-content-v8-selection-editor-tabs-261105-4';
+const CACHE_NAME = 'instant-tunnel-v129-content-v8-resource-mini-tabs-261106-1';
 const APP_SHELL = [
     '/',
     '/index.html',

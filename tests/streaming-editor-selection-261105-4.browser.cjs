@@ -81,3 +81,13 @@ test('saved sources outside the joined tunnel list load their short code once pe
     await f.page.waitForFunction(()=>[...document.querySelectorAll('.sc-program-source')].every(node=>node.textContent.includes('54321')));
     assert.equal(f.sourceRequests.length,1);assert.deepEqual(f.errors,[]);
 });
+for(const width of [1280,390]) test('Back exits programme multiselect in place at '+width+'px',async t=>{
+    const {page,errors}=await setup(t,width),row=page.locator('[data-item-id="a"]');
+    if(width===390){await row.dispatchEvent('pointerdown',{pointerType:'touch',pointerId:7,isPrimary:true});await row.locator('.sc-program-selection-check').waitFor();await row.dispatchEvent('pointerup',{pointerType:'touch',pointerId:7});}
+    else await row.locator('strong').click({button:'right'});
+    await page.evaluate(()=>history.back());
+    await page.waitForFunction(()=>!document.querySelector('.sc-editor-heading').classList.contains('sc-selecting'));
+    assert.equal(await page.locator('.sc-editor-page').isVisible(),true);assert.equal(await page.locator('.sc-program-selection-check').count(),0);
+    assert.equal(await page.locator('.sc-editor-heading').getByRole('button',{name:'导入',exact:true}).isVisible(),true);
+    assert.deepEqual(errors,[]);
+});

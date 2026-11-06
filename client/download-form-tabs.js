@@ -84,14 +84,19 @@
         selectAll.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m7 12 3 3 7-7"/></svg>';
         remove.before(cancelSelection, selectAll);
         function clearPress() { clearTimeout(press?.timer); press = null; }
+        function beginSelection(draft) {
+            if (!drafts.includes(draft)) return;
+            selecting = true; selected.add(draft); suppressedDraft = draft; suppressClick = Date.now() + 700;
+            clearPress(); global.getSelection?.()?.removeAllRanges(); renderTabs();
+        }
         tabs.addEventListener('pointerdown', event => {
+            if (event.pointerType !== 'touch') return;
+            if (event.isPrimary === false) { clearPress(); return; }
             const button = event.target.closest('button[data-draft-id]');
             if (!button || event.button !== 0) return;
             clearPress(); const draft = drafts.find(item => String(item.id) === button.dataset.draftId);
             press = { id: event.pointerId, x: event.clientX, y: event.clientY, timer: setTimeout(() => {
-                if (!drafts.includes(draft)) return;
-                selecting = true; selected.add(draft); heldPointer = event.pointerId; suppressedDraft = draft; suppressClick = Date.now() + 700;
-                clearPress(); global.getSelection?.()?.removeAllRanges(); renderTabs();
+                heldPointer = event.pointerId; beginSelection(draft);
             }, 550) };
         });
         tabs.addEventListener('pointermove', event => { if (press?.id === event.pointerId && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 12) clearPress(); });
@@ -100,7 +105,13 @@
             clearPress();
         });
         tabs.addEventListener('selectstart', event => { if (press || selecting) event.preventDefault(); });
-        tabs.addEventListener('contextmenu', event => { if (press || selecting || Date.now() < suppressClick) event.preventDefault(); });
+        tabs.addEventListener('contextmenu', event => {
+            const button = event.target.closest('button[data-draft-id]');
+            if (!button) return;
+            event.preventDefault();
+            if (event.pointerType === 'touch' || heldPointer !== undefined) return;
+            beginSelection(drafts.find(item => String(item.id) === button.dataset.draftId));
+        });
         function select(draft) {
             if (draft === active) return;
             capture();

@@ -265,7 +265,7 @@
         const parking = document.createElement('div'); parking.id = 'streamingParking'; parking.hidden = true; document.body.append(parking);
     }
     function isOpen() { return Boolean(root && !root.hidden); }
-    let renderedIdentity = '', smallWindow = null;
+    let renderedIdentity = '', smallWindow = null, dismissEditorSelection = null;
     const viewIdentity = () => [ui.view, ui.stationId, account()].join(':');
     function refreshBackgroundPlayback() {
         const brand = root?.querySelector('.sc-header-brand'); if (!brand) return;
@@ -289,6 +289,7 @@
     function hideSmallWindow() {
         if (!smallWindow) return;
         smallWindow.cancelInteraction?.();
+        smallWindow.stopObservingAspect?.();
         const player = [...players.values()][0], slot = main.querySelector('.sc-player-slot');
         if (player && slot && renderedIdentity === viewIdentity()) slot.append(player.element);
         smallWindow.hidden = true; presentPlayers();
@@ -298,8 +299,8 @@
             smallWindow = document.createElement('section'); smallWindow.className = 'sc-mini-window'; smallWindow.setAttribute('aria-label', t('串流台小窗'));
             const close = button('关闭小窗', () => { hideSmallWindow(); parkPlayers(); presentPlayers(); }, 'sc-mini-close');
             close.setAttribute('aria-label', t('关闭小窗')); close.title = t('关闭小窗'); close.textContent = '×';
-            let drag, pinch, suppressClick = false, clickTimer, width, sizeStep = 1;
-            const pointers = new Map(), ratio = 16 / 9;
+            let drag, pinch, suppressClick = false, clickTimer, width, sizeStep = 1, ratio = 16 / 9;
+            const pointers = new Map();
             const maxWidth = () => Math.max(1, Math.min(innerWidth - 16, innerHeight * .5 * ratio));
             const sizes = () => { const max = Math.min(480, maxWidth()); return [max / 2, max * 2 / 3, max]; };
             const fit = (requested, center) => {
@@ -312,6 +313,25 @@
             };
             smallWindow.cancelInteraction = () => { clearTimeout(clickTimer); pointers.clear(); drag = pinch = null; suppressClick = false; };
             smallWindow.fit = () => fit(width || sizes()[sizeStep]);
+            const updateAspect = () => {
+                if (smallWindow.hidden) return;
+                const media = smallWindow.querySelector('.sc-media > video, .sc-media > img');
+                const w = media?.videoWidth || media?.naturalWidth, h = media?.videoHeight || media?.naturalHeight;
+                const next = w > 0 && h > 0 ? w / h : 16 / 9;
+                if (next === ratio) return;
+                ratio = next;
+                smallWindow.style.setProperty('--sc-mini-ratio', String(ratio));
+                smallWindow.cancelInteraction(); smallWindow.fit();
+            };
+            const aspectObserver = new MutationObserver(updateAspect);
+            smallWindow.stopObservingAspect = () => aspectObserver.disconnect();
+            smallWindow.observeAspect = element => {
+                aspectObserver.disconnect();
+                const media = element.querySelector('.sc-media');
+                if (media) aspectObserver.observe(media, { childList: true });
+                updateAspect();
+            };
+            for (const name of ['loadedmetadata', 'resize', 'load', 'emptied']) smallWindow.addEventListener(name, updateAspect, true);
             global.addEventListener('resize', () => { if (!smallWindow.hidden) smallWindow.fit(); });
             smallWindow.onpointerdown = event => {
                 if (event.button > 0) return;
@@ -368,7 +388,7 @@
             };
             smallWindow.append(close); document.body.append(smallWindow);
         }
-        player.exitFullscreen(); smallWindow.append(player.element); smallWindow.hidden = false; smallWindow.fit(); minimize(); presentPlayers();
+        player.exitFullscreen(); smallWindow.append(player.element); smallWindow.hidden = false; smallWindow.observeAspect(player.element); smallWindow.fit(); minimize(); presentPlayers();
     }
     async function open() {
         await ready; ensureUi();
@@ -513,6 +533,7 @@
     function parkPlayers() { const parking = document.getElementById('streamingParking'); for (const player of players.values()) if (!smallWindow || smallWindow.hidden) parking.append(player.element); presentPlayers(); }
     async function render() {
         if (!isOpen()) return; const version = ++renderVersion;
+        dismissEditorSelection = null;
         clearWatchSchedule();
         renderedIdentity = viewIdentity();
         for (const [key, player] of players) if (['watch', 'control'].includes(ui.view) && key !== ui.stationId + ':' + account()) { player.close(); players.delete(key); }
@@ -830,12 +851,17 @@
         const list = document.createElement('div'); list.className = 'sc-program-list'; resources.append(list);
         const selectedPrograms = new Set(), sourceCodes = new Map();
         let selecting = false, removing = false, press, heldPointer, suppressedProgram, suppressClick = 0;
+        const cancelProgramSelection = () => { selecting = false; selectedPrograms.clear(); syncProgramSelection(); };
+        dismissEditorSelection = () => {
+            if (ui.view !== 'edit' || !list.isConnected || !selecting) return false;
+            clearPress(); cancelProgramSelection(); return true;
+        };
         const selectionActions = document.createElement('div'); selectionActions.className = 'sc-program-selection-actions'; selectionActions.hidden = true;
         const selectionCount = document.createElement('span'); selectionCount.className = 'sc-program-selection-count';
         const bulkRemoval = removalControls(() => [...selectedPrograms]);
         selectionActions.append(button('置顶', () => moveSelected('top')), button('置底', () => moveSelected('bottom')),
             button('↑', () => moveSelected(-1)), button('↓', () => moveSelected(1)), bulkRemoval, selectionCount,
-            button('取消', () => { selecting = false; selectedPrograms.clear(); syncProgramSelection(); }));
+            button('取消', cancelProgramSelection));
         resourceHeading.append(selectionActions);
         function syncProgramSelection() {
             const ids = new Set(d.items.map(item => item.id));
@@ -1991,6 +2017,7 @@
             const fullscreen = document.querySelector('.sc-media-fullscreen');
             if (fullscreen) { for (const player of players.values()) if (player.element === fullscreen) player.exitFullscreen(); restore(); return; }
             if (!isOpen()) return;
+            if (dismissEditorSelection?.()) { restore(); return; }
             const parent = { import: 'edit', edit: ui.returnList || 'discover', access: 'control', blacklist: ui.returnList || 'discover', watch: ui.returnList || 'discover', control: ui.returnList || 'discover', creator: 'discover', invitation: 'discover', 'invitation-result': 'invitation' }[ui.view];
             if (parent) { navigate(parent, ['edit', 'watch', 'control'].includes(parent) ? ui.stationId : ''); restore(); }
             else minimize(true);

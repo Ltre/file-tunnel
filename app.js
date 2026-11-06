@@ -4913,13 +4913,17 @@ async function getWebZipBlob(fileInfo, ownerDeviceId = '') {
     return stored.data instanceof Blob ? stored.data : new Blob([stored.data], { type:'application/zip' });
 }
 
+function getFileDisplayName(fileInfo) {
+    return String(fileInfo?.name || '').replace(/\.html\.zip$/i, '');
+}
+
 function webZipNewTabBadge(fileInfo) {
     return /\.html\.zip$/i.test(String(fileInfo?.name || '')) && fileInfo.webZipFullscreen !== true
         ? '<span class="web-zip-new-tab-badge" aria-label="在新标签页打开" title="在新标签页打开">↗</span>' : '';
 }
 
 function openWebZipStandalone(fileInfo, options = {}) {
-    const url = `/web-zip-preview/${encodeURIComponent(fileInfo.id)}?name=${encodeURIComponent(fileInfo.name || '网页 ZIP')}&v=${encodeURIComponent(fileInfo.webZipRevision || fileInfo.timestamp || '')}${fileInfo.webZipHideFrame ? '&bare=1' : ''}`;
+    const url = `/web-zip-preview/${encodeURIComponent(fileInfo.id)}?name=${encodeURIComponent(getFileDisplayName(fileInfo) || '网页 ZIP')}&v=${encodeURIComponent(fileInfo.webZipRevision || fileInfo.timestamp || '')}${fileInfo.webZipHideFrame ? '&bare=1' : ''}`;
     if (fileInfo.webZipFullscreen === true) {
         document.getElementById('webZipFullscreenLayer')?.closeWebZip?.();
         const layer = document.createElement('section');
@@ -4929,7 +4933,7 @@ function openWebZipStandalone(fileInfo, options = {}) {
         closeButton.type = 'button'; closeButton.textContent = '×'; closeButton.title = '关闭网页 ZIP';
         closeButton.setAttribute('aria-label', '关闭网页 ZIP');
         const frame = document.createElement('iframe');
-        frame.title = fileInfo.name || '网页 ZIP'; frame.src = url;
+        frame.title = getFileDisplayName(fileInfo) || '网页 ZIP'; frame.src = url;
         frame.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-modals allow-downloads allow-popups');
         const close = () => { window.removeEventListener('keydown', onKeydown, true); frame.src = 'about:blank'; layer.remove(); };
         const onKeydown = event => { if (event.key === 'Escape') { event.preventDefault(); close(); } };
@@ -7683,7 +7687,7 @@ async function addMessageToChat(message, isOwn, options = {}) {
                     <div class="file-message-main">
                         <div class="file-icon">${getFileIcon(fileInfo.type, fileInfo.name)}${webZipNewTabBadge(fileInfo)}</div>
                         <div class="file-info">
-                            <div class="file-name">${escapeHtml(fileInfo.name)}</div>
+                            <div class="file-name">${escapeHtml(getFileDisplayName(fileInfo))}</div>
                             <div class="file-size">${sizeStr}${!hasLocalData ? unavailableLabel : ''}</div>
                         </div>
                     </div>
@@ -9401,7 +9405,7 @@ function renderFilePreviewLoading(content, fileInfo) {
     loading.innerHTML = `
         <div class="file-icon">${getFileIcon(fileInfo.type || '', fileInfo.name)}</div>
         <div>
-            <div class="file-name">${escapeHtml(fileInfo.name || '文件预览')}</div>
+            <div class="file-name">${escapeHtml(getFileDisplayName(fileInfo) || '文件预览')}</div>
             <div class="file-size">正在准备预览...</div>
         </div>
     `;
@@ -9957,7 +9961,7 @@ function setFilePreviewTitle(fileName, options = {}) {
     if (!title) return;
     const name = document.createElement('span');
     name.className = 'file-preview-title-name';
-    name.textContent = fileName || '文件预览';
+    name.textContent = getFileDisplayName({ name: fileName }) || '文件预览';
     title.replaceChildren();
     if (options.handleReadable || options.handleSourceOnly) {
         const sourceIcon = document.createElement('span');
@@ -9988,7 +9992,7 @@ function renderFileMetadataPreview(content, fileInfo, stateLabel = '') {
     panel.innerHTML = `
         <div class="file-icon">${getFileIcon(fileInfo.type || '', fileInfo.name)}</div>
         <div class="file-info">
-            <div class="file-name">${escapeHtml(fileInfo.name || '未知文件')}</div>
+            <div class="file-name">${escapeHtml(getFileDisplayName(fileInfo) || '未知文件')}</div>
             <div class="file-size">${formatFileSize(Number(fileInfo.size) || 0)}${stateLabel ? ` (${escapeHtml(stateLabel)})` : ''}</div>
         </div>
     `;
@@ -13048,7 +13052,7 @@ async function showFileDetailsForInfo(fileInfo, message = {}) {
     activeFileDetailsMessageId = message.messageId || message.id || '';
     activeFileDetailsFileId = fileInfo.id;
     const details = [
-        ['文件名', fileInfo.name || '未知文件'],
+        ['文件名', getFileDisplayName(fileInfo) || '未知文件'],
         ['扩展名', getFileExtension(fileInfo.name)],
         ['MIME 类型', fileInfo.type || 'application/octet-stream'],
         ['文件大小', formatFileSize(Number(fileInfo.size) || 0)],
@@ -13095,7 +13099,7 @@ async function showFileDetails(messageId) {
     const hasLocalData = hasCompleteFileCache(storedFile, fileInfo);
     activeFileDetailsMessageId = messageId;
     const details = [
-        ['文件名', fileInfo.name || '未知文件'],
+        ['文件名', getFileDisplayName(fileInfo) || '未知文件'],
         ['扩展名', getFileExtension(fileInfo.name)],
         ['MIME 类型', fileInfo.type || 'application/octet-stream'],
         ['文件大小', formatFileSize(Number(fileInfo.size) || 0)],
@@ -13187,7 +13191,7 @@ async function createCollectionFileCard(fileInfo, collectionMessageId) {
 
     const name = document.createElement('div');
     name.className = 'collection-file-name';
-    name.textContent = fileInfo.name || '未知文件';
+    name.textContent = getFileDisplayName(fileInfo) || '未知文件';
     const size = document.createElement('div');
     size.className = 'collection-file-size';
     size.textContent = formatFileSize(Number(fileInfo.size) || 0);
@@ -13602,7 +13606,7 @@ function showFileMessagePlaceholder(fileId, label, cacheCleared = false, restore
         bubble.innerHTML = `
             <div class="file-icon">${getFileIcon(fileInfo.type, fileInfo.name)}${webZipNewTabBadge(fileInfo)}</div>
             <div class="file-info">
-                <div class="file-name">${escapeHtml(fileInfo.name)}</div>
+                <div class="file-name">${escapeHtml(getFileDisplayName(fileInfo))}</div>
                 <div class="file-size">${formatFileSize(fileInfo.size)} (${escapeHtml(label)})</div>
             </div>
         `;
@@ -14853,8 +14857,21 @@ async function clearResourceCache(resource) {
     historyLog('resource-cache-cleared', { resourceId: resource.id, isEditorAsset: resource.isEditorAsset });
 }
 
-async function restoreResourceCache(resource) {
+const resourceCacheRestores = new Map();
+let missingCacheRestoreBatch = null;
+
+function restoreResourceCache(resource, options = {}) {
+    const sessionId = options.sessionId || state.sessionId;
+    const key = `${sessionId}:${resource.id}`;
+    if (resourceCacheRestores.has(key)) return resourceCacheRestores.get(key);
+    const task = performResourceCacheRestore(resource, sessionId, options).finally(() => resourceCacheRestores.delete(key));
+    resourceCacheRestores.set(key, task);
+    return task;
+}
+
+async function performResourceCacheRestore(resource, sessionId, options) {
     const file = await getFromStore('files', resource.id);
+    if (state.sessionId !== sessionId) return 'stopped';
     if (hasCompleteFileCache(file, resource)) {
         await saveToStore('files', {
             ...file,
@@ -14869,46 +14886,81 @@ async function restoreResourceCache(resource) {
             await refreshFileMessage(resource.id);
         }
         historyLog('resource-restore-skipped-local-complete', { resourceId: resource.id });
-        return;
+        return 'cached';
     }
+    // A bulk scan reuses queued/discovering/receiving work. Individual restore
+    // keeps the existing explicit retry behavior when no call is in flight.
+    if (options.peerOnly && (fileAssetTransfer?.desiredAssets?.has(resource.id) || fileAssetTransfer?.hasDownloadWork?.(resource.id) ||
+        editorAssetRequests.has(resource.id) || serverAssetRecoveries.promises.has(resource.id))) return 'pending';
+    if (!state.socket?.connected) throw new Error('隧道连接尚未建立，请稍后重试');
     const metadata = {
         ...(file || {}),
         id: resource.id,
         name: resource.name,
         type: resource.type,
         size: resource.size,
-        sessionId: state.sessionId,
+        sessionId,
         ownerDeviceId: resource.ownerDeviceId,
+        serverAssetUrl: resource.serverAssetUrl || file?.serverAssetUrl,
+        isServerAsset: Boolean(resource.serverAssetUrl || file?.serverAssetUrl),
         cacheCleared: true,
         restoreRequested: true
     };
     await saveToStore('files', metadata);
+    if (state.sessionId !== sessionId) return 'stopped';
 
     if (resource.isEditorAsset) {
         requestEditorAsset(resource.id, resource.ownerDeviceId);
         historyLog('resource-editor-asset-restore-requested', { resourceId: resource.id });
-        return;
+        return 'requested';
     }
 
-    if (resource.isServerAsset && resource.serverAssetUrl) {
+    if (metadata.isServerAsset && !options.peerOnly) {
         await requestServerAssetWithPeerPreference(metadata, resource.ownerDeviceId, 'resource-restore', {
             priority: true,
             force: true,
             peerWaitMs: 5000
         });
         historyLog('resource-server-asset-restore-requested', { resourceId: resource.id });
-        return;
+        return 'requested';
     }
 
     if (!fileAssetTransfer) {
-        alert('文件传输尚未初始化。');
-        return;
+        throw new Error('文件传输尚未初始化。');
     }
     metadata.isFileAsset = true;
     await saveToStore('files', metadata);
+    if (state.sessionId !== sessionId) return 'stopped';
     showFileMessagePlaceholder(resource.id, '正在请求还原', true, true);
-    await fileAssetTransfer.request(resource.id, resource.ownerDeviceId, metadata, { force: true, priority: true });
+    await fileAssetTransfer.request(resource.id, resource.ownerDeviceId, metadata, { force: !options.peerOnly, priority: true });
     historyLog('resource-file-restore-requested', { resourceId: resource.id });
+    return 'requested';
+}
+
+function requestMissingResourceCaches() {
+    if (missingCacheRestoreBatch) return missingCacheRestoreBatch;
+    const sessionId = state.sessionId;
+    const task = (async () => {
+        const resources = await getSessionResourceInventory();
+        const stats = { requested: 0, pending: 0, cached: 0, failed: 0, stopped: false };
+        const seen = new Set();
+        for (const resource of resources) {
+            if (state.sessionId !== sessionId || !state.socket?.connected) { stats.stopped = true; break; }
+            if (resource.hasReadableLocalSource || seen.has(resource.id)) continue;
+            seen.add(resource.id);
+            try {
+                const result = await restoreResourceCache(resource, { sessionId, peerOnly: true });
+                if (result === 'stopped') { stats.stopped = true; break; }
+                stats[result]++;
+            } catch (err) {
+                stats.failed++;
+                historyLog('resource-bulk-restore-failed', { sessionId, resourceId: resource.id, error: err.message });
+            }
+        }
+        return stats;
+    })().finally(() => { if (missingCacheRestoreBatch === task) missingCacheRestoreBatch = null; });
+    missingCacheRestoreBatch = task;
+    return task;
 }
 
 async function deleteUnreferencedResource(resource) {
@@ -15274,6 +15326,26 @@ async function showResourceBrowser(options = {}) {
         telegramRepairButton.disabled = true;
         runTelegramFileContinuityRepair().catch(err => alert(`Telegram 文件检测失败：${err.message}`)).finally(() => { telegramRepairButton.disabled = false; });
     });
+    const restoreMissingButton = createResourceBrowserButton('一键获取缺失缓存', '向其它设备请求当前会话中缺失的文件缓存，已有任务不重复请求', async () => {
+        if (restoreMissingButton.disabled) return;
+        restoreMissingButton.disabled = true;
+        restoreMissingButton.textContent = window.TunnelI18n?.t('正在检查缺失缓存…') || '正在检查缺失缓存…';
+        const sessionId = state.sessionId;
+        try {
+            const stats = await requestMissingResourceCaches();
+            if (state.sessionId !== sessionId) return;
+            const text = '已请求 {0} 个，已有任务 {1} 个，本机已就绪 {2} 个，失败 {3} 个；请求已发起不代表缓存已就绪';
+            const values = [stats.requested, stats.pending, stats.cached, stats.failed];
+            showAppToast((window.TunnelI18n?.t(text, ...values) || text.replace(/\{(\d+)\}/g, (_, i) => values[i])) +
+                (stats.stopped ? (window.TunnelI18n?.t('；隧道连接已变化，已停止追加请求') || '；隧道连接已变化，已停止追加请求') : ''));
+            if (modal.isConnected) await render({ reload: true, preserveScroll: true });
+        } catch (err) {
+            showAppToast(err.message);
+        } finally {
+            restoreMissingButton.disabled = false;
+            restoreMissingButton.textContent = window.TunnelI18n?.t('一键获取缺失缓存') || '一键获取缺失缓存';
+        }
+    });
     const searchInput = document.createElement('input');
     searchInput.type = 'search';
     searchInput.placeholder = '按名称或格式筛选资源';
@@ -15293,7 +15365,7 @@ async function showResourceBrowser(options = {}) {
         option.textContent = label;
         filter.appendChild(option);
     });
-    controls.append(mountDirectoryButton, mountFileButton, telegramRepairButton, searchInput, filter);
+    controls.append(mountDirectoryButton, mountFileButton, restoreMissingButton, telegramRepairButton, searchInput, filter);
 
     const summary = document.createElement('div');
     summary.className = 'resource-browser-summary';

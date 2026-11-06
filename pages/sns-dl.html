@@ -409,7 +409,7 @@
             card.append(element('div','subtle',[`${Math.round(Number(task.progress?.percent)||0)}%`,task.progress?.speedText,task.progress?.etaText ? `ETA ${task.progress.etaText}` : ''].filter(Boolean).join(' · ')));
         }
         const details=element('div','details');
-        [['媒体编号',task.selectedFormatIds?.length ? task.selectedFormatIds.join(' + ') : ''],['文件',task.outputFileName],['大小',task.outputFileSize ? formatSize(task.outputFileSize):''],['创建',formatDate(task.createdAt)],['完成',formatDate(task.completedAt)]].filter(([,value])=>value).forEach(([label,value])=>{const item=element('span');item.append(element('strong','',`${label}：`),String(value));details.append(item);});
+        [['媒体编号',task.selectedFormatIds?.length ? task.selectedFormatIds.join(' + ') : ''],['指定片段',task.downloadSections],['文件',task.outputFileName],['大小',task.outputFileSize ? formatSize(task.outputFileSize):''],['创建',formatDate(task.createdAt)],['完成',formatDate(task.completedAt)]].filter(([,value])=>value).forEach(([label,value])=>{const item=element('span');item.append(element('strong','',`${label}：`),String(value));details.append(item);});
         card.append(details,taskReferenceDetails(task));
         if (task.tags?.length) { const tags=element('div','tags'); task.tags.forEach(tag=>tags.append(element('span','tag',tag))); card.append(tags); }
         const remark=element('div','remark-editor'); const textarea=document.createElement('textarea'); textarea.value=task.remark||''; textarea.placeholder='任务备注（转发时优先作为文件备注）';

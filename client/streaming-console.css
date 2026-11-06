@@ -146,7 +146,7 @@
 .sc-mini-window:active{cursor:grabbing}
 .sc-mini-window .sc-mini-close{position:absolute;right:5px;top:5px;z-index:5;display:grid;place-items:center;width:32px;height:32px;border:0;border-radius:50%;padding:0;background:#1117;color:#fff;font:26px/1 system-ui;cursor:pointer;text-shadow:0 1px 4px #000}
 .sc-mini-window .sc-mini-close:hover{background:#111c}
-.sc-mini-window .sc-stage{min-height:0;border-radius:0;aspect-ratio:16/9}
+.sc-mini-window .sc-stage{min-height:0;border-radius:0;aspect-ratio:var(--sc-mini-ratio,16/9)}
 .sc-mini-window .sc-media{pointer-events:none}
 .sc-mini-window .sc-media>audio{display:none}
 .sc-mini-window .sc-local-controls{position:absolute;left:8px;bottom:8px;z-index:4;display:flex;gap:6px;margin:0}

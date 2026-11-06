@@ -95,10 +95,11 @@ test('miniature double clicks cycle three proportional sizes, pinch resizes, dra
     const page=await browser.newPage({viewport:{width:1366,height:900}});
     try {
         await page.goto(f.base+'/ui-261030?view=watch'); await page.locator('.sc-now-playing').waitFor();
+        await page.waitForFunction(()=>document.querySelector('.sc-media>img')?.naturalWidth>0);
         await page.getByRole('button',{name:'小窗播',exact:true}).click(); const mini=page.locator('.sc-mini-window');
         const widths=[];
         for(let i=0;i<4;i++) {
-            const box=await mini.boundingBox(); widths.push(Math.round(box.width)); assert.ok(box.height<=450+1 && Math.abs(box.width/box.height-16/9)<.02,JSON.stringify(box));
+            const box=await mini.boundingBox(); widths.push(Math.round(box.width)); assert.ok(box.height<=450+1 && Math.abs(box.width/box.height-1)<.02,JSON.stringify(box));
             if(i<3)await mini.dblclick({position:{x:80,y:45}});
         }
         assert.equal(new Set(widths.slice(0,3)).size,3,JSON.stringify(widths)); assert.equal(widths[0],widths[3]);

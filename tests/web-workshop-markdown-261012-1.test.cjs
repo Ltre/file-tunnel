@@ -182,13 +182,14 @@ test('压缩部署重建 Service Worker 时仍缓存原字节的 Markdown 支持
     assert.match(written,/instant-tunnel-test-build/);
 });
 
-test('部署核验只允许精确 Markdown 固定路径，不放宽其它源 JS 检查',()=>{
+test('部署核验只允许列明的固定资源路径，不放宽其它源 JS 检查',()=>{
     const source=read('tools/deploy/verify.mjs');
     const fixed=source.match(/const MARKDOWN_SUPPORT_ASSETS = \[[\s\S]*?\];/)?.[0];
-    const strip=source.match(/function stripBundledMarkdownPaths\([\s\S]*?\n}\n/)?.[0];
-    assert.ok(fixed&&strip);
+    const shell=source.match(/const FIXED_SHELL_ASSETS = \[[^\n]*\];/)?.[0];
+    const strip=source.match(/function stripFixedResourcePaths\([\s\S]*?\n}\n/)?.[0];
+    assert.ok(fixed&&shell&&strip);
     const context={};
-    vm.runInNewContext(fixed+'\n'+strip+'\nglobalThis.strip = stripBundledMarkdownPaths;',context);
+    vm.runInNewContext(fixed+'\n'+shell+'\n'+strip+'\nglobalThis.strip = stripFixedResourcePaths;',context);
     const assets=tools().markdownSupportFiles.map(([name])=>'/client/vendor/web-markdown/'+name);
     assert.doesNotMatch(context.strip(assets.map(JSON.stringify).join('\n')),/\/client\//);
     assert.match(context.strip(assets.map(JSON.stringify).join('\n')+'\n/client/unbundled.js'),/\/client\/unbundled.js/);

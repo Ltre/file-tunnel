@@ -11,7 +11,7 @@ for(const [pagePath,apiPath] of [['sns-dl','sns-dl'],['youtube-premium-dl','yout
     await page.route('**/api/'+apiPath+'/tasks?*',route=>route.fulfill({json:{tasks:[],total:0,page:1,pages:1,pageSize:10,ids:[]}}));
     await page.goto(f.base+'/'+pagePath);
     const tab=n=>page.getByRole('button',{name:'表单 '+n,exact:true}),tools=page.locator('.download-form-tools'),url=page.locator('#urlInput');
-    const hold=async n=>{await tab(n).dispatchEvent('pointerdown',{pointerType:'touch',pointerId:9,button:0,clientX:100,clientY:200});await page.locator('.download-form-tabs.is-selecting').waitFor();await page.locator('.download-form-tabs').dispatchEvent('pointerup',{pointerType:'touch',pointerId:9});};
+    const hold=async n=>{await tab(n).dispatchEvent('pointerdown',{pointerType:'touch',pointerId:9,isPrimary:true,button:0,clientX:100,clientY:200});await page.locator('.download-form-tabs.is-selecting').waitFor();await page.locator('.download-form-tabs').dispatchEvent('pointerup',{pointerType:'touch',pointerId:9});};
     await url.fill('https://www.youtube.com/watch?v=pending');
     const requested=page.waitForRequest(req=>req.url().endsWith('/formats'));
     await page.locator('input[name="mode"][value="custom"]').evaluate(node=>node.click());await requested;

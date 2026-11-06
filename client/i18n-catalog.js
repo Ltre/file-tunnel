@@ -778,6 +778,11 @@
         ['仅隧道创建者或具备管理权限的设备可配置管理员。','僅隧道建立者或具備管理權限的裝置可設定管理員。','Only the tunnel creator or a device with management permission can configure administrators.'],
         ['你是隧道管理员，可修改权限','你是隧道管理員，可修改權限','You are a tunnel administrator and can edit permissions'],
         ['仅创建者或具备管理权限的设备可修改','僅建立者或具備管理權限的裝置可修改','Only the creator or a device with management permission can edit this'] ,
+        ['一键获取缺失缓存','一鍵取得缺失快取','Get all missing caches'],
+        ['向其它设备请求当前会话中缺失的文件缓存，已有任务不重复请求','向其它裝置請求目前工作階段中缺失的檔案快取，不重複請求已有工作','Request missing file caches from other devices without duplicating existing transfers'],
+        ['正在检查缺失缓存…','正在檢查缺失快取…','Checking missing caches…'],
+        ['已请求 {0} 个，已有任务 {1} 个，本机已就绪 {2} 个，失败 {3} 个；请求已发起不代表缓存已就绪','已請求 {0} 個，已有工作 {1} 個，本機已就緒 {2} 個，失敗 {3} 個；已發起請求不代表快取已就緒','Requested: {0}; existing tasks: {1}; locally ready: {2}; failed: {3}. Requested caches may still be pending.'],
+        ['；隧道连接已变化，已停止追加请求','；隧道連線已變更，已停止新增請求','; the tunnel connection changed, so no further requests were added'],
         ['查看权限说明','查看權限說明','About device permissions'],
         ['管理员设备拥有全部隧道权限，并可为其它设备分配权限；普通设备的独立配置优先于隧道默认权限。','管理員裝置擁有全部隧道權限，並可為其它裝置分配權限；一般裝置的獨立設定優先於隧道預設權限。','Administrator devices have all tunnel permissions and can assign permissions to other devices. Individual settings for ordinary devices take precedence over the tunnel defaults.']
     ]) {
