@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="700" viewBox="0 0 900 700" lang="zh-CN" xml:lang="zh-CN" role="img" aria-labelledby="title description">
+  <title id="title">隧道路由界面：尚未加入任何隧道</title>
+  <desc id="description">编号261106-3 第10项。对应 tunnel-route-add-scan-none.jpg 的布局参考。画布900×700。上半部分与已加入隧道状态使用相同的位置和尺寸；扫描按钮下方间隔44，直接显示344×56的创建隧道按钮，与扫描按钮左右对齐。不显示已加入隧道说明、下拉框、进入所选隧道按钮或组合区域外边框，不为它们保留空位。此图为浅色布局参考，实际配色随当前主题适配。</desc>
+  <defs>
+    <filter id="control-shadow" x="-5%" y="-10%" width="110%" height="125%">
+      <feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#000" flood-opacity=".035"/>
+    </filter>
+  </defs>
+  <style>
+    text { font-family: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", Arial, sans-serif; fill: #111; }
+    .brand { font-family: Arial, "Microsoft YaHei", sans-serif; font-size: 28px; font-weight: 700; }
+    .heading { font-size: 26px; font-weight: 700; }
+    .instruction { font-size: 20px; fill: #666; }
+    .code-cell { fill: #f3f3f3; stroke: #d5d5d5; stroke-width: 1; }
+    .secondary { fill: #f2f2f2; }
+    .button-label { font-size: 21px; }
+  </style>
+  <rect id="page-background" width="900" height="700" fill="#fff"/>
+
+  <g id="brand-bar">
+    <rect x="18" y="18" width="864" height="58" rx="16" fill="#f3f3f3"/>
+    <g id="brand-content" transform="translate(-11 0)">
+    <g transform="translate(312 32)" fill="none" stroke="#111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12.8 3.1c3.3-1.4 6.8-1.1 7.8-.9.2 1 .5 4.5-.9 7.8-1.2 2.8-3.6 5.3-6.2 6.8l-6-6c1.5-2.6 4-5 6.8-6.2"/>
+      <circle cx="15.7" cy="7.1" r="2.1"/>
+      <path d="m7.5 10.8-3.7.6-2.3 4.1 6.4-.8M13.5 16.8l-.6 3.7-4.1 2.3.8-6.4M5.7 17.3c-1.5 0-3.2 1.7-3.2 4.2 2.5 0 4.2-1.7 4.2-3.2"/>
+    </g>
+    <text class="brand" x="345" y="56">Drop2Tunnel Studio</text>
+    </g>
+  </g>
+
+  <g id="shared-entry-controls" text-anchor="middle">
+    <text class="heading" x="450" y="166">加入数据隧道</text>
+    <text class="instruction" x="450" y="212">输入朋友提供的暗号，或扫描隧道码</text>
+    <g id="five-digit-code-input" filter="url(#control-shadow)">
+      <rect class="code-cell" x="284" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="352" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="420" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="488" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="556" y="232" width="60" height="64" rx="12"/>
+      <path d="M314 254v23" stroke="#111" stroke-width="1.5"/>
+    </g>
+    <g id="scan-tunnel-code-button">
+      <rect class="secondary" x="278" y="320" width="344" height="62" rx="16" stroke="#d1d1d1" filter="url(#control-shadow)"/>
+      <g transform="translate(380 341)" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M7 2H4a2 2 0 0 0-2 2v3M13 2h3a2 2 0 0 1 2 2v3M2 13v3a2 2 0 0 0 2 2h3M18 13v3a2 2 0 0 1-2 2h-3M1 10h18"/>
+      </g>
+      <text x="410" y="360" text-anchor="start" font-size="22" font-weight="700">扫描隧道码</text>
+    </g>
+  </g>
+
+  <g id="create-tunnel-button">
+    <rect class="secondary" x="278" y="426" width="344" height="56" rx="16"/>
+    <text class="button-label" x="450" y="462" text-anchor="middle">我没有暗号，创建一个隧道</text>
+  </g>
+</svg>

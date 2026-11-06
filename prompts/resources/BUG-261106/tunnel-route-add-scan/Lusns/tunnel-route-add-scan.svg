@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="700" viewBox="0 0 900 700" lang="zh-CN" xml:lang="zh-CN" data-theme="lusns" data-state="joined" role="img" aria-labelledby="title description">
+  <title id="title">Lusns · 隧道路由 · 已加入隧道</title>
+  <desc id="description">编号261106-3第10项，Lusns主题。900×700布局参考。上半部分与其它主题及两种状态位置相同。下方组合区域448×212，内含等宽424px的隧道选择、进入和创建按钮，间距10px／9px。进入按钮使用第一主色#4133ca→#5545d8→#7168df→#748be8；创建按钮使用低饱和淡色底#ecf3f9、柔和细边#d0e0ed及文字#546c84，不再直接铺满鲜亮第二主色；header使用独立底色#e2efff→#f0f7ff。输入框、扫描按钮和选择框使用中性底色与1px细描边。创建按钮弱于进入按钮，Orbit采用融入深色表面的淡青灰调，不使用高亮薄荷色。</desc>
+  <defs>
+    <linearGradient id="page-gradient" x1="0" y1="0" x2="1" y2=".35"><stop offset="0" stop-color="#eef6ff"/><stop offset="1" stop-color="#e2efff"/></linearGradient>
+    <linearGradient id="header-gradient" x1="0" y1="0" x2="1" y2=".35"><stop offset="0" stop-color="#e2efff"/><stop offset="1" stop-color="#f0f7ff"/></linearGradient>
+    <linearGradient id="primary-gradient" x1="0" y1="0" x2="1" y2=".35"><stop offset="0" stop-color="#4133ca"/><stop offset="0.3333333333333333" stop-color="#5545d8"/><stop offset="0.6666666666666666" stop-color="#7168df"/><stop offset="1" stop-color="#748be8"/></linearGradient>
+    <pattern id="page-stripes" width="220" height="220" patternUnits="userSpaceOnUse" patternTransform="rotate(36)"><rect width="220" height="220" fill="#eef6ff"/><rect width="100" height="220" fill="#e2efff" fill-opacity=".45"/><rect x="100" width="50" height="220" fill="#fff" fill-opacity=".18"/></pattern>
+    <filter id="control-shadow" x="-5%" y="-10%" width="110%" height="125%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#151b3e" flood-opacity=".04"/></filter>
+  </defs>
+  <style>
+    text {font-family:"Noto Sans SC","Microsoft YaHei","PingFang SC",Arial,sans-serif;fill:#151b3e}
+    .brand {font-family:Arial,"Microsoft YaHei",sans-serif;font-size:28px;font-weight:700}
+    .heading {font-size:26px;font-weight:700}
+    .instruction {font-size:20px;fill:#65718f}
+    .code-cell {fill:#f7fbff;stroke:#b9cce3;stroke-width:1}
+    .button-label {font-size:21px}
+    #page-background {fill:url(#page-stripes)}
+    #brand-bar>rect {fill:url(#header-gradient);stroke:#d2dfee;stroke-width:1}
+    #brand-content text {fill:#252943}
+    #brand-content>g {stroke:#252943}
+    #five-digit-code-input>path {stroke:#4133ca}
+    #scan-tunnel-code-button>rect {fill:#edf4fc;stroke:#b9cce3;stroke-width:1}
+    #scan-tunnel-code-button>g {stroke:#151b3e}
+    #joined-tunnel-section>text {fill:#65718f}
+    #joined-actions-frame {fill:#f7fbff;stroke:#d2dfee;stroke-width:1}
+    #joined-tunnel-select>rect {fill:#edf4fc;stroke:#b9cce3;stroke-width:1}
+    #joined-tunnel-select>path {stroke:#65718f}
+    #enter-selected-tunnel-button>rect {fill:url(#primary-gradient);stroke:#4133ca;stroke-width:1}
+    #enter-selected-tunnel-button>text {fill:#ffffff}
+    #create-tunnel-button>rect {fill:#ecf3f9;stroke:#d0e0ed;stroke-width:1}
+    #create-tunnel-button>text {fill:#546c84}
+  </style>
+  <rect id="page-background" width="900" height="700" fill="#fff"/>
+
+  <g id="brand-bar" data-color-role="header-surface">
+    <rect x="18" y="18" width="864" height="58" rx="16" fill="#f3f3f3"/>
+    <g id="brand-content" transform="translate(-11 0)">
+    <g transform="translate(312 32)" fill="none" stroke="#111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12.8 3.1c3.3-1.4 6.8-1.1 7.8-.9.2 1 .5 4.5-.9 7.8-1.2 2.8-3.6 5.3-6.2 6.8l-6-6c1.5-2.6 4-5 6.8-6.2"/>
+      <circle cx="15.7" cy="7.1" r="2.1"/>
+      <path d="m7.5 10.8-3.7.6-2.3 4.1 6.4-.8M13.5 16.8l-.6 3.7-4.1 2.3.8-6.4M5.7 17.3c-1.5 0-3.2 1.7-3.2 4.2 2.5 0 4.2-1.7 4.2-3.2"/>
+    </g>
+    <text class="brand" x="345" y="56">Drop2Tunnel Studio</text>
+    </g>
+  </g>
+
+  <g id="shared-entry-controls" text-anchor="middle">
+    <text class="heading" x="450" y="166">加入数据隧道</text>
+    <text class="instruction" x="450" y="212">输入朋友提供的暗号，或扫描隧道码</text>
+    <g id="five-digit-code-input" filter="url(#control-shadow)">
+      <rect class="code-cell" x="284" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="352" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="420" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="488" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="556" y="232" width="60" height="64" rx="12"/>
+      <path d="M314 254v23" stroke="#111" stroke-width="1.5"/>
+    </g>
+    <g id="scan-tunnel-code-button">
+      <rect class="secondary" x="278" y="320" width="344" height="62" rx="16" stroke="#d1d1d1" filter="url(#control-shadow)"/>
+      <g transform="translate(380 341)" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M7 2H4a2 2 0 0 0-2 2v3M13 2h3a2 2 0 0 1 2 2v3M2 13v3a2 2 0 0 0 2 2h3M18 13v3a2 2 0 0 1-2 2h-3M1 10h18"/>
+      </g>
+      <text x="410" y="360" text-anchor="start" font-size="22" font-weight="700">扫描隧道码</text>
+    </g>
+  </g>
+
+  <g id="joined-tunnel-section">
+    <text x="450" y="445" text-anchor="middle" font-size="17">或进入已加入的隧道</text>
+    <rect id="joined-actions-frame" x="226" y="464" width="448" height="212" rx="20" fill="#fff" stroke="#d7d7d7"/>
+    <g id="joined-tunnel-select">
+      <rect class="secondary" x="238" y="475" width="424" height="57" rx="14" stroke="#d7d7d7"/>
+      <text x="450" y="511" font-size="20" text-anchor="middle">NY9G0 · 最近使用</text>
+      <path d="m634 499 6 6 6-6" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g id="enter-selected-tunnel-button" data-color-role="primary">
+      <rect x="238" y="542" width="424" height="56" rx="14" fill="#0058ff"/>
+      <text x="450" y="578" text-anchor="middle" font-size="22" font-weight="700">进入所选隧道</text>
+    </g>
+    <g id="create-tunnel-button" data-color-role="secondary">
+      <rect class="secondary" x="238" y="607" width="424" height="57" rx="14"/>
+      <text class="button-label" x="450" y="643" text-anchor="middle">我没有暗号，创建一个隧道</text>
+    </g>
+  </g>
+</svg>

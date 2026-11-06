@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="700" viewBox="0 0 900 700" lang="zh-CN" xml:lang="zh-CN" data-theme="lumen" data-state="none" role="img" aria-labelledby="title description">
+  <title id="title">Lumen · 隧道路由 · 未加入任何隧道</title>
+  <desc id="description">编号261106-3第10项，Lumen主题。900×700布局参考。上半部分与其它主题及两种状态位置相同。扫描按钮下方44px为独立创建按钮，344×56；不显示已加入隧道区域。进入按钮使用第一主色#5347e8→#6d60ef；创建按钮使用低饱和淡色底#edf5f5、柔和细边#d4e5e6及文字#536b73，不再直接铺满鲜亮第二主色；header使用独立底色#ffffff→#f2f2ff。输入框、扫描按钮和选择框使用中性底色与1px细描边。创建按钮弱于进入按钮，Orbit采用融入深色表面的淡青灰调，不使用高亮薄荷色。</desc>
+  <defs>
+    <linearGradient id="page-gradient" x1="0" y1="0" x2="1" y2=".35"><stop offset="0" stop-color="#f7f8fe"/><stop offset="1" stop-color="#f0f9f9"/></linearGradient>
+    <linearGradient id="header-gradient" x1="0" y1="0" x2="1" y2=".35"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#f2f2ff"/></linearGradient>
+    <linearGradient id="primary-gradient" x1="0" y1="0" x2="1" y2=".35"><stop offset="0" stop-color="#5347e8"/><stop offset="1" stop-color="#6d60ef"/></linearGradient>
+    
+    <filter id="control-shadow" x="-5%" y="-10%" width="110%" height="125%"><feDropShadow dx="0" dy="1" stdDeviation="1" flood-color="#252943" flood-opacity=".04"/></filter>
+  </defs>
+  <style>
+    text {font-family:"Noto Sans SC","Microsoft YaHei","PingFang SC",Arial,sans-serif;fill:#252943}
+    .brand {font-family:Arial,"Microsoft YaHei",sans-serif;font-size:28px;font-weight:700}
+    .heading {font-size:26px;font-weight:700}
+    .instruction {font-size:20px;fill:#6a728a}
+    .code-cell {fill:#ffffff;stroke:#cfd5e9;stroke-width:1}
+    .button-label {font-size:21px}
+    #page-background {fill:url(#page-gradient)}
+    #brand-bar>rect {fill:url(#header-gradient);stroke:#e1e5f2;stroke-width:1}
+    #brand-content text {fill:#252943}
+    #brand-content>g {stroke:#252943}
+    #five-digit-code-input>path {stroke:#5347e8}
+    #scan-tunnel-code-button>rect {fill:#f5f7ff;stroke:#cfd5e9;stroke-width:1}
+    #scan-tunnel-code-button>g {stroke:#252943}
+    #joined-tunnel-section>text {fill:#6a728a}
+    #joined-actions-frame {fill:#ffffff;stroke:#e1e5f2;stroke-width:1}
+    #joined-tunnel-select>rect {fill:#f5f7ff;stroke:#cfd5e9;stroke-width:1}
+    #joined-tunnel-select>path {stroke:#6a728a}
+    #enter-selected-tunnel-button>rect {fill:url(#primary-gradient);stroke:#5347e8;stroke-width:1}
+    #enter-selected-tunnel-button>text {fill:#ffffff}
+    #create-tunnel-button>rect {fill:#edf5f5;stroke:#d4e5e6;stroke-width:1}
+    #create-tunnel-button>text {fill:#536b73}
+  </style>
+  <rect id="page-background" width="900" height="700" fill="#fff"/>
+
+  <g id="brand-bar" data-color-role="header-surface">
+    <rect x="18" y="18" width="864" height="58" rx="16" fill="#f3f3f3"/>
+    <g id="brand-content" transform="translate(-11 0)">
+    <g transform="translate(312 32)" fill="none" stroke="#111" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12.8 3.1c3.3-1.4 6.8-1.1 7.8-.9.2 1 .5 4.5-.9 7.8-1.2 2.8-3.6 5.3-6.2 6.8l-6-6c1.5-2.6 4-5 6.8-6.2"/>
+      <circle cx="15.7" cy="7.1" r="2.1"/>
+      <path d="m7.5 10.8-3.7.6-2.3 4.1 6.4-.8M13.5 16.8l-.6 3.7-4.1 2.3.8-6.4M5.7 17.3c-1.5 0-3.2 1.7-3.2 4.2 2.5 0 4.2-1.7 4.2-3.2"/>
+    </g>
+    <text class="brand" x="345" y="56">Drop2Tunnel Studio</text>
+    </g>
+  </g>
+
+  <g id="shared-entry-controls" text-anchor="middle">
+    <text class="heading" x="450" y="166">加入数据隧道</text>
+    <text class="instruction" x="450" y="212">输入朋友提供的暗号，或扫描隧道码</text>
+    <g id="five-digit-code-input" filter="url(#control-shadow)">
+      <rect class="code-cell" x="284" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="352" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="420" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="488" y="232" width="60" height="64" rx="12"/>
+      <rect class="code-cell" x="556" y="232" width="60" height="64" rx="12"/>
+      <path d="M314 254v23" stroke="#111" stroke-width="1.5"/>
+    </g>
+    <g id="scan-tunnel-code-button">
+      <rect class="secondary" x="278" y="320" width="344" height="62" rx="16" stroke="#d1d1d1" filter="url(#control-shadow)"/>
+      <g transform="translate(380 341)" fill="none" stroke="#111" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M7 2H4a2 2 0 0 0-2 2v3M13 2h3a2 2 0 0 1 2 2v3M2 13v3a2 2 0 0 0 2 2h3M18 13v3a2 2 0 0 1-2 2h-3M1 10h18"/>
+      </g>
+      <text x="410" y="360" text-anchor="start" font-size="22" font-weight="700">扫描隧道码</text>
+    </g>
+  </g>
+
+  <g id="create-tunnel-button" data-color-role="secondary">
+    <rect class="secondary" x="278" y="426" width="344" height="56" rx="16"/>
+    <text class="button-label" x="450" y="462" text-anchor="middle">我没有暗号，创建一个隧道</text>
+  </g>
+</svg>
