@@ -1,7 +1,7 @@
 # 传输记录、文件资产、缓存与恢复链路
 
-> **源码基线 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
-> **文档更新时间**：`2026-11-01`
+> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
+> **文档更新时间**：`2026-11-07`
 
 ## 子模块文档
 
@@ -454,3 +454,20 @@ Telegram `file_id` 与 Bot 强关联，不能当成全局永久地址。
 - 各界面文字补入现有非简体中文语言资源，更新 `client/index.css` 和对应 app shell 功能后缀。测试需覆盖普通正文、多文件换行、富文本净化、中文输入法、缩放/自动折行及剪贴板权限；不要把宿主浏览器读不到系统剪贴板认作文本已丢失。
 
 相关入口：`app.js`、`pages/index.html`、`client/index.css`、`client/i18n.js`、`client/i18n-catalog.js`；`tests/features-261017-3.test.cjs`、`features-261017-4.test.cjs`、`features-261018-1.test.cjs`、`features-261019-1.test.cjs`、`features-261019-2-client.test.cjs`。
+
+## 24. 2026-10—11：Markdown 消息、历史批量操作与缓存归属
+
+### Markdown 与引用状态
+
+隧道记录新增单独 Markdown 格式与引用处理：`client/tunnel-markdown.js`、`server/markdown-records.js` 维护正文版本、来源引用与附件对应关系。编辑必须携带基准版本，发生冲突拒绝旧覆盖；刷新及消息转发后按安全作用域恢复附件引用，不能把图片文件名或文本里出现的字符串当作可直接读取的文件授权。
+
+SNS/X 帖子转成 Markdown 时，正文附件有对应生命周期和图片资产引用；重复消息和已删除图片的迟到上传不能让正文引用失效或“复活”已删除记录。跨隧道历史需要以会话和消息身份做双重校验。富文本 HTML 的净化与 Markdown 对受限 `data:`/资源地址的规则不同，不能无条件放行通用 Markdown 的任意外链脚本。
+
+### 批量选择与可恢复缓存
+
+- 传输记录支持多选、批量复制和批量删除；界面按钮必须正确区分“已选择数量、真正完成数量、无法操作的记录”。纯文本、富文本、带文件及合辑的复制分别按自己的内容类型形成剪贴板文本/安全 HTML；选中状态离开列表或切隧道后不应污染其它会话。
+- 网盘保存位置、转存结果回执和缓存 pin 在跨账号/目录切换、刷新与来源等待期间保持身份一致；`server/disk-task-save-receipts.js` 新增持久回执，结果未知先核对原预约与回执而非再次发到 Telegram。
+- “一键获取缺失缓存”按**当前消息实际可追溯资产**运行，进度/成功失败有具体结果；没有供源时不能只显示一段无实际请求的转圈。服务端资产已确认且被本地引用时可安全复用，而来源服务器/浏览器暂时离线仍要反馈原因。
+- 原有普通文件的 P2P/Socket.IO Relay 与串流台对节目 Range 的 P2P 直传是不同机制；用户在 PC PAC / Android VPN 下的 WebRTC 差异仍以 [260812 P2P 复盘](../other/P2P_TRANSMISSION_NOTES-260812.md) 和抓取的候选对为准。暂存记录 `prompts/dev-prompt-logs/p2p-progress-origin-difference-todo-261030.md` 是待调查线索，**不是确认修复**。
+
+关联 `app.js`、`client/file-assets.js`、`client/cache-store.js`、`server/file-assets.js`、`server/markdown-records.js` 以及 `tests/history-*.test.cjs`、`tests/markdown-*.browser.cjs`、`tests/transfer-feedback-261101-3.*`、`tests/resource-cache-261106.test.cjs`。
