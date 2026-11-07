@@ -1,9 +1,9 @@
 # 初始 Overview 覆盖验收
 
-> **当前实现源码锚点 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
+> **当前实现源码锚点 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
 > **历史覆盖起点 Commit**：`192ecbcb9ea27a9754f8622041165f9712a8fbf4`  
 > **第一个实际代码版本 Commit**：`0224de3d07f2160055eef58dd1907235aed3aef4`  
-> **文档更新时间**：`2026-11-01`
+> **文档更新时间**：`2026-11-07`
 
 ## 1. 本文件解决什么问题
 
@@ -79,21 +79,29 @@
 - SNS/YouTube 手写格式、限流来源诊断、**服务端文件直接转存网盘**及旧浏览器待办迁移；
 - 传输记录复制文件名、文件选择提示和 1—4 行文本输入等行为调整。
 
+第五轮在**同一分支**比较 `992833201...` → `71e58b07350a0ef3b480fa82272177863de74448`，共 **124 个 Git 提交**。GitHub 一次 compare 的 300 文件结果被 `prompts/resources/**` 设计图片截断，因此按 10/22、10/25、10/26、10/27、10/28、10/31、11/03、11/06 的本分支祖先提交分段比较，覆盖全部代码/配置/测试变化；未读取其它分支。再直接使用两端的 `pages/`、`client/`、`server/` Git 目录清单逐文件核对，新增 **4 / 37 / 20** 个文件，以上三类没有删除文件。
+
+第五轮合入能力：串流控制台节目/权限/观看/媒体来源、七主题及路由、系统备份、SNS 图文 Markdown、后台设备权限与诊断、文件/Markdown 历史、网盘转存回执、网页编辑凭据与延后同步。根据实际代码归属新增 `streaming-console.md`、`system-backup.md`、`pwa-ui/themes.md`，并同步架构、测试、历史和 UI 等模块。
+
 所以：
 
-> 当前 Overview 的代码事实终点已推进到 `99283320188a43a4234986f2eaa9d9d9374e2bd3`；初始 `b422e438...` 只作为历史冻结锚点保留。
+> 当前 Overview 的代码事实终点已推进到 `71e58b07350a0ef3b480fa82272177863de74448`；初始 `b422e438...` 只作为历史冻结锚点保留。
 
 ## 4. 当前页面覆盖表
 
 | 当前页面 | Overview 归属 |
 |---|---|
-| `pages/index.html` | `tunnel-core.md`、`transfer-cache.md`、`media-player-realtime.md`、`pwa-ui.md` |
+| `pages/index.html` | `tunnel-core.md`、`transfer-cache.md`、`media-player-realtime.md`、`pwa-ui.md`、`streaming-console.md` |
+| `pages/tunnel-entry.html` | `tunnel-core.md`、`pwa-ui/themes.md` |
 | `pages/admin-auth.html` | `admin-security-deployment.md` |
 | `pages/admin.html` | `admin-security-deployment.md` |
 | `pages/admin-layout.html` | `admin-security-deployment.md` |
 | `pages/admin-devices.html` | `admin-security-deployment.md` |
 | `pages/admin-magnets.html` | `admin-security-deployment.md` |
+| `pages/admin-tunnels.html` | `admin-security-deployment.md`、`tunnel-core.md` |
+| `pages/admin-tunnel-permissions.html` | `admin-security-deployment.md`、`tunnel-core.md` |
 | `pages/media-library.html` | `media-library.md` |
+| `pages/system-backup.html` | `system-backup.md` |
 | `pages/data-usage.html` | `admin-security-deployment.md` |
 | `pages/device.html` | `tunnel-core/device-direct.md` |
 | `pages/disk-management.html` | `telegram-drive.md` |
@@ -114,7 +122,7 @@
 | `pages/web-workshop-guide.html` | `web-workshop.md` |
 | `pages/web-zip-preview.html` | `web-workshop.md` |
 
-**验收结果：当前 26 个 `pages/**` 页面全部有明确 Overview 归属。**
+**验收结果：当前 30 个 `pages/**` 页面全部有明确 Overview 归属。**
 
 ## 5. 当前客户端模块覆盖表
 
@@ -193,7 +201,25 @@
 - `client/light-transfer.js` → `light-transfer.md`
 - `client/qrcode-1.0.0.min.js` → 第三方 QR Runtime，归入 `pwa-ui.md` / `light-transfer.md` 的依赖边界。
 
-**验收结果：当前 64 个 `client/**` 文件全部有明确模块归属。**
+### 5.8 2026-10—11 新增客户端 37 项
+
+以下是从上轮锚点到本轮锚点**逐文件核对确实新增**的客户端路径；旧的 5.1—5.7 仍负责此前 64 项，不应重复统计：
+
+| 新文件 | 对应 Overview |
+|---|---|
+| `client/account-ui.js/.css` | `telegram-drive.md`、`pwa-ui.md` |
+| `client/admin-overview.js/.css`、`client/admin-tunnel-permissions.js`、`client/browser-logs.js/.css` | `admin-security-deployment.md`、`tunnel-core.md` |
+| `client/data-backup.js/.css`、`client/data-backup-i18n.js` | `system-backup.md` |
+| `client/disk-saved-location.js/.css` | `telegram-drive.md` |
+| `client/download-form-tabs.js/.css` | `download-transcode.md` |
+| `client/icons/quit-fullscreen.png`、`client/icons/streaming.png` | `pwa-ui/themes.md`、`streaming-console.md` |
+| `client/sns-post-i18n.js`、`client/sns-post-markdown.js` | `download-transcode.md`、`transfer-cache.md` |
+| `client/streaming-app-adapter.js`、`streaming-cache.js`、`streaming-console.js/.css`、`streaming-i18n.js`、`streaming-peers.js`、`streaming-player.js` | `streaming-console.md` |
+| `client/theme-preference.js`、`themes.css`、`themes-legacy.css`、`themes-blamen.css`、`themes-lusns.css` | `pwa-ui/themes.md` |
+| `client/tunnel-access-editor.js/.css`、`tunnel-code-scanner.js`、`tunnel-entry.js/.css`、`tunnel-landing.css` | `tunnel-core.md`、`pwa-ui/themes.md` |
+| `client/tunnel-markdown.js` | `transfer-cache.md` |
+
+**验收结果：当前 101 个 `client/**` 文件全部有明确模块归属。**
 
 ## 6. 当前服务端模块覆盖表
 
@@ -290,7 +316,17 @@
 
 - `server/vclient-control.js` → `vclient.md`
 
-**验收结果：当前 74 个 `server/**` 文件全部有明确模块归属。**
+### 6.8 2026-10—11 新增服务端 20 项
+
+- 串流台：`server/streaming-console.js`、`streaming-http.js`、`streaming-sources.js`、`streaming-disk.js`、`streaming-tunnels.js`、`streaming-peers.js`、`streaming-buffer.js`、`streaming-covers.js` → `streaming-console.md`；
+- 独立系统备份：`server/data-backup.js` → `system-backup.md`；
+- 网盘保存幂等回执：`server/disk-task-save-receipts.js` → `telegram-drive.md`；
+- 下载文件命名：`server/download-file-name.js` → `download-transcode.md`；
+- Markdown 与 SNS/X：`server/markdown-records.js`、`sns-post-markdown.js`、`twitter-post-media.js`、`twitter-post-browser.js` → `transfer-cache.md`、`download-transcode.md`；
+- 进程、限流、设备权限：`server/process-diagnostics.js`、`request-rate-limit.js`、`tunnel-permissions.js` → `admin-security-deployment.md`、`tunnel-core.md`；
+- Web ZIP：`server/web-zip-credentials.js`、`web-zip-sync.js` → `web-workshop.md`。
+
+**验收结果：当前 94 个 `server/**` 文件全部有明确模块归属。**
 
 ## 7. 工具链覆盖
 
@@ -354,6 +390,7 @@
 - `history/2026-08.md`
 - `history/2026-09.md`
 - `history/2026-10.md`
+- `history/2026-11.md`
 
 其中 2026-06-07 时间线要求覆盖：
 
@@ -406,7 +443,8 @@
 
 - 完整 AWS S3 服务、分布式业务锁与真实公网端到端验收；
 - 旧 JSON 迁移与 public/private 来源调整已有工具，但正式环境需人工确认；
-- `prompts/ideas/streaming-console-QA-261016.md`、`prompts/ideas/streaming-console-phase1-guide-261019.md`、`prompts/ideas/streaming-console-phase2-guide-261019.md` 和相应原型属于规划资料，不是已合入的独立串流服务；
+- 串流台核心在本轮**已实现**；其原 261016—261019 规划、图片原型只有超出当前 `server/streaming-*.js`、`client/streaming-*.js` 的能力仍属于需求，不能再笼统标为未合入；
+- 2026-10 的全量强制 HTTPS、Cloudflare 迁移等讨论没有因方案文件进入仓库就成为现行网关策略；
 - `prompts/dev-prompt-logs/dev-2610.md` 等 Idea 须逐项与当前代码核实，不能整体判定。
 
 这些材料仍应保留为未来调研入口，但不能混进当前行为章节。
@@ -419,9 +457,9 @@
 - [x] 找到第一个代码版本；
 - [x] 固定当前最后一个非 Overview 项目 Commit；
 - [x] 主要历史阶段有时间线；
-- [x] 当前 26 个 Pages 有归属；
-- [x] 当前 64 个 Client 文件有归属；
-- [x] 当前 74 个 Server 文件有归属；
+- [x] 当前 30 个 Pages 有归属；
+- [x] 当前 101 个 Client 文件有归属；
+- [x] 当前 94 个 Server 文件有归属；
 - [x] 当前工具/VClient 有归属；
 - [x] 未来 Idea 与当前实现分离；
 - [x] Overview 后续增量扫描规则已明确；
@@ -430,4 +468,4 @@
 
 以上条件已经全部满足，**初始 Overview 创建阶段正式关闭**。
 
-当前已完成第四轮增量维护，下一轮源码比较锚点为 `99283320188a43a4234986f2eaa9d9d9374e2bd3`，维护规则以 [VERSION.md](./VERSION.md) 为准。
+当前已完成第五轮增量维护，下一轮源码比较锚点为 `71e58b07350a0ef3b480fa82272177863de74448`，维护规则以 [VERSION.md](./VERSION.md) 为准。
