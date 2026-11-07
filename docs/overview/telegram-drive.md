@@ -1,7 +1,7 @@
 # Telegram 虚拟网盘：身份、文件系统、上传、流媒体与管理
 
-> **源码基线 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
-> **文档更新时间**：`2026-11-01`
+> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
+> **文档更新时间**：`2026-11-07`
 > **重要现状**：网盘共享元数据已改用 node:sqlite 的磁盘 SQLite WAL（当前 schema 6）；S3 Compatible 子集、共享 Content Object、渐进上传、回收站、协同挂载等均已合入。S3 凭据、上传暂存、Telegram Chat 字典等仍有独立文件；不等于实现完整 AWS S3 或多实例分布式一致性。
 
 ## 1. 产品初衷
@@ -772,3 +772,12 @@ Content 在仍有引用、租约、历史已确认关联或可疑频道别名时
 旧版尚未提交或安全失败的浏览器待办可改走后端流读取，但先检查旧预约的执行结果，并额外固定一次 `serverTransferId`；旧上传仍在途/结果未知时不新建第二次写入。旧 pin 保留到确认完成/安全取消后再释放，解除 pin 失败只重试解除，不改为重复保存。源版本变化或服务端成品清理时直接报错，不擅自回退用浏览器旧缓存或重新抓取。
 
 对应 `server/disk-api.js`、`server/download-task-source.js`、`server/disk-pending-saves.js`、`client/disk-pending-save.js`、`client/disk-ui.js`；测试 `tests/features-261017-4.test.cjs`、`features-261019-2.test.cjs`、`features-261019-2-client.test.cjs`。这里是**浏览器内的管理入口触发服务器端文件流**，不是公开文件 URL 或完整通用 Server-to-Server API。
+
+## 32. 2026-10—11 网盘新行为与持久化回执
+
+- 多账号与位置选择：`client/disk-saved-location.js/.css` 记忆原生账号、分区、目录的保存目标，页面跳转及登录/切号只消费明确匹配的目标；协同 Mount、外国分区路径不能被误认作写入用户自己的原生分区。账号选择、Passkey/OIDC 成功回执与等待源任务的排序各有独立状态。
+- 已完成下载成品的后端转存增加 `server/disk-task-save-receipts.js` 持久完成回执/版本核验；跨网络中断或结果不明先查原操作和完成文件，**不可重新生成同一 Telegram 正文**。前台缓存 pin 和后端真实文件读取是不同来源，在身份及作用域明确前不解除 pin。
+- 目录协同、分享、静态公开与普通 Native Scope 的移动/改名预检继续检查**可见开放范围内的改动**：即使源和目标都在同一个开放范围，真实路径移动也可能需要明确确认。取消/未确认不应实际 PATCH；同名、原路径不变与跨账号 Copy 仍按各自幂等边界。
+- 网盘路径/文件跳转、来源定位、转发选择弹层和资源浏览器的历史导航在 10—11 月修复了滚动、关闭和迟到响应错位。网盘文件是否真的保存成功、是否能定位到目标，必须由原生索引与回执证明，不能因为 Snackbar 消失就默认成功。
+- 文件保存的 HTML ZIP 更新涉及特殊编辑权限：已转发的原记录不等于编辑者获得整个来源隧道权限；创建者专用凭据和异步镜像由 `server/web-zip-credentials.js`、`server/web-zip-sync.js` 单独核验，详情见 [web-workshop.md](./web-workshop.md)。
+- 串流台读取网盘资源通过独立受限 `server/streaming-disk.js` 适配器，读取时仍检查源对象/Content 版本和审核标记，不给节目观看者源账号的管理登录凭据；它不是改变网盘全部文件 API 的公共匿名读取授权。
