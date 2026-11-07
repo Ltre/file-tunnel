@@ -1,7 +1,7 @@
 # SNS / YouTube Premium、音轨修复与视频转码
 
-> **源码基线 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
-> **文档更新时间**：`2026-11-01`
+> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
+> **文档更新时间**：`2026-11-07`
 
 ## 子模块文档
 
@@ -558,3 +558,20 @@ SNS/YouTube 已完成任务的**历史浏览器转存方案**会验证并 pin �
 SNS 与 YouTube 页面改用 `DiskPendingSave.prepareServer`，只创建轻量待办；选择账号、原生分区、目录后由网盘 `POST /task-saves` 根据已完成的服务端任务定位同版本成品并读文件流，上传走既有 Telegram/Content 管线，**浏览器既不重新下载正文，也不执行文件 PUT**。服务端有管理员访问检查、任务完成/版本核验、上传并发上限与不确定结果恢复；旧浏览器待办保留预约并安全迁移。仅已完成且服务端成品仍存在的任务可使用；不能把旧本地缓存当成新源替代。
 
 最新相关开发记录 `docs/devlog/dev-2610-features.md` 261019-1/2；专项 `tests/features-261019-1.test.cjs`、`features-261019-2.test.cjs`、`features-261019-2-client.test.cjs`。历史 976/976 自动测试来自该开发阶段，非本轮重新执行；正式 Cookie、外部下载及 Telegram 网络仍待现场验收。
+
+## 23. SNS 帖子 Markdown、X 多媒体与下载表单（2026-10—11）
+
+### SNS 帖子生成 Markdown
+
+`server/sns-post-markdown.js` 与 `client/sns-post-markdown.js` 把支持来源的**帖子内容**生成隧道 Markdown 记录，建立发布进度和可读图片附件，**不是代用户向社交网站发帖**。读取有来源域名白名单、URL/DNS/私网地址/代理及 Cookie 的安全边界；生成的 Markdown 与媒体资源使用原隧道的消息 ACL 和资源引用，不能把未经校验的公网 URL 包装为可信本地文件。
+
+X/Twitter 的帖子正文、作者名称、用户名/头像、最多多张配图和视频信息经 `server/twitter-post-media.js` 整理；无头浏览器读取 `server/twitter-post-browser.js` 是**受限的末级回退**，使用短命独立配置，不接管用户登录浏览器，不允许绕过私网目标校验。HTTP/元数据“请求成功”不等于已取得当前帖子的**全部**图片和视频：真实缺失时应明确失败/限制而非用其它帖子配图填充。可见图片内容只能按明确授权生成隧道文件资产；重复发布、删除原附件和跨刷新消息恢复必须保留一致引用。
+
+### 下载表单、命名与进度
+
+- SNS 与 YouTube Premium 创建表单由 `client/download-form-tabs.js/.css` 维护多个独立草稿标签、切换、复制、备注及多选；已有视频格式勾选/手写 `-f` 优先级及任务状态不能因切换标签互相覆盖。表单草稿本机保存不代表后端已创建任务。
+- `server/download-file-name.js` 按平台、URL/用户、来源标题、截取范围和实际后缀形成安全文件名；特殊字符采用全角替换和长度界限。真实已保存输出名与 UI 展示名应一致，不能按“下载结束后重算另一个名字”来重命名已确认文件。
+- YouTube Premium 及 SNS 操作的转存/转发仍按前述服务端已完成版本验证、独立幂等回执和取消语义处理；发送中状态、读取进度与 Telegram 确认各是不同阶段。
+- 2026-11-05 起增加下载表单多标签和前后台多选交互，11-06 修正列表/文件名/缓存缺失提示及初始消息的异常分支。已存在的原生 Node `yt-dlp` 路线没有因为这个 UI 模块变成网页视频转码器。
+
+相关测试：`tests/sns-post-261027-1.test.cjs`、`sns-images-261102-2.test.cjs`、`sns-author-261103-2.test.cjs`、`twitter-browser-261103.test.cjs`、`download-file-name-261105.test.cjs`、`download-form-tabs-261105.browser.cjs` 等。原始 X 站点与公开媒体 URL 行为不断变化，孤立样本不能被视为所有帖子的确定保证。
