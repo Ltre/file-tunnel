@@ -1,7 +1,7 @@
 # 管理后台、安全边界与部署
 
-> **源码基线 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
-> **文档更新时间**：`2026-11-01`
+> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
+> **文档更新时间**：`2026-11-07`
 
 ## 1. 管理后台定位
 
@@ -454,3 +454,12 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 - 隧道短码轮换引入私有 `.tunnel-access-legacy` 证明账本，结合 `.tunnel-access.key` 与 `.tunnel-access-members` 备份；允许已知历史成员在轮换前已记录证明的前提下升级。QR `/api/tunnel-join-links` 必须由有效成员生成，用途/隧道/当前短码绑定签名，**不得把二维码参数等同于管理员 grant**。
 - 服务端 SNS/YouTube 成品转网盘时分别校验**后台管理员能否读取源任务**和**网盘登录用户能否写入目标**；`server/download-task-source.js` 将服务端源路径限制为已完成任务的真实文件，不接收客户端伪造绝对路径，原生 `/task-saves` 不允许挂载/协同/外部 App。日志、响应不暴露原服务器文件系统路径，未知写入不能重传。
 - `AGENTS.md` 新增仓库级协作约定，包含保护现有改动、授权与幂等、数据安全和增量维护规则。它不代表新的业务 API；与 Overview 的源代码基线规则分别维护。
+
+## 24. 后台控制台、设备权限、日志和反代限流（2026-10—11）
+
+- 管理后台现在包括 `/admin/tunnels`、`/admin-tunnel-permissions`、设备/磁链、存储总览、浏览器日志、系统备份及原有运营入口。前台 `client/admin-overview.js/.css`、`admin-tunnel-permissions.js`、`browser-logs.js/.css` 分离业务，服务端 `server/tunnel-permissions.js` 和现有 Admin Auth 逐次核验身份。选中设备并不赋予会话成员身份。
+- 基础数据后台使用 `infra.sqlite`，不能与 `disk.sqlite`、`media-library.sqlite` 或 `streaming-console.json` 混为一个库；系统备份是独立管理员操作，具体 FULL/CORE、WAL、分段清单、失败/恢复规则见 [system-backup.md](./system-backup.md)。
+- `server/request-rate-limit.js` 对限流 Key 单独识别请求链：仅在可信 Cloudflare 地址来源下考虑受限 `CF-Connecting-IP` 等头部，禁止任意客户端伪造代理 IP。不能为了限流而全局开启不受限 `trust proxy`，否则 Origin、协议和访问控制都可能被改变。
+- `server/process-diagnostics.js` 记录启动、退出/信号、异常类型和资源量、过滤敏感错误文本；这提供排查依据，不能代替系统内存/进程转储。管理员私钥、网盘授权与串流设备凭据应继续保持最小权限和独立生命周期。
+- 当前 `nginx/file-tunnel.conf` 的代理/HTTP/HTTPS 配置应按现有代码和真正前置代理链核对。2026-10-27 的“禁止无 TLS”资料是**分析与计划，未据此宣布已部署强制 TLS 网关拒绝规则**；不要把最后一跳 HTTP 与访客侧明文访问直接等同。
+- 系统备份、串流、主题和 Markdown 新增脚本/静态资源需进入相应构建/verify 路径；管理员专用代码不应机械塞入前台离线 PWA 资源缓存。
