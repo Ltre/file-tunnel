@@ -1,7 +1,7 @@
 # Telegram Bot、中转、指定目标转发与内容管理
 
-> **源码基线 Commit**：`10ebe1000b9bd57097f90e51337a251ba17734f3`  
-> **文档更新时间**：`2026-10-17`
+> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
+> **文档更新时间**：`2026-11-07`
 
 ## 1. 模块定位
 
@@ -338,3 +338,11 @@ SNS/YouTube 成品的 Telegram 转发在有合法“音轨修正版”时可明�
 主动取消通过持久 `cancelRequested` 标志、跨进程原子合并与 AbortSignal 尽早停止后续目标。对已确认消息尝试 `deleteMessage`，逐条记下撤回结果，远端结果未知或缺少可靠 Message ID 的条目明确标作不确定，不猜测编号或发第二遍。撤回必须用原 Bot 身份指纹及可用的原 Token 配置；更换 Bot 后不冒用其身份撤回。未知结果恢复只进行可安全确认的撤回，不继续发送已取消正文。
 
 媒体成品的原版/音轨修正版仍由明确的版本选择控制，不能把“取消”或“转发结果查询”当成修改来源文件本身。对应 `client/telegram-target-forward.js/.css`、后台转发持久化模块及 261014-2、261014-3、261016-1 回归记录。所有撤回是否实际成功仍取决于 Telegram 权限、时间限制和网络反馈。
+
+## 19. 2026-10—11：Markdown 帖子与跨模块 Telegram 边界
+
+SNS/X 等外部帖子转成隧道 Markdown 后，图片/视频由原隧道的资产权限、引用及 Telegram 可选恢复链路决定，不得自动取得网盘 S3 公共桶读写资格。帖子解析器可能使用受限 HTTP/代理或末级无头浏览器探测媒体，但“抓到预览图”不代表已经得到完整正文、全部媒体或一个可以无限时复用的 Telegram `file_id`。
+
+独立串流台从 Telegram 网盘引用媒体时，读取仍由受限 `server/streaming-disk.js` 经当前网盘用户及 Content/Range 权限检查；串流观看者不能拿到 Bot Secret 或读取未开放的网盘目录。原 Telegram 指定目标多发、取消/撤回和限流任务状态机仍独立于串流台的节目邀请/观看。
+
+后续扩展 SNS 解析或 Telegram 资源导入时应分别检查 `server/sns-post-markdown.js`、`server/twitter-post-media.js`、`server/streaming-sources.js`、`server/telegram-drive.js`，避免把网络可达、媒体解析和实际可授权文件来源混为一谈。
