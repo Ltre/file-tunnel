@@ -406,3 +406,19 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 以上回归文件均位于 `tests/`，完整开发记录在 `docs/devlog/dev-2610-features.md` 261017-3 至 261019-2。仓库根目录新增 `AGENTS.md`，属于协作约定而非新增业务端点。
 
 **范围界限**：`prompts/ideas/streaming-console-phase1-guide-261019.md`、`streaming-console-phase2-guide-261019.md`、`streaming-console-QA-261016.md` 及相应 UI 原型属于当前分支**已存的规划材料**；在没有对应已合入的功能代码前，不把串流台 Phase 1/2 记为已实现。
+
+## 18. 2026-10-20—11-06 当前源码新增导航
+
+| 已合入能力 | 最新代码入口 | 主要证据 |
+|---|---|---|
+| 串流节目身份、播放时钟、邀请、订阅、封面 | `server/streaming-console.js`、`streaming-http.js`、`streaming-covers.js`、`client/streaming-console.js/.css`、`streaming-player.js` | [streaming-console.md](./streaming-console.md)、`tests/streaming-console*.test.cjs`、`docs/devlog/dev-2610-streaming-console.md` |
+| 串流网盘/隧道/本机媒体与 Range | `server/streaming-sources.js`、`streaming-disk.js`、`streaming-tunnels.js`、`streaming-peers.js`、`streaming-buffer.js`；`client/streaming-peers.js`、`streaming-cache.js`、`streaming-app-adapter.js` | `tests/streaming-*.test.cjs`、`streaming-*.browser.cjs` |
+| 系统数据 FULL/CORE 备份 | `server/data-backup.js`、`client/data-backup.js/.css`、`data-backup-i18n.js`、`pages/system-backup.html` | [system-backup.md](./system-backup.md)、`tests/data-backup-261027*.test.cjs` |
+| UI 主题、路由/宽屏与公共扫码 | `client/themes.css`、`themes-legacy.css`、`themes-blamen.css`、`themes-lusns.css`、`theme-preference.js`、`tunnel-entry.js/.css`、`tunnel-landing.css`、`tunnel-code-scanner.js`、`pages/tunnel-entry.html` | [pwa-ui/themes.md](./pwa-ui/themes.md)、`docs/devlog/dev-2610-UI261026.md`、`tests/theme*.browser.cjs` |
+| 管理员隧道/设备权限与日志 | `server/tunnel-permissions.js`、`process-diagnostics.js`、`request-rate-limit.js`、`client/admin-overview.js/.css`、`admin-tunnel-permissions.js`、`browser-logs.js/.css`、`pages/admin-tunnels.html`、`admin-tunnel-permissions.html` | [admin-security-deployment.md](./admin-security-deployment.md)、`tests/tunnel-permissions-261103.test.cjs` |
+| 隧道 Markdown 版本与 SNS 图文 | `server/markdown-records.js`、`sns-post-markdown.js`、`twitter-post-media.js`、`twitter-post-browser.js`；`client/tunnel-markdown.js`、`sns-post-markdown.js`、`sns-post-i18n.js` | [transfer-cache.md](./transfer-cache.md)、[download-transcode.md](./download-transcode.md) |
+| 网盘保存位置/幂等回执 | `server/disk-task-save-receipts.js`、`client/disk-saved-location.js/.css`、`disk-pending-save.js`、`server/disk-pending-saves.js` | [telegram-drive.md](./telegram-drive.md) |
+| 网页创建者编辑凭据与延后同步 | `server/web-zip-credentials.js`、`web-zip-sync.js`、`client/web-workshop.js` | [web-workshop.md](./web-workshop.md)、`tests/web-zip-*-261106-*.test.cjs` |
+| SNS 下载草稿与文件名 | `client/download-form-tabs.js/.css`、`server/download-file-name.js`、`pages/sns-dl.html`、`youtube-premium-dl.html` | [download-transcode.md](./download-transcode.md) |
+
+补充资料：`docs/devlog/dev-2610-streaming-console.md`、`docs/devlog/dev-2610-UI261026.md`、`docs/devlog/dev-2611.md`；2026-10-27 的禁止 TLS 方案、部分外部产品计划和用户尚未执行的后续事项仍不得从 Prompt 当作已合入实现。**不读取其它分支来替换此分支的代码事实。**
