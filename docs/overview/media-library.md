@@ -1,7 +1,7 @@
 # 视频画面提取与多媒体收藏
 
-> **源码基线 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
-> **文档更新时间**：`2026-11-01`
+> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
+> **文档更新时间**：`2026-11-07`
 > 专项使用说明：[docs/media-library.md](../media-library.md)；实现与验收演进：`docs/devlog/dev-2610-features.md` 261013-1 至 261017-2。
 
 ## 1. 定位与边界
@@ -87,3 +87,9 @@ Clip 与压缩文件使用统一命名辅助 `server/media-library/clip-name.js`
 ### 7.4 回归与实际限制
 
 相关新增测试：`tests/features-261017-3.test.cjs`、`features-261017-4.test.cjs`、`features-261018-1.test.cjs`，并扩展 `tests/media-library-api.test.cjs`、`tests/media-library-ui-261013-2.test.cjs`。本轮只同步文档；原视频、真实网盘授权、移动端触摸行为仍待用户现场确认。
+
+## 8. 串流台引用和缓存分界（2026-10—11）
+
+`/media-library` 的工作缓存、正式 Clip/截图与 Telegram 网盘授权继续由自己的 `media-library.sqlite` 和 `server/media-library/*` 管理。新增串流控制台可以引用可验证媒体文件来源并在观看时获取临时媒体票据，但**不会因节目被创建/订阅而自动把媒体库候选提升为正式收藏，也不会凭观看票据改写媒体库数据库**。
+
+在 2026-10—11 的补丁中，来源状态发生变化、缓存预读、视频全屏及已保存截图/Clip 再次播放均需按当时的工作区/网盘 Content 权限确认；部分开发记录仅提供合成浏览器测试而非真实 Telegram 或用户原视频素材验证。串流台行为详见 [streaming-console.md](./streaming-console.md)。
