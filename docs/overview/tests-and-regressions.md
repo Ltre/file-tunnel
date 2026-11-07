@@ -1,7 +1,7 @@
 # 测试体系、人工验收与历史回归索引
 
-> **源码基线 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
-> **文档更新时间**：`2026-11-01`
+> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
+> **文档更新时间**：`2026-11-07`
 
 ## 1. 为什么本项目尤其依赖回归资料
 
@@ -436,3 +436,19 @@ AI 后续做 bisect/调研时，应把 commit title 中的这些自然语言作�
 完整原始测试文件还包括 `tests/support/features-261017-3-browser-fixture.cjs`、`features-261018-1-browser-fixture.cjs`、`features-261019-1-browser-fixture.cjs`、`features-261019-2-browser-fixture.cjs`。新增 `tests/support/listen-http.cjs` 帮助隔离 HTTP 测试避开禁用端口等环境因素。
 
 开发记录依次报告全量 942/942（261017-3）、952/952（261017-4）、955/955（261018-1）、963/963（261019-1）、**976/976（261019-2）**。中间还记录了临时服务关闭、Node fetch 禁用端口、隔离媒体探测异常等测试环境失败与修正，不应抹成“从未失败”；最终数字**不是本次 Overview 文档维护重新执行的测试**。
+
+## 18. 2026-10-20—11-06 新增测试与现场边界
+
+| 子系统 | 已合入的测试入口（举例） | 核验重点 |
+|---|---|---|
+| 串流台服务/来源/观看 | `tests/streaming-console*.test.cjs`、`streaming-source-261030-2.test.cjs`、`streaming-cache-flow-261030.browser.cjs`、`streaming-fullscreen-261101.browser.cjs` | 票据与授权版本、来源范围、NDJSON 保存、Range、短缓存、观看时钟、网络中断、全屏点击与小窗 |
+| 串流管理/海报/发现 | `streaming-invitation-images-261101.test.cjs`、`streaming-management-261106-3.browser.cjs`、`streaming-cover-261029-2.test.cjs` | 可见性、撤权、邀请海报、媒体来源未被提升授权、定位及批量操作 |
+| 主题与启动 | `tests/themes-261028-2.test.cjs`、`theme-offline-261028.browser.cjs`、`theme-blamen-lusns.browser.cjs`、`route-261106-3.browser.cjs` | 七主题、CSS 断点、首帧不闪、共用扫码、旧 PWA 离线缓存 |
+| 备份/后台/进程 | `data-backup-261027.test.cjs`、`data-backup-review-261027.test.cjs`、`process-diagnostics-261101-4.test.cjs`、`proxy-rate-limit-261101-3.test.cjs` | FULL/CORE、WAL、分段失败/重试、管理员权限、可信代理 IP、脱敏日志 |
+| Markdown/SNS/X | `sns-post-261027-1.test.cjs`、`sns-images-261102-2.test.cjs`、`twitter-browser-261103.test.cjs`、`history-scope-261102-2.test.cjs`、`markdown-images-261103-1.browser.cjs` | 来源媒体完整性、私网/代理拦截、Markdown 附件身份、跨隧道历史隔离 |
+| 网盘/网页/转存 | `disk-receipt-recovery-261029-1.test.cjs`、`disk-exposure-move-261028-3.test.cjs`、`web-zip-credentials-261106-3.test.cjs`、`web-zip-sync-261106-2.test.cjs` | 完成回执、目标身份、移动确认、原创建者、旧授权撤销、延后同步重启 |
+| 首页历史与下载 | `history-multiselect-261105-4.browser.cjs`、`text-record-edit-261105.test.cjs`、`download-form-tabs-261105.browser.cjs`、`download-file-name-261105.test.cjs` | 多选、文本冲突、下载多标签草稿与安全文件名 |
+
+开发日志分别记录各阶段专项与隔离浏览器结果，且明确写有某些**首次复现失败→修复通过**、并存的旧基线失败和人工验收例外。不得把多阶段数量相加称为“一次全量通过”，也不能从局部 `127/127` 推断全部仓库测试均已重新执行。本轮只是文档维护，**没有运行 Node、Playwright、真实 Telegram 或移动端测试**。
+
+高风险未完成验收：真正的跨机器局域网 VPN/PAC 下 WebRTC 选路、两小时跨境观看、原 Windows 进程退出原因、真实 SNS/X 资源变化、系统备份恢复、用户正式数据迁移及 Android 扫码/键盘。
