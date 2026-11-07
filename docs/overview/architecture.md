@@ -1,7 +1,7 @@
 # 系统架构、运行边界与数据所有权
 
-> **源码基线 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
-> **文档更新时间**：`2026-11-01`
+> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
+> **文档更新时间**：`2026-11-07`
 > 本文按当前合入实现区分隧道基础审计的 sql.js、网盘元数据的原生 SQLite WAL、独立 S3 凭据和 Telegram 外部消息。不得把已有 SQLite/S3 仍写作计划，也不得把有限兼容与多实例安全夸大成完全实现。
 
 ## 1. 整体定位
@@ -382,3 +382,19 @@ P2P 历史回归极多，尤其涉及：
 与后端转存不同，浏览器发起的渐进上传尚未 finish 交接前有每 30 秒心跳和源活动时间。5 分钟无源活动，由约每分钟运行的检查器标记 `UPLOAD_SOURCE_INTERRUPTED`，中断源等待；只查看 SSE/任务进度不续期。已完成源端交接后，服务器仍可独立处理 Telegram 最终提交，不因浏览器离线自动失败。
 
 当前架构还有独立 `media-library.sqlite`、`disk.sqlite` 和 `infra.sqlite`；这次新增服务端转存并未合并它们，也未将 S3 Gateway 改成通用后端下载入口。关联说明见 [telegram-drive.md](./telegram-drive.md) §31 与 [tunnel-core.md](./tunnel-core.md) §16。
+
+## 12. 2026-10—11 新增串流、系统备份、主题与 Markdown 数据边界
+
+### 串流台不持有媒体正文
+
+当前 `server/streaming-console.js` 将节目/设备/订阅/邀请/观看编排写入 `.tunnel-data/streaming-console.json`；`server/streaming-http.js` 提供 `/api/streaming`，`streaming-disk.js`、`streaming-tunnels.js`、`streaming-sources.js`、`streaming-peers.js` 分别负责来源访问、授权、范围读取与局域网机会式供源。节目状态由服务端时钟推进；视频物理数据保留在原网盘、隧道供源或本机浏览器，**串流节目保存不增加永久媒体副本**。本机/短时 Range 缓冲在 `server/streaming-buffer.js` 和 `client/streaming-cache.js`，与普通文件 `FileAssetTransfer`、网盘 Content 生命周期不同。
+
+### 系统备份与不同数据库
+
+`server/data-backup.js` 的 FULL/CORE 文件快照/清单写入管理者指定网盘目录。其责任是分范围、读取在线 SQLite 备份及普通文件、校验 SHA-256、分段对象和幂等重试，**不是所有数据库/文件的全球一致时刻，也没有实现一键恢复**。真实恢复需参考 `docs/overview/system-backup.md` 并先停止相应写入。
+
+新增 `server/markdown-records.js` 属于**隧道消息历史版本**与 ACL；`server/sns-post-markdown.js` 是**SNS 帖子转成隧道 Markdown 消息**，`server/web-zip-sync.js` / `web-zip-credentials.js` 是**已转发网页的编辑身份与延后源记录更新**。三者可引用同一文件资产但职责不同，不应形成“新 Markdown 正文覆盖旧 HTML ZIP”一条隐式写入通道。
+
+### 管理与客户端边界
+
+`server/tunnel-permissions.js` 通过管理员/设备选择编辑既有隧道权限，不创建新的会话成员；`server/request-rate-limit.js` 只调整可信代理链的限流身份 Key；`server/process-diagnostics.js` 负责进程信号与脱敏日志，不能作为远端完整回放。七主题由 `client/theme-preference.js`、`themes*.css` 与首页/轻量路由共用，浏览器缓存和 CSS 断点不改变任何后台鉴权。详见 [串流台](./streaming-console.md)、[主题](./pwa-ui/themes.md)、[系统备份](./system-backup.md)。
