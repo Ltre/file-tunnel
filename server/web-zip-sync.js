@@ -62,7 +62,7 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
         if(jobs.get(job.key)!==job||publishing.has(job))return;
         const message=readRecord(job.sessionId,job.messageId),file=files(message).find(value=>value.id===job.file.id);
         if(!file){jobs.delete(job.key);await persist();return;}
-        if(!canSync(job.deviceId,job.origin.sessionId))return;
+        if(!canSync(job.deviceId,job.origin.sessionId,job.sessionId))return;
         if(!canEdit(file,job.deviceId)||!canPublish(job.sessionId,job.deviceId))return mark(job,'WEB_ZIP_EDIT_DENIED');
         const original=readRecord(job.origin.sessionId,job.origin.messageId);
         if(!original)return mark(job,'WEB_ZIP_SOURCE_MISSING');
@@ -80,7 +80,7 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
                 webZipRevision:revision(job.file),backupSourceSessionId:job.sessionId,forwardedToSessionId:job.origin.sessionId};
             await writeRecord(job.origin.sessionId,original,replaceFile(original,current.id,next),{
                 source:'cross-tunnel-forward',copyFromSessionId:job.sessionId,
-                check:()=>jobs.get(job.key)===job&&canSync(job.deviceId,job.origin.sessionId)&&canPublish(job.sessionId,job.deviceId)&&canEdit(files(readRecord(job.sessionId,job.messageId)).find(value=>value.id===job.file.id),job.deviceId)
+                check:()=>jobs.get(job.key)===job&&canSync(job.deviceId,job.origin.sessionId,job.sessionId)&&canPublish(job.sessionId,job.deviceId)&&canEdit(files(readRecord(job.sessionId,job.messageId)).find(value=>value.id===job.file.id),job.deviceId)
             });
         }
         await finish(job);

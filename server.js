@@ -9360,19 +9360,39 @@ function writeWebZipRecord(sessionId, previous, next, options = {}) {
     });
 }
 
-function canSyncWebZipSource(deviceId, sourceSessionId) {
+function canSyncWebZipSource(deviceId, sourceSessionId, editingSessionId) {
     const source = sessions.get(sourceSessionId);
     const online = id => { const member = source?.devices?.get(id), peer = io.sockets.sockets.get(member?.socketId); return Boolean(peer?.connected && peer.data?.deviceId === id && canUseTunnelCapability(source,id,'read')); };
-    if (online(deviceId)) return true;
-    const visible = new Set(getNearbyCandidates(deviceId).map(value => value.deviceId));
-    for (const session of sessions.values()) {
-        const member = session.devices.get(deviceId), peer = io.sockets.sockets.get(member?.socketId);
-        if (peer?.connected && peer.data?.deviceId === deviceId && canUseTunnelCapability(session,deviceId,'read')) for (const [id, other] of session.devices) {
-            const socket = io.sockets.sockets.get(other.socketId);
-            if (socket?.connected && socket.data?.deviceId === id) visible.add(id);
+    // A browser can hold a different identity in each tunnel. Only proofs
+    // verified on that live socket connect those identities for visibility;
+    // they do not merge roles, editing permissions or tunnel memberships.
+    const actors = new Set([deviceId]);
+    if (editingSessionId) for (const peer of io.sockets.sockets.values()) {
+        if (peer.connected && peer.data?.webZipSyncIdentities?.get(editingSessionId) === deviceId) actors.add(peer.data.deviceId);
+    }
+    if ([...actors].some(online)) return true;
+    const visible = new Set(), nearby = new Set(), visibleMembers = new Map();
+    for (const actor of actors) {
+        for (const value of getNearbyCandidates(actor)) { visible.add(value.deviceId); nearby.add(value.deviceId); }
+        for (const [sessionId, session] of sessions) {
+            const member = session.devices.get(actor), peer = io.sockets.sockets.get(member?.socketId);
+            if (!peer?.connected || peer.data?.deviceId !== actor || !canUseTunnelCapability(session,actor,'read')) continue;
+            const members = visibleMembers.get(sessionId) || new Set();
+            for (const [id, other] of session.devices) {
+                const socket = io.sockets.sockets.get(other.socketId);
+                if (socket?.connected && socket.data?.deviceId === id) { visible.add(id); members.add(id); }
+            }
+            visibleMembers.set(sessionId,members);
         }
     }
-    return [...visible].some(id => online(id));
+    for (const [id, member] of source?.devices || []) {
+        if (!online(id)) continue;
+        if (visible.has(id)) return true;
+        const identities = io.sockets.sockets.get(member.socketId)?.data?.webZipSyncIdentities;
+        if (identities && [...identities.values()].some(identity => nearby.has(identity))) return true;
+        for (const [sessionId,members] of visibleMembers) if (members.has(identities?.get(sessionId))) return true;
+    }
+    return false;
 }
 
 const webZipSync = require('./server/web-zip-sync').createWebZipSync({
@@ -9415,7 +9435,11 @@ io.on('connection', (socket) => {
         if (['file-asset-request','file-asset-discovery'].includes(event) && data?.sourceSessionId && data.sourceSessionId !== currentSession && !trustedInternalClient) {
             const fileId = data.assetId || data.fileId;
             const forwarded = canReadForwardedFile(currentSession, currentDevice, data.sourceSessionId, fileId);
-            if (!forwarded && !tunnelAccess.verify(data.sourceAccessGrant, data.sourceSessionId, currentDevice)) return emitSocketError('permission-denied','来源隧道尚未获得访问权');
+            // Tunnel grants bind the identity saved for that tunnel, which can
+            // differ from the active receiver's identity. The signed grant is
+            // still required; a claimed source device ID alone grants nothing.
+            const sourceDeviceId = data.sourceDeviceId || currentDevice;
+            if (!forwarded && !tunnelAccess.verify(data.sourceAccessGrant, data.sourceSessionId, sourceDeviceId)) return emitSocketError('permission-denied','来源隧道尚未获得访问权');
             // A forwarded record grants this file, independently of volatile
             // provider announcements. Prefer caches already in the destination.
             if (forwarded && sessions.get(currentSession)?.fileAssets?.get(fileId)?.providers?.size) data.sourceSessionId = currentSession;
@@ -10135,6 +10159,8 @@ io.on('connection', (socket) => {
     socket.on('register-session-codes', data => {
         try {
             const entries = Array.isArray(data?.entries) ? data.entries.slice(0, 200) : [];
+            const identities = new Map();
+            socket.data.webZipSyncIdentities = identities;
             let acceptedCount = 0;
             let rejectedCount = 0;
             for (const entry of entries) {
@@ -10158,8 +10184,10 @@ io.on('connection', (socket) => {
                 if (session && !session.shortCode) {
                     session.shortCode = shortCode;
                 }
+                identities.set(sessionId,entry.deviceId||data?.deviceId||currentDevice||profileDevice);
                 acceptedCount++;
             }
+            if (acceptedCount) webZipSync.topologyChanged();
             historyLog('session-codes-registered', {
                 sessionId: currentSession,
                 deviceId: currentDevice,

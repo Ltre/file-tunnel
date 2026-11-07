@@ -2,7 +2,7 @@
     'use strict';
     const $ = id => document.getElementById(id), apiRoot = '/api/system-backup';
     let visibleHistoryCount = 2;
-    let state = null, mode = '', path = '', loading = false, selectionVersion = 0, polling = null, actionCount = 0;
+    let state = null, mode = '', path = '', loading = null, refreshVersion = 0, selectionVersion = 0, polling = null, actionCount = 0;
     const t = (source, ...values) => (window.TunnelI18n?.t(source) || source).replace(/\{(\d+)\}/g, (_all, index) => String(values[Number(index)] ?? ''));
     const labels = { snapshotting: '正在创建快照', uploading: '正在保存到网盘', cancelling: '正在取消', cancelled: '已取消', failed: '失败，可重试', interrupted: '进程中断，可重试', completed: '备份完成', discarded: '已释放本机快照' };
     const text = (tag, value, className = '') => { const element = document.createElement(tag); element.textContent = value; if (className) element.className = className; return element; };
@@ -45,12 +45,30 @@
             if (actions.dataset.signature === signature || actionCount) continue; actions.dataset.signature = signature; actions.replaceChildren();
             if (state.active === job.id) actions.append(action('取消备份', async () => { await api(`/jobs/${job.id}/cancel`, { method: 'POST' }); await refresh(); }));
             if (['failed', 'interrupted', 'cancelled'].includes(job.status)) {
-                actions.append(action('重试', async () => { await api(`/jobs/${job.id}/retry`, { method: 'POST' }); await refresh(); }));
+                actions.append(action('重试', async () => {
+                    notice(t('正在请求继续备份…'));
+                    const resumed = await api(`/jobs/${job.id}/retry`, { method: 'POST' });
+                    // Invalidate an older in-flight poll before displaying the
+                    // accepted job. It must not restore the old failed card.
+                    refreshVersion++;
+                    state.jobs = state.jobs.map(item => item.id === resumed.id ? resumed : item); state.active = resumed.id;
+                    render(); notice(t('重试已接受，备份正在服务端继续。关闭本页不会停止任务。'));
+                    await refresh(true);
+                }));
                 actions.append(action('释放本机快照', async () => { if (!confirm(t('释放后不能继续这次备份，网盘中已保存的文件会保留。确定释放？'))) return; await api(`/jobs/${job.id}/discard`, { method: 'POST' }); await refresh(); }));
             }
         }
     }
-    async function refresh() { if (loading) return; loading = true; try { state = await api('/state'); render(); for (const button of document.querySelectorAll('[data-config]')) button.disabled = false; } catch (error) { notice(t('读取备份状态失败：{0}', error.message)); } finally { loading = false; } }
+    async function refresh(force = false) {
+        if (loading && !force) return loading;
+        const version = ++refreshVersion;
+        const task = (async () => {
+            try { const next = await api('/state'); if (version !== refreshVersion) return; state = next; render(); for (const button of document.querySelectorAll('[data-config]')) button.disabled = false; }
+            catch (error) { if (version === refreshVersion) notice(t('读取备份状态失败：{0}', error.message)); }
+        })();
+        loading = task;
+        try { await task; } finally { if (loading === task) loading = null; }
+    }
     async function directories(resetPartition = false) {
         const version = ++selectionVersion; $('sb-save').disabled = true; $('sb-directory-status').textContent = t('正在加载分区与目录…'); $('sb-directories').replaceChildren();
         const params = new URLSearchParams({ userId: $('sb-user').value, path }); if (!resetPartition && $('sb-partition').value) params.set('partitionId', $('sb-partition').value);

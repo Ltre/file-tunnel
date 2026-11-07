@@ -180,7 +180,7 @@ function createDataBackup({ dataDir, storage, beforeSnapshot = () => {}, now = D
         const target = await validateTarget(job.target);
         const fullKey = join(job.folder, key); objectKey(fullKey);
         const existing = await storage.stat(target, fullKey);
-        if (existing && existing.size === size && existing.file?.metadata?.backupSha256 === sha256) { input.destroy?.(); return existing; }
+        if (existing && existing.size === size && existing.file?.id && existing.file?.metadata?.backupSha256 === sha256) { input.destroy?.(); return existing; }
         if (existing) { input.destroy?.(); fail('BACKUP_TARGET_CONTENT_CONFLICT'); }
         const result = await storage.put(target, fullKey, input, { size, contentType: 'application/octet-stream', expectedSha256: sha256,
             metadata: { systemBackupId: job.id, backupSha256: sha256, originalPath: fileName }, signal,
@@ -207,6 +207,19 @@ function createDataBackup({ dataDir, storage, beforeSnapshot = () => {}, now = D
             }
             file.done = true; await changed(job);
         }
+        // Recheck the entire remote index before publishing the completion
+        // manifest, including segments confirmed before an interruption.
+        job.stage = 'verify';
+        for (const file of job.files) {
+            cancelled(signal); job.currentFile = file.name;
+            for (const segment of file.segments) {
+                const saved = await storage.stat(target, join(job.folder, segment.key));
+                if (!saved?.file?.id || saved.file.id !== segment.fileId || saved.size !== segment.size || saved.file.metadata?.backupSha256 !== segment.sha256) {
+                    segment.done = false; file.done = false; await changed(job);
+                    fail('BACKUP_VERIFY_FAILED · ' + file.name);
+                }
+            }
+        }
         const manifest = { format: 'drop2tunnel-system-backup', version: 1, id: job.id, mode: job.mode, createdAt: job.createdAt,
             target: job.target, folder: job.folder, consistency: 'online-per-file', snapshotStartedAt: job.snapshotStartedAt,
             snapshotCompletedAt: job.snapshotCompletedAt, status: 'completed', note: 'Each SQLite database is an online backup including committed WAL; WAL/SHM sidecars are not restored. Ordinary files are stable copies. Different files/databases are not one global transaction. Stop application writers before restoring. Concatenate split segments in start order and verify SHA-256. The disk.sqlite snapshot predates this backup upload and cannot index its newly saved files; obtain backup contents using the target account/partition/path and this manifest, not by restoring the old index alone.',
@@ -224,6 +237,9 @@ function createDataBackup({ dataDir, storage, beforeSnapshot = () => {}, now = D
         await fsp.rm(resolved, { recursive: true, force: true }); job.staging = ''; await changed(job);
     }
     function launch(job) {
+        job.status = job.snapshotCompletedAt ? 'uploading' : 'snapshotting';
+        job.stage = job.snapshotCompletedAt ? 'upload' : 'snapshot';
+        job.error = ''; job.currentProgress = null;
         const controller = new AbortController();
         const work = { job, controller, promise: null }; running = work;
         work.promise = Promise.resolve().then(async () => {

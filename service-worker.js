@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v131-content-v8-route-web-zip-261106-fuck';
+const CACHE_NAME = 'instant-tunnel-v132-content-v8-control-center-backup-261107-1';
 const APP_SHELL = [
     '/',
     '/index.html',

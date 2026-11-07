@@ -1001,7 +1001,7 @@ async function saveToStore(storeName, data) {
     if (storeName === 'sessions' && state.isExitingTunnel && data?.sessionId === state.sessionId) return;
     if (storeName === 'sessions' && data?.sessionId) updateSessionDirectoryCache(data);
     if (storeName === 'files' && data?.id && !Object.hasOwn(data, 'data') && data.cacheCleared !== true) {
-        const existing = await getFromStore('files', data.id).catch(() => null);
+        const existing = await getFromStore('files', data.id);
         if (hasCompleteFileCache(existing, data)) {
             data = {
                 ...data,
@@ -2947,14 +2947,13 @@ function announceEditorAsset(asset) {
 }
 
 async function announceStoredEditorAssets() {
+    const sessionId = state.sessionId;
     try {
-        let files = [];
-        if (typeof IDBKeyRange !== 'undefined') {
-            files = await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId));
-        } else {
-            files = (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
-        }
-        files.filter(file => file.isEditorAsset && file.data).forEach(announceEditorAsset);
+        // Presence only needs metadata. Reading every cached video here can
+        // materialize gigabytes of ArrayBuffers just to find editor images.
+        const files = await getCurrentSessionFileInventory();
+        if (state.sessionId !== sessionId) return;
+        files.filter(file => file.isEditorAsset && hasCompleteFileInventoryCache(file, file)).forEach(announceEditorAsset);
     } catch (err) {
         console.error('Failed to announce editor assets:', err);
         historyLog('editor-asset-announce-failed', { error: err.message });
@@ -3495,6 +3494,7 @@ function initFileAssetTransfer() {
     fileAssetTransfer = new window.FileAssetTransfer({
         getSocket: () => state.socket,
         getSessionId: () => state.sessionId,
+        getTunnelAuthorization: tunnelAuthorization,
         getPeer: deviceId => state.peers.get(deviceId),
         connectPeer: connectToPeerForFileAsset,
         ensurePeerOffer: ensurePeerOfferForFileAsset,
@@ -14274,8 +14274,8 @@ async function findReferencedFileIds(fileIds, excludingMessageId = null) {
     const referenced = new Set();
     if (!targets.size) return referenced;
     const [messages, editorContent] = await Promise.all([
-        getAllFromStore('messages').catch(() => []),
-        getFromStore('editorContent', 'current').catch(() => null)
+        getAllFromStore('messages'),
+        getFromStore('editorContent', 'current')
     ]);
     const markContentReferences = content => {
         const contentIds = new Set([...extractAssetIds(content), ...extractFileRefIds(content)]);
@@ -14315,7 +14315,7 @@ function extractFileRefIds(content) {
 
 async function isFileReferencedOutsideSession(fileId, currentSessionId) {
     if (!fileId) return false;
-    const messages = await getAllFromStore('messages').catch(() => []);
+    const messages = await getAllFromStore('messages');
     return messages.some(message => {
         if (!message || message.sessionId === currentSessionId) return false;
         if (message.fileInfo?.id === fileId) return true;
@@ -14328,9 +14328,7 @@ async function isFileReferencedOutsideSession(fileId, currentSessionId) {
 async function findGarbageFileCaches() {
     const [messages, files, editorContent] = await Promise.all([
         getCurrentSessionMessages(),
-        typeof IDBKeyRange !== 'undefined'
-            ? getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
-            : getAllFromStore('files').then(items => items.filter(item => item.sessionId === state.sessionId)),
+        getCurrentSessionFileInventory(),
         getFromStore('editorContent', 'current')
     ]);
     const referenced = new Set(), markdownAttachments = new Set();
@@ -14353,11 +14351,15 @@ async function findGarbageFileCaches() {
 }
 
 async function clearGarbageFileCaches(files) {
-    const possibleAttachments = files.filter(file => file.markdownOwnerId);
-    if (possibleAttachments.length) {
-        const owned = await findReferencedFileIds(new Set(possibleAttachments.map(file => file.id)));
-        files = files.filter(file => !owned.has(file.id));
-    }
+    // The dialog's inventory can be stale, and a cache may also belong to a
+    // different tunnel. Recheck every candidate; failed reads must stop deletion.
+    const owned = await findReferencedFileIds(new Set(files.filter(file => !file.streamingCacheKey).map(file => file.id)));
+    const latest = new Map((files.some(file => !file.streamingCacheKey) ? await getCurrentSessionFileInventory() : []).map(file => [file.id,file]));
+    files = files.map(candidate => {
+        if (candidate.streamingCacheKey) return candidate;
+        const current = latest.get(candidate.id);
+        return current && (!candidate.sessionId || candidate.sessionId === current.sessionId) ? current : null;
+    }).filter(file => file && (file.streamingCacheKey || !owned.has(file.id) || file.isPartial || file.transferInterrupted));
     const streaming = files.filter(file => file.streamingCacheKey);
     if (streaming.length) {
         await window.StreamingCache?.clearViewer(streaming.map(file => file.streamingCacheKey));
@@ -14388,7 +14390,13 @@ async function showGarbageCleanupDialog() {
     dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
 
     await new Promise(resolve => requestAnimationFrame(resolve));
-    const [regular, streaming] = await Promise.all([findGarbageFileCaches(), window.StreamingCache?.garbage() || []]);
+    let regular, streaming;
+    const failure = error => {
+        historyLog('garbage-file-cache-operation-failed', { error:error.message });
+        return (window.TunnelI18n?.t('缓存检查或清理未完成，请重试：{0}') || '缓存检查或清理未完成，请重试：{0}').replace('{0}',error.message);
+    };
+    try { [regular, streaming] = await Promise.all([findGarbageFileCaches(), window.StreamingCache?.garbage() || []]); }
+    catch (error) { dialog.querySelector('p').textContent = failure(error); return; }
     const files = [...regular, ...streaming.map(entry => ({ id:entry.key, name:entry.name || entry.itemId || entry.stationId, size:entry.cachedBytes || 0, streamingCacheKey:entry.key }))];
     if (!files.length) {
         dialog.querySelector('.modal').innerHTML = `
@@ -14421,9 +14429,10 @@ async function showGarbageCleanupDialog() {
     `;
     document.body.appendChild(dialog);
     dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
-    dialog.querySelector('#confirmGarbageCleanup').addEventListener('click', async () => {
-        await clearGarbageFileCaches(files);
-        dialog.remove();
+    dialog.querySelector('#confirmGarbageCleanup').addEventListener('click', async event => {
+        const button = event.currentTarget; button.disabled = true;
+        try { await clearGarbageFileCaches(files); dialog.remove(); }
+        catch (error) { showAppToast(failure(error)); button.disabled = false; }
     });
 }
 
@@ -15068,7 +15077,7 @@ function formatResourceCacheRestoreSummary(stats) {
 }
 
 async function deleteUnreferencedResource(resource) {
-    if (resource.references.length > 0) {
+    if (resource.references.length > 0 || (await findReferencedFileIds(new Set([resource.id]))).has(resource.id)) {
         alert('该资源仍有引用，不能从资源浏览器删除。请先删除引用位置，或只清除本机缓存。');
         return;
     }
@@ -17855,6 +17864,119 @@ function normalizeControlCenterOrder(saved) {
     const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'workshop', 'notifications', 'disk', 'music', 'streaming', 'tunnels'];
     return [...new Set([...(Array.isArray(saved) ? saved.filter(id => ids.includes(id)) : []), ...ids])];
 }
+function initControlCenterShortcuts() {
+    let lastTap = 0, ctrlOnly = false;
+    const open = () => {
+        if (!state.sessionId || state.isExitingTunnel) return;
+        showJoinedSessionSwitcher().catch(error => historyLog('control-center-open-failed', { error:error.message }));
+    };
+    document.addEventListener('keydown', event => {
+        if (event.key !== 'Control') { ctrlOnly = false; lastTap = 0; return; }
+        if (!event.repeat) ctrlOnly = !event.altKey && !event.metaKey && !event.shiftKey;
+    });
+    document.addEventListener('keyup', event => {
+        if (event.key !== 'Control' || !ctrlOnly) return;
+        ctrlOnly = false;
+        const now = Date.now();
+        if (lastTap && now-lastTap <= 400) { lastTap = 0; open(); }
+        else lastTap = now;
+    });
+    window.addEventListener('blur', () => { ctrlOnly = false; lastTap = 0; });
+    for (const id of ['leaveTunnelBtn','leaveTunnelPanelBtn']) {
+        const button = document.getElementById(id);
+        if (!button) continue;
+        let press = null, consumedTouchId = null, suppressUntil = 0, touchMenuUntil = 0;
+        const cancel = () => { if (press) clearTimeout(press.timer); press = null; };
+        const consumeTouch = () => { consumedTouchId = press.id; clearTimeout(press.timer); suppressUntil = Infinity; open(); };
+        document.addEventListener('contextmenu', event => {
+            if (consumedTouchId === null && Date.now() >= touchMenuUntil) return;
+            event.preventDefault(); event.stopPropagation();
+        }, true);
+        button.addEventListener('contextmenu', event => {
+            event.preventDefault(); event.stopPropagation();
+            if (press) consumeTouch();
+            else { suppressUntil = Date.now()+800; open(); }
+        });
+        button.addEventListener('pointerdown', event => {
+            if (event.pointerType !== 'touch' || !event.isPrimary || event.button !== 0) { cancel(); return; }
+            cancel();
+            press = { id:event.pointerId, x:event.clientX, y:event.clientY };
+            press.timer = setTimeout(consumeTouch, 500);
+        });
+        document.addEventListener('pointerdown', event => { if (press && event.pointerId !== press.id) cancel(); }, true);
+        window.addEventListener('pointermove', event => {
+            if (press?.id === event.pointerId && Math.hypot(event.clientX-press.x,event.clientY-press.y)>10) cancel();
+        }, { passive:true });
+        const finish = event => {
+            if (consumedTouchId !== null && (event.type === 'blur' || event.pointerId === consumedTouchId)) {
+                consumedTouchId = null; suppressUntil = touchMenuUntil = Date.now()+800;
+            }
+            if (event.type === 'blur' || event.pointerId === press?.id) cancel();
+        };
+        window.addEventListener('pointerup', finish, true); window.addEventListener('pointercancel', finish, true); window.addEventListener('blur', finish);
+        button.addEventListener('click', event => {
+            if (Date.now() >= suppressUntil) return;
+            event.preventDefault(); event.stopImmediatePropagation();
+        }, true);
+    }
+}
+
+function initControlCenterLivePanels(dialog) {
+    const wide = window.matchMedia('(min-width: 1024px)');
+    const list = dialog.querySelector('[data-control-progress-list]');
+    const source = document.getElementById('progressList');
+    const summary = dialog.querySelector('[data-control-progress-summary]');
+    const t = text => window.TunnelI18n?.t(text) || text;
+    let frame = 0;
+    const render = () => {
+        frame = 0;
+        if (!wide.matches || !dialog.isConnected) return;
+        updateProgressDrawerSummary();
+        summary.textContent = document.getElementById('progressDrawerSummary')?.textContent || t('暂无传输任务');
+        const scrollTop = list.scrollTop;
+        const existing = new Map([...list.children].map(node => [node.dataset.progressKey,node]));
+        const keys = new Set();
+        let index = 0;
+        for (const item of source?.children || []) {
+            const key = item.dataset.progressKey; keys.add(key);
+            let row = existing.get(key);
+            if (!row) {
+                row = document.createElement('button'); row.type='button'; row.className='progress-item';
+                row.dataset.progressKey=key;
+                row.onclick = () => { dialog.remove(); locateProgressFile(key); };
+            }
+            if (row.controlProgressMarkup !== item.innerHTML) {
+                row.controlProgressMarkup = item.innerHTML;
+                row.innerHTML = item.innerHTML;
+                row.querySelectorAll('[id]').forEach(node => node.removeAttribute('id'));
+            }
+            row.title=item.title;
+            if (list.children[index] !== row) list.insertBefore(row,list.children[index] || null);
+            index++;
+        }
+        for (const [key,row] of existing) if (!keys.has(key)) row.remove();
+        list.scrollTop = scrollTop;
+    };
+    const schedule = () => { if (!frame && wide.matches) frame=requestAnimationFrame(render); };
+    const progressObserver = new MutationObserver(schedule);
+    if (source) progressObserver.observe(source, { childList:true, subtree:true, attributes:true, characterData:true });
+    const unmount = window.NotificationCenter?.mountUnread?.(dialog.querySelector('[data-control-unread-list]'));
+    dialog.querySelector('[data-control-notifications-open]').onclick = () => { dialog.remove(); window.NotificationCenter?.open(); };
+    const escape = event => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault(); event.stopImmediatePropagation(); dialog.remove();
+    };
+    document.addEventListener('keydown', escape, true);
+    wide.addEventListener('change', schedule);
+    const timer = setInterval(() => { if (!document.hidden) render(); },1000);
+    const lifecycle = new MutationObserver(() => {
+        if (dialog.isConnected) return;
+        progressObserver.disconnect(); lifecycle.disconnect(); clearInterval(timer); cancelAnimationFrame(frame);
+        wide.removeEventListener('change',schedule); document.removeEventListener('keydown',escape,true); unmount?.();
+    });
+    lifecycle.observe(document.body, { childList:true }); render();
+}
+
 function initTunnelControlCenter(dialog) {
     const actions = [
         ['refresh', '↻', '强制刷新页面', 'mobileForceRefreshBtn'],
@@ -17875,6 +17997,8 @@ function initTunnelControlCenter(dialog) {
     let order = normalizeControlCenterOrder(saved), drag = null, suppressUntil = 0;
     const tiles = new Map(), panel = dialog.querySelector('[data-control-panel]');
     const before = dialog.querySelector('[data-control-side="before"]'), after = dialog.querySelector('[data-control-side="after"]');
+    const wide = window.matchMedia('(min-width: 1024px)');
+    const animations = new Map(), slots = new Map();
     const label = document.createElement('div'); label.className = 'control-center-drag-label'; label.hidden = true; dialog.append(label);
     for (const [id, icon, title, target] of actions) {
         const tile = document.createElement('button'); tile.type = 'button'; tile.className = 'control-center-tile';
@@ -17894,13 +18018,23 @@ function initTunnelControlCenter(dialog) {
         tiles.set(id, tile);
     }
     const render = () => {
+        const rects = new Map([...tiles.values()].map(tile => [tile, tile.getBoundingClientRect()]));
+        for (const animation of animations.values()) animation.cancel();
+        animations.clear();
         const divider = order.indexOf('tunnels');
-        before.replaceChildren(...order.slice(0, divider).map(id => tiles.get(id)));
-        after.replaceChildren(...order.slice(divider + 1).map(id => tiles.get(id)));
+        before.replaceChildren(...(wide.matches ? order.filter(id => id !== 'tunnels') : order.slice(0, divider)).map(id => tiles.get(id)));
+        after.replaceChildren(...(wide.matches ? [] : order.slice(divider + 1)).map(id => tiles.get(id)));
+        for (const tile of tiles.values()) slots.set(tile, tile.getBoundingClientRect());
+        if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) for (const [tile, old] of rects) {
+            if (!old.width || tile === drag?.tile) continue;
+            const next = slots.get(tile), x = old.left - next.left, y = old.top - next.top;
+            if (x || y) animations.set(tile, tile.animate([{ transform:`translate(${x}px,${y}px)` }, { transform:'translate(0,0)' }], { duration:180, easing:'ease-out' }));
+        }
     };
     const reset = () => {
         if (!drag) return;
         clearTimeout(drag.timer); drag.tile.classList.remove('is-dragging');
+        drag.ghost?.remove();
         if (drag.tile.hasPointerCapture?.(drag.id)) drag.tile.releasePointerCapture(drag.id);
         if (drag.moved || (drag.touch && (drag.active || drag.scrolling))) suppressUntil = Date.now() + 700;
         if (drag.moved) { try { localStorage.setItem('tunnelControlCenterOrder', JSON.stringify(order)); } catch (_) {} }
@@ -17909,13 +18043,24 @@ function initTunnelControlCenter(dialog) {
     const activate = () => {
         if (!drag) return;
         drag.active = true; drag.tile.classList.add('is-dragging');
+        const rect = drag.tile.getBoundingClientRect();
+        drag.rect = rect;
+        drag.ghost = drag.tile.cloneNode(true);
+        drag.ghost.classList.add('control-center-drag-ghost');
+        drag.ghost.dataset.controlIcon = drag.tile.dataset.controlTile;
+        drag.ghost.removeAttribute('data-control-tile');
+        drag.ghost.setAttribute('aria-hidden', 'true');
+        drag.ghost.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;pointer-events:none;margin:0;z-index:3`;
+        const appearance = getComputedStyle(drag.tile);
+        for (const property of ['font','whiteSpace','backgroundColor','color','border','borderRadius','outline']) drag.ghost.style[property] = appearance[property];
+        dialog.append(drag.ghost);
         label.textContent = '当前选中：' + drag.tile.title; label.hidden = false;
     };
     for (const tile of tiles.values()) {
         tile.addEventListener('contextmenu', event => event.preventDefault());
         tile.addEventListener('pointerdown', event => {
             if (event.button > 0 || !event.isPrimary) { reset(); return; }
-            drag = { tile, id: event.pointerId, x: event.clientX, y: event.clientY, active: false, touch: event.pointerType === 'touch', scroll: dialog.querySelector('.control-center').scrollTop };
+            drag = { tile, id: event.pointerId, x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, active: false, touch: event.pointerType === 'touch', scroll: dialog.querySelector('.control-center').scrollTop };
             try { tile.setPointerCapture(event.pointerId); } catch (_) {}
             if (drag.touch) drag.timer = setTimeout(activate, 500); else activate();
         });
@@ -17930,22 +18075,49 @@ function initTunnelControlCenter(dialog) {
             event.preventDefault();
             if (distance < 8) return;
             drag.moved = true;
-            const hovered = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-control-tile]');
+            const bounds = before.getBoundingClientRect();
+            const left = wide.matches ? Math.min(bounds.right-drag.rect.width, Math.max(bounds.left,drag.rect.left+event.clientX-drag.x)) : drag.rect.left+event.clientX-drag.x;
+            const top = wide.matches ? Math.min(bounds.bottom-drag.rect.height, Math.max(bounds.top,drag.rect.top+event.clientY-drag.y)) : drag.rect.top+event.clientY-drag.y;
+            drag.ghost.style.left = `${left}px`; drag.ghost.style.top = `${top}px`;
+            let hovered;
+            if (wide.matches) {
+                // Use layout slots rather than animated rectangles so a tile
+                // gives way just before contact, without chasing its animation.
+                const dx = event.clientX-drag.lastX, dy = event.clientY-drag.lastY;
+                const cx = left+drag.rect.width/2, cy = top+drag.rect.height/2;
+                if (!drag.reorderedAt || Math.hypot(event.clientX-drag.reorderedAt.x,event.clientY-drag.reorderedAt.y) >= 8) {
+                    let nearest = Infinity;
+                    for (const [candidate, rect] of slots) {
+                        if (candidate === tile) continue;
+                        const x = rect.left+rect.width/2, y = rect.top+rect.height/2;
+                        const contact = Math.abs(dx) >= Math.abs(dy)
+                            ? dx*(x-cx)>0 && Math.abs(y-cy)<rect.height/2 && left+drag.rect.width+4>=rect.left && left-4<=rect.right
+                            : dy*(y-cy)>0 && Math.abs(x-cx)<rect.width/2 && top+drag.rect.height+4>=rect.top && top-4<=rect.bottom;
+                        const distance = Math.hypot(x-cx,y-cy);
+                        if (contact && distance < nearest) { nearest = distance; hovered = candidate; }
+                    }
+                }
+                drag.lastX = event.clientX; drag.lastY = event.clientY;
+            } else hovered = document.elementFromPoint(left+drag.rect.width/2, top+drag.rect.height/2)?.closest('[data-control-tile]');
             let targetId, insertAfter = false;
             if (hovered && hovered !== drag.tile) {
-                targetId = hovered.dataset.controlTile; const rect = hovered.getBoundingClientRect();
-                insertAfter = event.clientX > rect.left + rect.width / 2;
+                targetId = hovered.dataset.controlTile;
+                insertAfter = order.indexOf(hovered.dataset.controlTile) > order.indexOf(drag.tile.dataset.controlTile);
             } else {
                 const rect = panel.getBoundingClientRect();
-                if (event.clientY >= rect.top && event.clientY <= rect.bottom) { targetId = 'tunnels'; insertAfter = event.clientY > rect.top + rect.height / 2; }
-                else if (event.clientY < rect.top && !hovered) targetId = 'tunnels';
-                else if (event.clientY > rect.bottom && !hovered) { targetId = 'tunnels'; insertAfter = true; }
+                if (!wide.matches) {
+                    if (event.clientY >= rect.top && event.clientY <= rect.bottom) { targetId = 'tunnels'; insertAfter = event.clientY > rect.top + rect.height / 2; }
+                    else if (event.clientY < rect.top && !hovered) targetId = 'tunnels';
+                    else if (event.clientY > rect.bottom && !hovered) { targetId = 'tunnels'; insertAfter = true; }
+                }
             }
             if (targetId) {
                 const next = order.filter(id => id !== drag.tile.dataset.controlTile), index = next.indexOf(targetId);
-                next.splice(index + (insertAfter ? 1 : 0), 0, drag.tile.dataset.controlTile); order = next; render();
+                next.splice(index + (insertAfter ? 1 : 0), 0, drag.tile.dataset.controlTile); order = next;
+                drag.reorderedAt = { x:event.clientX, y:event.clientY }; render();
             }
             const scroller = dialog.querySelector('.control-center'), rect = scroller.getBoundingClientRect();
+            if (wide.matches) return;
             if (event.clientY < rect.top + 40) scroller.scrollTop -= 12;
             else if (event.clientY > rect.bottom - 40) scroller.scrollTop += 12;
         };
@@ -17959,13 +18131,24 @@ function initTunnelControlCenter(dialog) {
         observer.observe(document.body, { childList: true });
     }
     dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { reset(); dialog.remove(); } });
+    const reflow = () => { reset(); render(); };
+    wide.addEventListener('change', reflow);
+    const cleanup = new MutationObserver(() => {
+        if (dialog.isConnected) return;
+        wide.removeEventListener('change', reflow);
+        for (const animation of animations.values()) animation.cancel();
+        cleanup.disconnect();
+    });
+    cleanup.observe(document.body, { childList:true });
     render();
 }
 
 async function showJoinedSessionSwitcher() {
+    if (document.querySelector('.control-center-overlay')) return;
     const sessions = (await getAllFromStore('sessions').catch(() => []))
         .filter(session => session?.sessionId)
         .sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId), undefined, { numeric: true }));
+    if (document.querySelector('.control-center-overlay')) return;
     const dialog = document.createElement('div');
     dialog.className = 'modal-overlay active control-center-overlay';
     const list = sessions.length
@@ -17975,28 +18158,37 @@ async function showJoinedSessionSwitcher() {
             const currentClass = session.sessionId === state.sessionId ? ' is-current' : '';
             const remark = escapeHtml(String(session.remark || '').trim());
             const code = escapeHtml(normalizeLocalShortCode(session.shortCode) || '-----');
-            return `<button class="session-tool session-switch-item${currentClass}" data-session-id="${id}" style="width:100%;justify-content:flex-start;margin:6px 0;"><strong>${code}${remark ? ` · ${remark}` : ''}</strong><br><small>${time}</small></button>`;
+            return `<button class="session-tool session-switch-item${currentClass}" data-session-id="${id}"><strong>${code}${remark ? ` · ${remark}` : ''}</strong><br><small>${time}</small></button>`;
         }).join('')
         : '<p>本设备还没有加入过其它隧道。</p>';
     dialog.innerHTML = `
-        <div class="control-center">
+        <div class="control-center" id="tunnelControlCenter">
+            <header class="control-center-heading"><strong>控制中心</strong><button class="session-switcher-close" id="closeSessionSwitcher" type="button" aria-label="关闭">×</button></header>
+            <div class="control-center-columns">
+            <aside class="control-center-live">
+                <section class="control-center-progress"><h3>传输进度</h3><p data-control-progress-summary></p><div data-control-progress-list></div></section>
+                <section class="control-center-notifications"><header><h3>未读消息 <span data-notification-count hidden></span></h3><button type="button" data-control-notifications-open>打开通知中心 ›</button></header><div data-control-unread-list></div></section>
+            </aside>
+            <div class="control-center-tools">
             <div class="control-center-tiles" data-control-side="before"></div>
             <div class="modal session-switcher-modal" data-control-panel>
-            <button class="session-switcher-close" id="closeSessionSwitcher" type="button" aria-label="关闭">×</button>
             <h3>切换隧道</h3>
             <button class="session-switch-scroll" type="button" data-scroll="-1" aria-label="向上滚动">⌃</button>
             <div class="session-switcher-list" id="sessionSwitcherList">${list}</div>
             <button class="session-switch-scroll" type="button" data-scroll="1" aria-label="向下滚动">⌄</button>
             </div>
             <div class="control-center-tiles" data-control-side="after"></div>
+            </div></div>
         </div>
     `;
     document.body.appendChild(dialog);
     initTunnelControlCenter(dialog);
+    initControlCenterLivePanels(dialog);
     dialog.addEventListener('click', event => {
-        if (!event.target.closest('.control-center-tile, [data-control-panel], .control-center-drag-label') && !event.defaultPrevented) dialog.remove();
+        if (event.target === dialog && !event.defaultPrevented) dialog.remove();
     });
     dialog.querySelector('#closeSessionSwitcher').addEventListener('click', () => dialog.remove());
+    dialog.querySelector('#closeSessionSwitcher').focus({ preventScroll:true });
     const scroller = dialog.querySelector('#sessionSwitcherList');
     const updateScrollButtons = () => {
         if (!scroller) return;
@@ -18018,7 +18210,13 @@ async function showJoinedSessionSwitcher() {
         scroller.scrollTop += current.getBoundingClientRect().top - scroller.getBoundingClientRect().top - (scroller.clientHeight - current.offsetHeight) / 2;
         requestAnimationFrame(updateScrollButtons);
     });
-    window.addEventListener('resize', updateScrollButtons, { once: true });
+    const scrollSize = new ResizeObserver(updateScrollButtons);
+    scrollSize.observe(scroller);
+    const scrollLifecycle = new MutationObserver(() => {
+        if (dialog.isConnected) return;
+        scrollSize.disconnect(); scrollLifecycle.disconnect();
+    });
+    scrollLifecycle.observe(document.body, { childList:true });
     dialog.querySelectorAll('[data-session-id]').forEach(button => {
         button.addEventListener('click', () => {
             const sessionId = button.dataset.sessionId;
@@ -18923,6 +19121,7 @@ function initUI() {
     document.getElementById('tunnelTopbar').addEventListener('click', handleTopbarAdminTap);
     document.getElementById('leaveTunnelBtn').addEventListener('click', leaveTunnel);
     document.getElementById('leaveTunnelPanelBtn')?.addEventListener('click', leaveTunnel);
+    initControlCenterShortcuts();
     document.getElementById('mobileForceRefreshBtn').addEventListener('click', forceMobileRefresh);
     document.getElementById('magnetCacheBtn').addEventListener('click', openDownloadCacheOverlay);
     document.getElementById('closeDownloadCacheOverlayBtn')?.addEventListener('click', closeDownloadCacheOverlay);

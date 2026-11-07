@@ -57,6 +57,7 @@
     }
     function button(label, run, className = '') {
         const node = document.createElement('button'); node.type = 'button'; node.textContent = className.includes('message-content') ? label : t(label); node.className = className;
+        if (label === '操控串流台') { const icon=document.createElement('span'); icon.textContent='🔧 '; icon.setAttribute('aria-hidden','true'); node.prepend(icon); }
         node.onclick = async event => { event.stopPropagation(); if (node.disabled) return; node.disabled = true; try { await run(event); } catch (cause) { error(cause); } finally { node.disabled = false; } };
         return node;
     }

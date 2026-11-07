@@ -4220,6 +4220,7 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
 .control-center{width:min(400px,92vw);max-height:calc(100vh - 32px);max-height:calc(100dvh - 32px);overflow-y:auto;overscroll-behavior:contain;padding:6px 0;scrollbar-width:thin}
 .control-center .session-switcher-modal{width:100%;max-height:60vh;max-height:60dvh;min-height:0;margin:10px auto;flex-shrink:0}
 .control-center .session-switcher-list{flex:1;min-height:0;max-height:calc(60vh - 160px)}
+.control-center .session-switch-item{width:100%;justify-content:flex-start;margin:6px 0}
 .control-center-tiles{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:10px;padding:10px 14px}
 .control-center-tiles:empty{display:none}
 .control-center-tile{display:inline-flex;align-items:center;justify-content:center;min-width:48px;min-height:46px;padding:9px 15px;border:1px solid #c8d7e8;border-radius:13px;background:#eef3ff;color:#354974;box-shadow:0 2px 6px #10203320;font:24px/1.2 system-ui;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
@@ -4227,6 +4228,78 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
 .message.is-publish-target{outline:3px solid #4d9ae8;outline-offset:4px;transition:outline-color .25s}
 .control-center-drag-label{position:fixed;top:max(14px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);z-index:2;max-width:calc(100vw - 24px);padding:10px 18px;border-radius:999px;background:#233f64;color:#fff;font-weight:600;box-shadow:0 3px 16px #0005;pointer-events:none;text-align:center}
 .control-center-drag-label[hidden]{display:none}
+.control-center {position:relative}
+.control-center-heading {position:relative;min-height:40px}
+.control-center-heading>strong {display:none}
+.control-center-live {display:none}
+.control-center-tile.is-dragging:not(.control-center-drag-ghost) {opacity:0;pointer-events:none}
+.control-center-drag-ghost {opacity:1;cursor:grabbing;box-shadow:0 8px 24px #0003}
+.control-center-tile[data-control-tile="magnet"],.control-center-drag-ghost[data-control-icon="magnet"] {white-space:nowrap;font-size:20px}
+#leaveTunnelBtn,#leaveTunnelPanelBtn {-webkit-touch-callout:none;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+@media(min-width:1024px) {
+    /* Values and geometry from the seven 261107 SVGs; keep legacy modal rules out of the wide panel. */
+    .control-center-overlay {--cc-panel:#fff;--cc-ink:#252943;--cc-muted:#6a728a;--cc-line:#e1e5f2;--cc-soft:#f5f7ff;--cc-divider:#eef0f7;--cc-selected:#eeedff;--cc-selected-line:#b7b1ef;--cc-scroll:#f0f2ff;--cc-accent:#5347e8;--cc-card:#fafbff;--cc-shadow:#30367c2e;--cc-track:#e9edf5;--cc-bar-from:#667eea;--cc-bar-to:#764ba2;--cc-overlay:#1b254859}
+    body[data-theme="orbit"] .control-center-overlay {--cc-panel:#1a1f2d;--cc-ink:#e8ebfa;--cc-muted:#a4aec9;--cc-line:#39435c;--cc-soft:#202739;--cc-divider:#30394e;--cc-selected:#302b4c;--cc-selected-line:#b3a6ff;--cc-scroll:#302b4c;--cc-accent:#b3a6ff;--cc-card:#202739;--cc-shadow:#0000002e;--cc-track:#39435c;--cc-bar-from:#b8a7ff;--cc-bar-to:#8dd5ef;--cc-overlay:#080b1659}
+    body[data-theme="classic"] .control-center-overlay {--cc-panel:#fff;--cc-ink:#1e2635;--cc-muted:#687387;--cc-line:#d1dae7;--cc-soft:#f4f7fb;--cc-divider:#e2e8f1;--cc-selected:#e6eaff;--cc-selected-line:#a1b0e8;--cc-scroll:#e9eeff;--cc-accent:#4258d6;--cc-card:#f9fbff;--cc-shadow:#232d462e;--cc-track:#dfe7f2;--cc-overlay:#232d4659}
+    body[data-theme="atelier"] .control-center-overlay {--cc-panel:#fffcf6;--cc-ink:#273234;--cc-muted:#66716d;--cc-line:#d8ddd5;--cc-soft:#f2eee6;--cc-divider:#e5e5dc;--cc-selected:#e3efea;--cc-selected-line:#92b7aa;--cc-scroll:#e8efea;--cc-accent:#2f6f73;--cc-card:#faf7f0;--cc-shadow:#4a53572e;--cc-track:#dfe6df;--cc-bar-from:#2f6f73;--cc-bar-to:#b7791f;--cc-overlay:#27323459}
+    body[data-theme="social"] .control-center-overlay {--cc-panel:#fff;--cc-ink:#1c1e21;--cc-muted:#65676b;--cc-line:#d8dce2;--cc-soft:#f0f2f5;--cc-divider:#e6e8ec;--cc-selected:#e7f3ff;--cc-selected-line:#8ebffb;--cc-scroll:#e7f3ff;--cc-accent:#1877f2;--cc-card:#f7f9fc;--cc-shadow:#18263f2e;--cc-track:#e4e6eb;--cc-bar-from:#1877f2;--cc-bar-to:#42b72a;--cc-overlay:#14213d59}
+    body:is([data-theme="blamen"],[data-theme="lusns"]) .control-center-overlay {--cc-panel:#f7fbff;--cc-ink:#151b3e;--cc-muted:#7884a3;--cc-line:#dce8f4;--cc-soft:#edf4fc;--cc-divider:#e4edf6;--cc-selected:#e5f0ff;--cc-selected-line:#aab6db;--cc-scroll:#eaf2ff;--cc-accent:#3c29cf;--cc-card:#f5f9ff;--cc-shadow:#728bb42e;--cc-track:#dce8f4}
+    body[data-theme="lusns"] .control-center-overlay {--cc-bar-from:#7777e8;--cc-bar-to:#5034e1}
+    .modal-overlay.control-center-overlay.active,body[data-theme] .modal-overlay.control-center-overlay.active {background:var(--cc-overlay);backdrop-filter:blur(4px)}
+    #tunnelControlCenter {width:min(1004px,calc(100vw - 32px));height:min(830px,calc(100dvh - 32px));padding:16px 40px 24px 20px;overflow:hidden;display:flex;flex-direction:column;background:var(--cc-panel);border:0;border-radius:20px;color:var(--cc-ink);box-shadow:0 24px 60px var(--cc-shadow);font-family:'Microsoft YaHei','Segoe UI',sans-serif}
+    #tunnelControlCenter .control-center-heading {display:flex;align-items:flex-start;height:50px;min-height:50px;margin:0 -20px 19px 0;border-bottom:1px solid var(--cc-line);flex-shrink:0}
+    .control-center-heading>strong {display:block;font-size:20px;line-height:28px;margin:3px 0 0 8px}
+    #tunnelControlCenter .session-switcher-close {top:0;right:0;width:38px;height:38px;padding:0;border:1px solid var(--cc-line);border-radius:12px;background:var(--cc-soft);color:var(--cc-muted);box-shadow:none;font:23px/1 'Segoe UI',sans-serif;outline-offset:3px}
+    .control-center-columns {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;min-height:0;flex:1}
+    .control-center-live {display:flex;flex-direction:column;gap:16px;min-width:0;min-height:0}
+    #tunnelControlCenter :is(.control-center-progress,.control-center-notifications,.control-center-tools) {border:1px solid var(--cc-line);border-radius:14px;background:var(--cc-panel);min-height:0;min-width:0;box-shadow:none}
+    .control-center-progress {display:flex;flex-direction:column;flex:0 1 296px;padding:10px 19px}
+    #tunnelControlCenter h3 {font-size:16px;line-height:22px;font-weight:600;margin:0;color:var(--cc-ink)}
+    [data-control-progress-summary] {font-size:13px;line-height:18px;color:var(--cc-muted);margin:2px 0 4px;min-height:36px}
+    [data-control-progress-list],[data-control-unread-list] {overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--cc-muted) 48%,transparent) transparent;min-height:0}
+    [data-control-progress-list] {flex:1;border-top:1px solid var(--cc-line);padding:8px 0 0;overflow-anchor:none}
+    #tunnelControlCenter [data-control-progress-list]>.progress-item {display:block;width:100%;text-align:left;cursor:pointer;border:0;border-radius:0;box-shadow:none;background:transparent;color:inherit;padding:8px 2px 10px;margin:0;font:inherit}
+    #tunnelControlCenter .progress-info {gap:8px;line-height:20px;margin-bottom:7px;font-size:14px}
+    #tunnelControlCenter .progress-name {font-weight:600}
+    .control-center .progress-info-left {flex:1;min-width:90px}
+    .control-center .progress-text {font-size:14px;color:var(--cc-muted)}
+    #tunnelControlCenter .progress-bar {height:8px;background:var(--cc-track)}
+    #tunnelControlCenter .progress-fill {background:linear-gradient(90deg,var(--cc-bar-from),var(--cc-bar-to))}
+    .control-center-notifications {flex:1;display:flex;flex-direction:column;padding:13px 19px}
+    .control-center-notifications>header {display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px;padding-bottom:9px;border-bottom:1px solid var(--cc-divider)}
+    .control-center-notifications h3 {display:flex;align-items:center;gap:6px}
+    #tunnelControlCenter .control-center-notifications header>button {font-size:13px;border:0;background:transparent;color:var(--cc-accent);cursor:pointer;padding:0;box-shadow:none}
+    #tunnelControlCenter [data-notification-count] {height:22px;min-width:24px;padding:0 6px;border-radius:11px;background:var(--cc-selected);color:var(--cc-accent);font-size:12px}
+    [data-control-unread-list] {padding-top:14px;flex:1;display:flex;flex-direction:column;gap:10px}
+    #tunnelControlCenter .notification-card {padding:12px 15px 12px 27px;border:1px solid var(--cc-line);background:var(--cc-card);box-shadow:none;border-radius:12px;font-size:14px;flex-shrink:0;position:relative}
+    .control-center .notification-card.unread::before {content:'';position:absolute;left:10px;top:14px;width:8px;height:8px;border-radius:50%;background:var(--cc-accent)}
+    .control-center .notification-card-head {align-items:start;gap:8px}
+    .control-center .notification-card time {font-size:11px;white-space:nowrap}
+    .control-center .notification-card p {color:var(--cc-muted);overflow-wrap:anywhere}
+    .control-center .notification-card-actions {gap:10px;flex-wrap:wrap}
+    #tunnelControlCenter .notification-card-actions button {font:inherit;font-size:12px;border:0;background:transparent;color:var(--cc-accent);padding:0;cursor:pointer;box-shadow:none}
+    .control-center .notification-center-empty {padding:28px 10px;font-size:13px}
+    .control-center-tools {display:flex;flex-direction:column;overflow:hidden}
+    .control-center [data-control-side="before"] {display:grid;grid-template-columns:repeat(5,54px);grid-auto-rows:48px;justify-content:center;gap:12px;padding:19px 19px 22px;flex-shrink:0}
+    .control-center [data-control-side="before"]>:nth-child(11) {grid-column:2}
+    #tunnelControlCenter .control-center-tile {min-width:0;min-height:0;width:54px;height:48px;padding:4px;background:var(--cc-soft);border:1px solid var(--cc-line);border-radius:12px;color:var(--cc-ink);box-shadow:none}
+    #tunnelControlCenter .control-center-tile.is-dragging {background:var(--cc-selected);outline-color:var(--cc-accent)}
+    #tunnelControlCenter [data-control-panel] {position:relative;display:flex;flex-direction:column;gap:0;flex:1;width:100%;max-width:none;max-height:none;margin:0;padding:16px 21px 11px;min-height:120px;border:0;border-radius:0;box-shadow:none;background:transparent;color:var(--cc-ink)}
+    .control-center [data-control-panel]::before {content:'';position:absolute;top:0;left:19px;right:19px;border-top:1px solid var(--cc-divider)}
+    #tunnelControlCenter [data-control-panel]>h3 {text-align:center;font-size:17px;font-weight:700;line-height:24px;margin:0 0 11px}
+    #tunnelControlCenter .session-switch-scroll {display:block;flex-shrink:0;width:100%;height:27px;min-height:0;margin:0;padding:0;border:0;border-radius:13.5px;background:var(--cc-scroll);color:var(--cc-accent);font:14px/27px 'Segoe UI',sans-serif;box-shadow:none}
+    #tunnelControlCenter .session-switch-scroll[hidden] {visibility:hidden}
+    #tunnelControlCenter .session-switch-scroll[data-scroll="1"] {height:25px;line-height:25px;margin-top:8px}
+    #tunnelControlCenter .session-switcher-list {display:flex;flex-direction:column;gap:8px;max-height:none;min-height:0;width:calc(100% + 6px);margin:12px -6px 0 0;padding:0;scrollbar-width:thin;scrollbar-gutter:stable;scrollbar-color:color-mix(in srgb,var(--cc-muted) 48%,transparent) transparent}
+    #tunnelControlCenter .session-switch-item {display:flex;flex-direction:column;justify-content:center;align-items:center;flex-shrink:0;width:100%;height:56px;min-height:56px;margin:0;padding:7px 12px;border:1px solid var(--cc-line);border-radius:11px;background:var(--cc-soft);color:var(--cc-ink);box-shadow:none;text-align:center;gap:2px}
+    #tunnelControlCenter .session-switch-item br {display:none}
+    #tunnelControlCenter .session-switch-item strong {font-size:14px;font-weight:600;line-height:20px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    #tunnelControlCenter .session-switch-item small {font-size:11px;line-height:16px;color:var(--cc-muted)}
+    #tunnelControlCenter .session-switch-item.is-current {background:var(--cc-selected);border-color:var(--cc-selected-line);color:var(--cc-ink);box-shadow:none}
+    #tunnelControlCenter .session-switch-item:hover {border-color:var(--cc-accent)}
+    .control-center [data-control-side="after"] {display:none}
+}
+@media(prefers-reduced-motion:reduce) {.control-center * {scroll-behavior:auto}}
 
 .session-switcher-close {
     position: absolute;

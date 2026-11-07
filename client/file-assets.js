@@ -181,7 +181,24 @@
             return `req-${String(assetId || '').slice(0, 8)}-${Date.now().toString(36)}-${random}`;
         }
 
-        sourceAccessGrant(assetId){try{return global.localStorage?.getItem('tunnel-access:'+this.sourceSessionId(assetId))||'';}catch(_){return '';}}
+        sourceAuthorization(assetId) {
+            const sourceSessionId = this.sourceSessionId(assetId);
+            if (!sourceSessionId) return {};
+            let authorization;
+            try {
+                authorization = this.deps.getTunnelAuthorization
+                    ? this.deps.getTunnelAuthorization(sourceSessionId)
+                    : JSON.parse(global.localStorage?.getItem('tunnel-authorization:' + sourceSessionId) || 'null') || {
+                        deviceId: global.localStorage?.getItem('deviceId'),
+                        grant: global.localStorage?.getItem('tunnel-access:' + sourceSessionId)
+                    };
+            } catch (_) { /* An unreadable identity must not borrow an unrelated legacy grant. */ }
+            return {
+                sourceSessionId,
+                sourceDeviceId: typeof authorization?.deviceId === 'string' ? authorization.deviceId : undefined,
+                sourceAccessGrant: typeof authorization?.grant === 'string' ? authorization.grant : ''
+            };
+        }
         sourceSessionId(assetId) {
             const sourceSessionId = this.requestedMetadata.get(assetId)?.backupSourceSessionId;
             return typeof sourceSessionId === 'string' && sourceSessionId && sourceSessionId !== this.deps.getSessionId()
@@ -413,8 +430,7 @@
                 const needsManifest = Number(metadata?.size) > MULTI_SOURCE_THRESHOLD;
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
-                    sourceSessionId: this.sourceSessionId(assetId),
-                    sourceAccessGrant: this.sourceAccessGrant(assetId),
+                    ...this.sourceAuthorization(assetId),
                     assetId,
                     mode: needsManifest ? 'manifest' : undefined,
                     preferredProviderId: this.desiredAssets.get(assetId),
@@ -473,8 +489,7 @@
             this.discoveryRequests.set(assetId, now);
             socket.emit('file-asset-discovery', {
                 sessionId: this.deps.getSessionId(),
-                sourceSessionId: this.sourceSessionId(assetId),
-                    sourceAccessGrant: this.sourceAccessGrant(assetId),
+                ...this.sourceAuthorization(assetId),
                 assetId,
                 reason
             });
@@ -603,8 +618,7 @@
             const selectedProviderId = providers[0];
             socket.emit('file-asset-request', {
                 sessionId: this.deps.getSessionId(),
-                sourceSessionId: this.sourceSessionId(asset.id),
-                    sourceAccessGrant: this.sourceAccessGrant(asset.id),
+                ...this.sourceAuthorization(asset.id),
                 assetId: asset.id,
                 preferredProviderId: selectedProviderId,
                 force: forced,
@@ -718,8 +732,7 @@
                 const forced = Boolean(transfer.forceRequestId || range.retryCount > 0);
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
-                    sourceSessionId: this.sourceSessionId(assetId),
-                    sourceAccessGrant: this.sourceAccessGrant(assetId),
+                    ...this.sourceAuthorization(assetId),
                     assetId,
                     preferredProviderId,
                     transferId,

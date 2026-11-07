@@ -96,6 +96,8 @@
         ['{0}秒后放送','Broadcasts in {0} seconds'], ['{0}分后放送','Broadcasts in {0} minutes'], ['{0}小时{1}分后放送','Broadcasts in {0} hours {1} minutes'],
         ['全台已暂停','Station playback is paused'], ['等待全台播放','Waiting for station playback'], ['等待时长确认','Waiting for duration confirmation'], ['正在同步放送状态','Synchronizing broadcast state'], ['本轮已放送','Already broadcast this round'], ['暂无放送安排','No broadcast scheduled'],
         ['服务端读取成品','Reading server output'], ['已读取','Read'], ['正在读取','Reading'],
+        ['控制中心','Control center'], ['传输进度','Transfer progress'], ['暂无传输任务','No transfer tasks'], ['未读消息','Unread notifications'], ['打开通知中心 ›','Open notification center ›'],
+        ['缓存检查或清理未完成，请重试：{0}','Cache checking or cleanup did not finish. Please retry: {0}'],
         ['操控串流台','Control station'], ['返回操控','Back to controls'], ['串流台','Station'], ['节目单','Playlist'], ['来源','Source'], ['退订','Unsubscribe'], ['已被管理员暂停','Paused by an administrator'], ['恢复播放','Resume playback'], ['全屏','Fullscreen'], ['浏览器限制播放，请点击恢复播放','Autoplay blocked; select Resume playback'],
         ['浏览器无法解码该媒体，请检查格式与编码','The browser cannot decode this media; check its format and codec'],
         ['媒体连接中断，可重试读取或检查网络与来源','The media connection was interrupted; retry loading or check the network and source'],

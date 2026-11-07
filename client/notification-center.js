@@ -2,6 +2,9 @@
     'use strict';
     const STORAGE_KEY = 'tunnelDeviceNotifications:v1';
     let options = {}, overlay, list, count, historyOpen = false;
+    const unreadViews = new Set();
+    const actionFlights = new Set();
+    const actionKey = item => JSON.stringify([storageKey(), item.id]);
 
     function storageKey() { return `${STORAGE_KEY}:${String(options.deviceId?.() || 'local')}`; }
     function read() {
@@ -11,6 +14,7 @@
     function write(items) {
         localStorage.setItem(storageKey(), JSON.stringify(items.slice(0, 300)));
         updateBadges(items);
+        for (const view of unreadViews) view.render();
     }
     const fingerprint = item => JSON.stringify([item.type, item.title, item.body, item.resolved || '']);
     function dismissals() {
@@ -43,36 +47,59 @@
         overlay.querySelector('[data-notification-clear]').onclick = () => {
             clearRead(); render();
         };
-        overlay.addEventListener('click', async event => {
+        overlay.addEventListener('click', handleAction);
+    }
+    async function handleAction(event) {
             const action = event.target.closest('[data-notification-action]');
             if (!action) return;
             const item = read().find(entry => entry.id === action.closest('[data-notification-id]')?.dataset.notificationId);
-            if (!item) return;
+            if (!item || action.disabled || actionFlights.has(actionKey(item))) return;
+            const key = actionKey(item), scope = storageKey(), version = fingerprint(item);
+            actionFlights.add(key);
             action.disabled = true;
             try {
                 await options.onAction?.(item, action.dataset.notificationAction);
                 const items = read(); const current = items.find(entry => entry.id === item.id);
-                if (current) { current.read = true; if (action.dataset.notificationAction !== 'open') current.resolved = action.dataset.notificationAction; write(items); }
+                if (storageKey() === scope && current && fingerprint(current) === version) { current.read = true; if (action.dataset.notificationAction !== 'open') current.resolved = action.dataset.notificationAction; write(items); }
                 render();
             } catch (error) {
                 const status = document.createElement('p'); status.setAttribute('role', 'alert');
                 status.textContent = (window.TunnelI18n?.t('通知操作未完成，请重新核对邀请或申请状态') || '通知操作未完成，请重新核对邀请或申请状态') + ' [' + error.message + ']';
-                action.closest('.notification-card')?.append(status);
-            } finally { action.disabled = false; }
-        });
+                if (storageKey() === scope) for (const card of document.querySelectorAll('[data-notification-id]')) {
+                    if (card.dataset.notificationId === item.id) card.append(status.cloneNode(true));
+                }
+            } finally {
+                actionFlights.delete(key);
+                if (storageKey() === scope) for (const card of document.querySelectorAll('[data-notification-id]')) {
+                    if (card.dataset.notificationId === item.id) { card.inert = false; card.querySelectorAll('[data-notification-action]').forEach(button => { button.disabled = false; }); }
+                }
+            }
     }
-    function render() {
-        ensureUi();
-        const items = read().sort((a, b) => b.createdAt - a.createdAt);
-        updateBadges(items);
-        if (!items.length) { list.innerHTML = '<div class="notification-center-empty">暂无设备通知</div>'; return; }
-        list.innerHTML = items.map(item => `<article class="notification-card${item.read ? '' : ' unread'}" data-notification-id="${escapeHtml(item.id)}">
+    function cards(items) {
+        return items.map(item => `<article class="notification-card${item.read ? '' : ' unread'}" data-notification-id="${escapeHtml(item.id)}"${actionFlights.has(actionKey(item)) ? ' inert' : ''}>
             <div class="notification-card-head"><strong>${escapeHtml(item.title || '设备通知')}</strong><time>${new Date(item.createdAt).toLocaleString()}</time></div>
             <p>${escapeHtml(item.body || '')}</p>
             ${item.type === 'web-zip-edit-request' && !item.resolved ? `<div class="notification-card-actions"><button type="button" data-notification-action="approve">允许编辑</button><button type="button" data-notification-action="reject">拒绝</button></div>` : ''}
             ${item.type === 'stream-invitation' && !item.resolved ? `<div class="notification-card-actions"><button type="button" data-notification-action="accept">接受邀请</button><button type="button" data-notification-action="reject">拒绝</button><button type="button" data-notification-action="open">查看邀请</button></div>` : ''}
             ${item.resolved ? `<small>${escapeHtml(window.TunnelI18n?.t(({approve:'已允许',accept:'已接受',accepted:'已接受',reject:'已拒绝',rejected:'已拒绝',expired:'已到期',revoked:'已撤销',open:'已查看'})[item.resolved] || '已处理') || item.resolved)}</small>` : ''}
         </article>`).join('');
+    }
+    function mountUnread(container) {
+        const view = { render() {
+            const items = read().filter(item => !item.read).sort((a,b) => b.createdAt-a.createdAt);
+            const top = container.scrollTop;
+            container.innerHTML = items.length ? cards(items) : '<div class="notification-center-empty">暂无设备通知</div>';
+            container.scrollTop = top;
+        } };
+        unreadViews.add(view); container.addEventListener('click', handleAction); view.render(); updateBadges();
+        return () => { unreadViews.delete(view); container.removeEventListener('click', handleAction); };
+    }
+    function render() {
+        ensureUi();
+        const items = read().sort((a, b) => b.createdAt - a.createdAt);
+        updateBadges(items);
+        if (!items.length) { list.innerHTML = '<div class="notification-center-empty">暂无设备通知</div>'; return; }
+        list.innerHTML = cards(items);
     }
     function open() {
         ensureUi(); render(); overlay.hidden = false; overlay.classList.add('active');
@@ -103,5 +130,5 @@
         document.addEventListener('keydown', event => { if (event.key === 'Escape' && overlay && !overlay.hidden) { event.preventDefault(); close(); } });
         if (location.pathname === '/notification') setTimeout(open, 0);
     }
-    global.NotificationCenter = { init, open, close, add, list: read, clearRead };
+    global.NotificationCenter = { init, open, close, add, list: read, clearRead, mountUnread };
 })(window);
