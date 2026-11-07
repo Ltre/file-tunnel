@@ -1,7 +1,7 @@
 # 隧道核心、设备、历史同步与权限
 
-> **源码基线 Commit**：`99283320188a43a4234986f2eaa9d9d9374e2bd3`  
-> **文档更新时间**：`2026-11-01`
+> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
+> **文档更新时间**：`2026-11-07`
 
 ## 子模块文档
 
@@ -418,3 +418,13 @@
 4. **页面入口**：带签名参数的扫码链接只导航一次，不再先导航新 URL 又重载旧页面。旧纯 Hash 不同会话链接保留兼容入口。已获授权设备离线/5xx 时可读本机已缓存内容；无本机授权不能借该兜底越过服务端认证。
 
 源码 `server/tunnel-access.js`、`server.js`、`app.js`；专项 `tests/features-261017-3.test.cjs`、`features-261017-4.test.cjs`、`features-261018-1.test.cjs`、`features-261019-1.test.cjs`。隔离 HTTP/Socket 与浏览器函数测试并非真实手机相机扫码或既有故障设备现场复测。
+
+## 17. 2026-10—11：轻量路由、长期凭据、设备权限与历史隔离
+
+- `/tunnel-entry` 提供独立轻量路由页，先从本机保存的隧道目录渲染选择项，再在有限超时内恢复 IndexedDB / 网络记录；数据库请求挂住时**不让整个路由界面一直空白**。已加入/未加入状态及七主题共用路由结构。扫码复用 `client/tunnel-code-scanner.js`，关闭或过期的异步操作会停摄像头，不另造一套权限模型。
+- 管理员可在 `/admin/tunnels`、`/admin-tunnel-permissions` 查看隧道与具体设备权限；`server/tunnel-permissions.js` 提供 `/api/sessions/:sessionId/access`、`/devices/:deviceId` 的受认证读取/修改。设备选择**不是自动注册设备或赐予阅读权限**：原创建者、受授权管理员、普通成员和逐项有效权限需通过服务端判断。已离线的历史设备可在受限范围管理，但不能凭公开设备 ID 获得新 grant。
+- 切换隧道时严格绑定历史消息的 `sessionId` 与本地缓存来源。旧异步快照、迟到的消息和已删除 tombstone 不可从 A 隧道重放到 B；删除操作应在当前会话范围内鉴权与落盘，错误响应不能伪装成成功。
+- `client/tunnel-access-editor.js/.css` 用于前台授权编辑，和后台管理员设备权限页面的管理边界不同。主题切换、短码轮换、二维码重新加入都不改变原成员权限的服务端可信来源。
+- 2026-11-06 路由与消息代码增加进程异常时的回退和统一扫码脚本；同一时期的 Windows 进程异常调查发现系统提交内存严重接近上限，但**未定位业务进程原生 fast-fail 的确切调用点**，不能将路由可用性修复等同于“崩溃已修复”。
+
+相关源码：`server/tunnel-permissions.js`、`server/tunnel-access.js`、`server/infra-store.js`、`server.js`、`app.js`、`client/tunnel-entry.js`、`client/tunnel-code-scanner.js`。测试见 `tests/history-scope-261102-2.*`、`tunnel-permissions-261103.test.cjs`、`admin-device-access-261103-2.*`、`route-261106-3.browser.cjs`。
