@@ -204,6 +204,12 @@
     }
     function subscribeUploadProgress(job,context=transportContext()) {
         if (!job.progressive || typeof EventSource !== 'function') return () => {};
+        // HTTP/1 browsers have a small per-origin connection pool. Auxiliary
+        // streams must leave slots for directory reads, uploads and operation
+        // polling. Other jobs retain the existing operation-polling updates.
+        const previous = uploadProgressStreams.get(job.operation_id);
+        if (previous) { previous.close(); uploadProgressStreams.delete(job.operation_id); }
+        if (uploadProgressStreams.size >= 2) return () => {};
         let stream; try { stream = new EventSource(withAccount(withSpace(context.requestBase + '/uploads/' + encodeURIComponent(job.uploadId) + '/progress',context.diskSpace), context.accountId)); } catch (_) { return () => {}; }
         uploadProgressStreams.set(job.operation_id, stream);
         const close = () => { stream.close(); if (uploadProgressStreams.get(job.operation_id) === stream) uploadProgressStreams.delete(job.operation_id); };

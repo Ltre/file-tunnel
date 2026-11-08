@@ -8,7 +8,7 @@
     };
     const contains = (root, path) => !root || path === root || path.startsWith(root + '/');
     async function choose({ items = [], title = '移动到', confirmText = '移动', initialPath = '', rootPath = '', rootName = '根目录',
-        loadDirectories, createDirectory, openDialog, installContextGesture, onCreateDirectory, onReady, getRoot, controls = [], showError = error => alert(error.message) }) {
+        loadDirectories, createDirectory, openDialog, installContextGesture, onCreateDirectory, onReady, getRoot, controls = [], showError = error => (window.TunnelI18n?.alert || alert)(error.message) }) {
         rootPath = normalize(rootPath);
         const blocked = path => (typeof items === 'function' ? items() : items).some(item => item.kind === 'directory' && (path === item.path || path.startsWith(item.path + '/')));
         const display = path => '/' + (rootPath ? path.slice(rootPath.length).replace(/^\//, '') : path);
@@ -91,7 +91,9 @@
                     if (!enabled) continue;
                     const badge = document.createElement('span'); badge.className = 'disk-folder-state' + (text === 'S' ? ' static' : ''); badge.textContent = text; badge.title = title; target.append(badge, document.createTextNode(' '));
                 }
-                target.append(document.createTextNode(folder.name));
+                const folderName=document.createElement('span');folderName.textContent=folder.name;
+                if(folder.path!==rootPath||rootPath||rootName!=='根目录')folderName.dataset.i18nRaw='true';
+                target.append(folderName);
                 target.onclick = event => { event.preventDefault(); select(folder.path); details.open = true; expanded.add(folder.path); };
                 const nested = document.createElement('div'); nested.className = 'disk-folder-children'; nested.setAttribute('role', 'group');
                 summary.append(target); details.append(summary, nested);

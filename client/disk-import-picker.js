@@ -49,7 +49,7 @@
                         const row=document.createElement('div');row.className='disk-import-row';row.style.paddingLeft=`${10+depth*18}px`;
                         const check=document.createElement('input');check.type='checkbox';check.checked=selected.has(key(item));check.disabled=busy||['blocked','deleted'].includes(item.reviewStatus);check.setAttribute('aria-label','选择 '+item.name);check.onchange=()=>{if(check.checked)selected.set(key(item),item);else selected.delete(key(item));status.textContent=`已选 ${selected.size} 项 · 目标：/${destination||''}`;};
                         const label=document.createElement('button');label.type='button';label.textContent=(item.kind==='directory'?(expanded.has(item.path)?'▾ 📁 ':'▸ 📁 '):'📄 ')+item.name;label.disabled=check.disabled;label.onclick=async()=>{try{if(item.kind==='directory'){if(expanded.has(item.path))expanded.delete(item.path);else{expanded.add(item.path);await load(item.path);}render();}else{check.checked=!check.checked;check.onchange();}}catch(error){status.textContent=global.DiskErrorMessages.format(error);}};
-                        row.append(check,label);tree.append(row);if(item.kind==='directory'&&expanded.has(item.path))rows(item.path,depth+1);
+                        label.dataset.i18nRaw='true';row.append(check,label);tree.append(row);if(item.kind==='directory'&&expanded.has(item.path))rows(item.path,depth+1);
                     }
                 }
                 rows('',0);

@@ -1952,7 +1952,7 @@
         actions.append(reuse);
         actions.className = 'task-actions';
         const handled = document.createElement('button'); handled.type = 'button'; handled.textContent = task.handled ? '标记为·待处理' : '✔标记为已处理';
-        handled.onclick = async () => { handled.disabled = true; try { await saveTaskDetails(task, { handled: !task.handled }); await loadTasks({ force: true }); } catch (error) { handled.disabled = false; notice.textContent = `标记失败：${error.message}`; } }; actions.append(handled);
+        handled.onclick = async () => { if (!task.handled && !confirm('确定将这个任务标记为已处理吗？')) return; handled.disabled = true; try { await saveTaskDetails(task, { handled: !task.handled }); await loadTasks({ force: true }); } catch (error) { handled.disabled = false; notice.textContent = `标记失败：${error.message}`; } }; actions.append(handled);
         const running = ['queued', 'parsing', 'downloading', 'merging', 'metadata'].includes(task.status);
         const thumbnail = document.createElement('button');
         thumbnail.type = 'button';

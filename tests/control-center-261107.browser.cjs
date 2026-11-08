@@ -30,6 +30,25 @@ before(async()=>{
  browser=await chromium.launch({channel:'chrome',headless:true});
 });
 after(async()=>{await browser?.close();server?.closeAllConnections();if(server)await new Promise(r=>server.close(r));});
+test('261108: simultaneous drawer and control-center rendering preserves real receiver bytes, request count and completion',async()=>{
+ const results=[];
+ for(const open of [false,true]){
+  const page=await browser.newPage({viewport:{width:1600,height:1000}});try{
+   await page.goto(base);await page.evaluate(()=>localStorage.setItem('drop2tunnel.language','ja'));for(const file of ['i18n-catalog','i18n','file-assets'])await page.addScriptTag({url:base+'/client/'+file+'.js'});
+   const result=await page.evaluate(async open=>{
+    if(open)await showJoinedSessionSwitcher();
+    const cache=new Map(),assets=Array.from({length:32},(_,n)=>({id:n.toString(16).padStart(8,'0')+'-0000-4000-8000-000000000000',name:n+'.bin',type:'application/octet-stream',size:16384+n,isAsset:true}));
+    let transfer,requests=0,received=0,bytes=0,finish;const finished=new Promise(resolve=>finish=resolve),started=performance.now();
+    const socket={connected:true,emit(event,data){if(event!=='file-asset-request')return;requests++;setTimeout(async()=>{const asset=assets.find(item=>item.id===data.assetId),attemptId=data.requestId+'-relay-full';const ack=await transfer.handleRelayStart({asset,from:'provider',attemptId,requestId:data.requestId});if(!ack.ok)throw Error(ack.reason);const body=new Uint8Array(asset.size);body.fill(Number.parseInt(asset.id.slice(0,8),16));await transfer.handleRelayChunk({assetId:asset.id,from:'provider',attemptId,chunk:body.buffer});await transfer.handleRelayComplete({assetId:asset.id,from:'provider',attemptId});},2);}};
+    transfer=new FileAssetTransfer({getSessionId:()=> 'A',getSocket:()=>socket,load:async id=>cache.get(id),store:async file=>{cache.set(file.id,file);bytes+=file.data.byteLength;},log(){},onUnavailable(_id,reason){throw Error(reason);},onProgress:(id,name,progress,transport)=>showProgress(id,name,progress,transport,{route:transport}),onReceived(){if(++received===assets.length)finish();}});
+    for(const asset of assets)await transfer.request(asset.id,'provider',asset);await finished;await new Promise(requestAnimationFrame);
+    for(const asset of assets){const body=new Uint8Array(cache.get(asset.id).data);if(body.some(value=>value!==Number.parseInt(asset.id.slice(0,8),16)))throw Error('incorrect bytes');}
+    clearInterval(transfer.requestWatchdogTimer);return {open,requests,received,bytes,pending:transfer.desiredAssets.size,elapsedMs:Math.round(performance.now()-started),drawer:document.querySelector('#progressList').children.length,panel:document.querySelector('[data-control-progress-list]')?.children.length||0};
+   },open);results.push(result);assert.equal(result.requests,32);assert.equal(result.received,32);assert.equal(result.pending,0);assert.equal(result.drawer,32);if(open)assert.equal(result.panel,32);
+  }finally{await page.close();}
+ }
+ assert.equal(results[0].bytes,results[1].bytes);fs.writeFileSync(path.join(root,'.npm-cache/control-center-transfer-261108.json'),JSON.stringify(results,null,2));
+});
 test('seven themes have equal wide columns, live scrollable progress and unread actions without marking messages read',async()=>{
  const page=await browser.newPage({viewport:{width:1600,height:1000}});try{
  await page.goto(base);await page.evaluate(()=>{tasks();NotificationCenter.add({id:'request',type:'web-zip-edit-request',title:'网页编辑申请',body:'设备申请编辑网页'});});
@@ -81,11 +100,14 @@ test('Ctrl double tap excludes shortcuts and repeated keys; right click and touc
  await page.keyboard.press('Control+b');
  for(const id of ['leaveTunnelBtn','leaveTunnelPanelBtn']){
   await page.locator('#'+id).click({button:'right'});await page.locator('.control-center').waitFor();assert.equal(await page.evaluate(()=>left),0);await page.keyboard.press('Escape');
+  await page.locator('#'+id).evaluate(node=>{const range=document.createRange();range.selectNodeContents(node);const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range);});
   await page.locator('#'+id).dispatchEvent('pointerdown',{pointerType:'touch',pointerId:1,isPrimary:true,button:0,clientX:20,clientY:20});
   await page.waitForTimeout(id==='leaveTunnelBtn'?1850:560);await page.locator('.control-center').waitFor();
+  assert.equal(await page.evaluate(()=>window.getSelection().toString()),'');
+  assert.equal(await page.locator('.control-center').evaluate(node=>!node.dispatchEvent(new Event('selectstart',{bubbles:true,cancelable:true}))),true,'long hold consumes native text selection');
   assert.equal(await page.locator('.control-center').evaluate(node=>!node.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}))),true,'retargeted touch menu is prevented');
   await page.locator('#'+id).dispatchEvent('pointerup',{pointerType:'touch',pointerId:1,isPrimary:true});await page.locator('#'+id).dispatchEvent('click');
-  assert.equal(await page.evaluate(()=>left),0);await page.keyboard.press('Escape');await page.waitForTimeout(850);
+  assert.equal(await page.evaluate(()=>left),0);await page.keyboard.press('Escape');await page.waitForTimeout(850);assert.equal(await page.locator('body').evaluate(node=>node.classList.contains('control-center-touch-opening')),false);
  }
  await page.locator('#leaveTunnelBtn').click();assert.equal(await page.evaluate(()=>left),1);
  await page.locator('#leaveTunnelPanelBtn').dispatchEvent('pointerdown',{pointerType:'touch',pointerId:2,isPrimary:true,button:0,clientX:10,clientY:10});

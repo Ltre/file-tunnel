@@ -372,7 +372,7 @@
     }
     function menuActions(message) {
         const actions = [];
-        const add = (label, run) => { const action = document.createElement('button'); action.type = 'button'; action.textContent = t(label); action.onclick = async event => { event.stopPropagation(); action.disabled = true; try { await run(); } catch (error) { global.alert(t('操作未完成，请检查状态后重试') + ' [' + error.message + ']'); } finally { action.disabled = false; } }; actions.push(action); };
+        const add = (label, run) => { const action = document.createElement('button'); action.type = 'button'; action.textContent = t(label); action.onclick = async event => { event.stopPropagation(); action.disabled = true; try { await run(); } catch (error) { (window.TunnelI18n?.alert || global.alert)(t('操作未完成，请检查状态后重试') + ' [' + error.message + ']'); } finally { action.disabled = false; } }; actions.push(action); };
         add('保存到网盘', () => exportRecord(message, true));
         return actions;
     }

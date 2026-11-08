@@ -289,13 +289,13 @@ test('隧道适配器传递普通 File 与目录相对路径，选定目标后�
     vm.runInNewContext(source('client/disk-tunnel-adapter.js'), { window, File, Blob, confirm: () => { confirmations++; return true; } });
     window.DiskTunnelAdapter.configure({ target: () => 'ABCDE', send: files => { sent = files; }, readFile: () => {}, filesForRecord: () => [{ name: 'a.txt', size: 3 }] });
     await exporter([{ name: 'a.txt', type: 'text/plain', relativePath: 'album/a.txt' }, { name: 'b.txt', type: 'text/plain' }]);
-    assert.equal(closed, true); assert.equal(sent.length, 2); assert.equal(sent[0].relativePath, 'album/a.txt'); assert.equal(await sent[0].text(), 'abc');
+    assert.equal(closed, false); assert.equal(sent.length, 2); assert.equal(sent[0].relativePath, 'album/a.txt'); assert.equal(await sent[0].text(), 'abc');
     assert.equal(confirmations, 0);
     await exporter([{ name: 'only.txt', type: 'text/plain' }]); assert.equal(confirmations, 0);
     await window.DiskTunnelAdapter.save({ id: 'record' }); assert.equal(uploadArgs[1], '目标目录');
     assert.equal(uploadArgs[3].transportContext.diskSpace,'目标分区');
     for (const file of ['client/disk-client.js', 'client/disk-ui.js', 'server/disk-api.js', 'server/telegram-drive.js']) assert.doesNotMatch(source(file), /state\.sessionId|sendFileCollection|sourceMessageId|sourceSessionId/);
-    assert.match(source('app.js'), /send: files => sendSelectedFiles\(files\)/);
+    assert.match(source('app.js'), /sendSelectedFiles\(files, \{ selection:prepared\?\.selection \}\)/);
 });
 
 test('右键操作保留整个选中集合，全选和反选只操作当前视图', () => {
@@ -336,7 +336,7 @@ test('网盘提供最小化、目标隧道选择与上次目标记忆，管理�
     assert.match(ui, /history\.pushState[\s\S]*?telegramDriveHistorySession/); assert.match(ui, /addEventListener\('popstate'/);
     assert.match(ui, /DiskClient\.raw\('\/search\?q=/); assert.match(ui, /telegramDriveRenderGeneration/);
     assert.match(css, /-webkit-user-select:none;user-select:none/);
-    assert.match(adapter, /选择转发目标隧道/); assert.match(adapter, /【当前隧道】/); assert.match(adapter, /host\.sendTo\(files, target\)/); assert.doesNotMatch(adapter, /host\.navigate\(target\.id\)/);
+    assert.match(adapter, /选择转发目标隧道/); assert.match(adapter, /【当前隧道】/); assert.match(adapter, /host\.sendTo\(files, target, prepared\)/); assert.doesNotMatch(adapter, /host\.navigate\(target\.id\)/);
     assert.match(adapter, /telegram-drive-pending-forward/); assert.match(admin, /网盘先发后审流水/); assert.match(admin, /用户与网盘分区/);
     assert.match(server, /app\.get\('\/disk-management'/); assert.match(source('pages/admin.html'), /href="\/disk-management"/);
     assert.doesNotMatch(source('pages/tgbot.html'), /disk-management\.js/);

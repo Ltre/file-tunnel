@@ -195,6 +195,7 @@
             } catch (_) { /* An unreadable identity must not borrow an unrelated legacy grant. */ }
             return {
                 sourceSessionId,
+                recordMessageId: this.requestedMetadata.get(assetId)?.recordMessageId,
                 sourceDeviceId: typeof authorization?.deviceId === 'string' ? authorization.deviceId : undefined,
                 sourceAccessGrant: typeof authorization?.grant === 'string' ? authorization.grant : ''
             };
@@ -480,7 +481,8 @@
             }
         }
 
-        requestProviderDiscovery(assetId, reason = 'provider-discovery') {
+        requestProviderDiscovery(assetId, reason = 'provider-discovery', metadata = null) {
+            if (metadata) this.requestedMetadata.set(assetId, { ...this.requestedMetadata.get(assetId), ...metadata });
             const socket = this.socket();
             if (!socket?.connected || !assetId) return false;
             const now = Date.now();
@@ -1046,7 +1048,9 @@
                     .catch(err => this.log('safety-copy-replica-mark-failed', { assetId: asset.id, error: err.message }));
             }
             if (!asset || !asset.id || !this.desiredAssets.has(asset.id)) return;
-            this.requestedMetadata.set(asset.id, asset);
+            // Presence contains transport metadata, not the destination record's
+            // cross-tunnel provenance. Keep that context for later queued work.
+            this.requestedMetadata.set(asset.id, { ...this.requestedMetadata.get(asset.id), ...asset });
             this.retryCounts.delete(asset.id);
             const multiSource = this.multiSourceTransfers.get(asset.id);
             if (multiSource) {

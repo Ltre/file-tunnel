@@ -541,7 +541,7 @@ test('the tunnel short-code inputs use one browser input path', () => {
     const start = source.indexOf('function initSessionLanding(');
     const end = source.indexOf('\nfunction openSession', start);
     const landingSource = source.slice(start, end);
-    const inputStart = landingSource.indexOf("input.addEventListener('input'");
+    const inputStart = landingSource.indexOf('const commitInput');
     const inputEnd = landingSource.indexOf("input.addEventListener('keydown'", inputStart);
     const inputSource = landingSource.slice(inputStart, inputEnd);
 
@@ -549,6 +549,8 @@ test('the tunnel short-code inputs use one browser input path', () => {
     assert.doesNotMatch(landingSource, /addEventListener\('beforeinput'/);
     assert.match(inputSource, /event\.data \|\| event\.target\.value/);
     assert.match(inputSource, /window\.setTimeout/);
+    assert.match(inputSource, /event\.isComposing/);
+    assert.match(inputSource, /compositionend/);
     assert.doesNotMatch(inputSource, /fillCode/);
 });
 

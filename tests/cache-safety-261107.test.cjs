@@ -12,7 +12,7 @@ test('a failed read before a metadata update cannot overwrite an existing comple
 });
 
 test('removing a locally unreferenced resource preserves references in another tunnel and fails closed on read errors',async()=>{
- let deleted=0,alerts=0;const context={Set,findReferencedFileIds:async()=>new Set(['shared']),alert:()=>alerts++,confirm:()=>true,deleteFromStore:async()=>deleted++};
+ let deleted=0,alerts=0;const context={window:{},Set,findReferencedFileIds:async()=>new Set(['shared']),alert:()=>alerts++,confirm:()=>true,deleteFromStore:async()=>deleted++};
  vm.runInNewContext(section('async function deleteUnreferencedResource(','function createResourceBrowserButton('),context);
  await context.deleteUnreferencedResource({id:'shared',references:[]});assert.equal(deleted,0);assert.equal(alerts,1);
  context.findReferencedFileIds=async()=>{throw Error('references unavailable');};

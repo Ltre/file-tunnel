@@ -88,12 +88,17 @@
         if (codePattern.test(code)) join(code);
     }
     inputs.forEach((input, i) => {
-        input.addEventListener('input', event => {
+        const commitInput = event => {
+            if (event.isComposing) return;
             input.value = codeOf(event.data || input.value).slice(-1);
-            if (input.value && inputs[i + 1]) inputs[i + 1].focus();
+            if (input.value && inputs[i + 1]) setTimeout(() => {
+                if (document.activeElement === input) inputs[i + 1].focus();
+            }, 0);
             const code = inputs.map(node => node.value).join('');
             if (codePattern.test(code)) join(code);
-        });
+        };
+        input.addEventListener('input', commitInput);
+        input.addEventListener('compositionend', commitInput);
         input.addEventListener('keydown', event => {
             if (event.key === 'Backspace' && !input.value && inputs[i - 1]) inputs[i - 1].focus();
             if (event.key === 'Enter') join(inputs.map(node => node.value).join(''));
@@ -130,7 +135,8 @@
         select.replaceChildren();
         sessions.slice().sort((a,b)=>a.sessionId.localeCompare(b.sessionId,undefined,{numeric:true,sensitivity:'base'})).forEach(entry=>{
             const option=document.createElement('option');option.value=entry.sessionId;
-            option.textContent=`${codeOf(entry.shortCode)||entry.sessionId.slice(0,8)}${entry.remark?' · '+String(entry.remark).trim():''}${entry.sessionId===recent?' · 最近使用':''}`;
+            option.dataset.i18nRaw='true';
+            option.textContent=`${codeOf(entry.shortCode)||entry.sessionId.slice(0,8)}${entry.remark?' · '+String(entry.remark).trim():''}${entry.sessionId===recent?' · '+t('最近使用'):''}`;
             option.selected=entry.sessionId===(selected||recent);select.append(option);
         });
         landing.dataset.hasSessions=String(sessions.length>0);
@@ -149,5 +155,6 @@
         if (stored.shared) { const notice = document.getElementById('sharedFilesNotice'); notice.hidden = false; notice.textContent = `已收到 ${stored.shared} 个分享文件，请选择要发送到的传输隧道。`; }
         landing.hidden = false;
     }
+    window.addEventListener('drop2tunnel-language-changed',()=>renderSessions(sessions));
     start().catch(error => { landing.hidden = false; note.textContent = error.message; });
 })();

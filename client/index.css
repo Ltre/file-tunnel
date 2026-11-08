@@ -4236,6 +4236,7 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
 .control-center-drag-ghost {opacity:1;cursor:grabbing;box-shadow:0 8px 24px #0003}
 .control-center-tile[data-control-tile="magnet"],.control-center-drag-ghost[data-control-icon="magnet"] {white-space:nowrap;font-size:20px}
 #leaveTunnelBtn,#leaveTunnelPanelBtn {-webkit-touch-callout:none;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+#leaveTunnelBtn *,#leaveTunnelPanelBtn *,body.control-center-touch-opening .control-center,body.control-center-touch-opening .control-center * {user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 @media(min-width:1024px) {
     /* Values and geometry from the seven 261107 SVGs; keep legacy modal rules out of the wide panel. */
     .control-center-overlay {--cc-panel:#fff;--cc-ink:#252943;--cc-muted:#6a728a;--cc-line:#e1e5f2;--cc-soft:#f5f7ff;--cc-divider:#eef0f7;--cc-selected:#eeedff;--cc-selected-line:#b7b1ef;--cc-scroll:#f0f2ff;--cc-accent:#5347e8;--cc-card:#fafbff;--cc-shadow:#30367c2e;--cc-track:#e9edf5;--cc-bar-from:#667eea;--cc-bar-to:#764ba2;--cc-overlay:#1b254859}

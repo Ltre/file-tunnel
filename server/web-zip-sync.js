@@ -19,14 +19,23 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
     catch(error){unavailable=true;log('web-zip-sync-storage-unreadable',error);}
     const persist=()=>{const snapshot={version:1,jobs:[...jobs.values()].map(clone)};saving=saving.catch(()=>{}).then(()=>writeJsonAsync(filename,snapshot));return saving;};
     const key=(sessionId,messageId,file)=>JSON.stringify([sessionId,messageId,file.webZipRootId||file.id]);
-    function sourceOf(sessionId,message,file){
+    const sourceScope=(sessionId,message,file,origin)=>({sessionId,messageId:message.id,creatorDeviceId:file.creatorDeviceId,rootId:file.webZipRootId||file.id,sourceSessionId:origin.sessionId,sourceMessageId:origin.messageId});
+    const lostSource=(sessionId,message,file,origin)=>!origin&&message?.forwardedFrom?.sessionId&&message.forwardedFrom.sessionId!==sessionId&&file.webZipRootId&&file.webZipSourceVersion;
+    function sourceOf(sessionId,message,file,editCredential='',deviceId=''){
         const origin=message?.forwardedFrom;if(!origin?.sessionId||!origin.messageId||origin.sessionId===sessionId)return null;
-        if(!isForwardedCopy(sessionId,message.id,file,origin))return null;
-        const original=readRecord(origin.sessionId,origin.messageId);if(!original)return{...origin,message:null,file:null};
+        const proven=credentials?.verifySource?.(file.webZipSourceProof,sourceScope(sessionId,message,file,origin));
+        const pending=[...jobs.values()].some(job=>job.sessionId===sessionId&&job.messageId===message.id&&job.file.id===file.id&&job.file.creatorDeviceId===file.creatorDeviceId&&job.origin.sessionId===origin.sessionId&&job.origin.messageId===origin.messageId);
+        const forwarded=proven||pending||isForwardedCopy(sessionId,message.id,file,origin);
+        const original=readRecord(origin.sessionId,origin.messageId);if(!original)return forwarded?{...origin,message:null,file:null}:null;
         const candidates=files(original).filter(value=>webpage(value)&&value.creatorDeviceId===file.creatorDeviceId);
         let matches=candidates.filter(value=>value.id===file.webZipSourceVersion?.id||file.webZipRootId&&(value.id===file.webZipRootId||value.webZipRootId===file.webZipRootId));
         if(!matches.length)matches=candidates.filter(value=>equivalent(value,file));
-        return{...origin,message:original,file:matches.length===1?matches[0]:null};
+        const resolved={...origin,message:original,file:matches.length===1?matches[0]:null};
+        // Before provenance proofs existed, an already completed publication
+        // lost its audit marker. The editor's original signed capability can
+        // recover that exact link, including permission versions and anchors.
+        if(!forwarded&&(!resolved.file||!credentials?.verify(editCredential,scopeOf(sessionId,message.id,file,deviceId,resolved))))return null;
+        return resolved;
     }
     function ownedCopy(file,input,deviceId){
         const next={...file};
@@ -37,10 +46,12 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
     const scopeOf=(sessionId,messageId,file,deviceId,origin)=>({sessionId,messageId,deviceId,creatorDeviceId:file.creatorDeviceId,
         rootId:origin?.file?.webZipRootId||origin?.file?.id||file.webZipRootId||file.id,sourceSessionId:origin?.sessionId||sessionId,sourceMessageId:origin?.messageId||messageId,
         permissionAt:file.webZipPermissionUpdatedAt,sourcePermissionAt:origin?.file?.webZipPermissionUpdatedAt});
-    function issueCredential({sessionId,messageId,fileId,deviceId}){
+    function issueCredential({sessionId,messageId,fileId,deviceId,editCredential}){
         const message=readRecord(sessionId,messageId),file=files(message).find(value=>value.id===fileId);
         if(!webpage(file)||!canEdit(file,deviceId)||!canPublish(sessionId,deviceId))failure('WEB_ZIP_EDIT_DENIED');
-        const origin=sourceOf(sessionId,message,file);
+        const origin=sourceOf(sessionId,message,file,editCredential,deviceId);
+        if(lostSource(sessionId,message,file,origin))failure('WEB_ZIP_SOURCE_UNVERIFIED');
+        if(!origin&&editCredential&&message?.forwardedFrom?.sessionId!==sessionId&&file.webZipRootId&&!credentials?.verify(editCredential,scopeOf(sessionId,messageId,file,deviceId,null)))failure('WEB_ZIP_EDIT_CREDENTIAL_INVALID');
         if(origin?.file&&!canEdit(origin.file,deviceId)&&Number(origin.file.webZipPermissionUpdatedAt||0)>Number(file.webZipPermissionUpdatedAt||0))failure('WEB_ZIP_EDIT_DENIED');
         return credentials?.issue(scopeOf(sessionId,messageId,file,deviceId,origin))||'';
     }
@@ -55,6 +66,7 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
         const message=readRecord(job.sessionId,job.messageId),file=files(message).find(value=>value.id===job.file.id);
         if(jobs.get(job.key)!==job)return;
         if(file?.webZipPendingSync){const next={...file,webZipSourceVersion:version(job.file)};delete next.webZipPendingSync;
+            if(credentials?.issueSource)next.webZipSourceProof=credentials.issueSource(sourceScope(job.sessionId,message,next,job.origin));
             await writeRecord(job.sessionId,message,replaceFile(message,file.id,next),{check:()=>jobs.get(job.key)===job});}
         if(jobs.get(job.key)===job){jobs.delete(job.key);try{await persist();}catch(error){if(!jobs.has(job.key))jobs.set(job.key,job);throw error;}topologyChanged();}
     }
@@ -107,12 +119,15 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
         if(retried&&canEdit(retried,deviceId)&&canPublish(sessionId,deviceId)){const job=[...jobs.values()].find(value=>value.file.id===retried.id&&value.sessionId===sessionId&&value.messageId===messageId);if(job)await attempt(job);return readRecord(sessionId,messageId);}
         if(!webpage(current)||!canEdit(current,deviceId)||!canPublish(sessionId,deviceId))failure('WEB_ZIP_EDIT_DENIED');
         if(!fileInfo?.id||fileInfo.id===fileId||!String(fileInfo.name||'').toLowerCase().endsWith('.html.zip')||!Number.isSafeInteger(fileInfo.size)||fileInfo.size<0||!hasContent(sessionId,deviceId,fileInfo))failure('WEB_ZIP_CONTENT_NOT_READY');
-        const origin=sourceOf(sessionId,message,current),next=ownedCopy(current,fileInfo,deviceId);
+        const origin=sourceOf(sessionId,message,current,editCredential,deviceId),next=ownedCopy(current,fileInfo,deviceId);
+        if(lostSource(sessionId,message,current,origin))failure('WEB_ZIP_SOURCE_UNVERIFIED');
         const scope=scopeOf(sessionId,messageId,current,deviceId,origin);
         if(editCredential&&credentials&&!credentials.verify(editCredential,scope))failure('WEB_ZIP_EDIT_CREDENTIAL_INVALID');
         if(credentials)editCredential=editCredential||issueCredential({sessionId,messageId,fileId,deviceId});
         if(origin&&unavailable)failure('WEB_ZIP_SYNC_STORAGE');
         next.webZipRootId=origin?.file?.webZipRootId||origin?.file?.id||current.webZipRootId||current.id;
+        if(origin&&credentials?.issueSource)next.webZipSourceProof=credentials.issueSource(sourceScope(sessionId,message,next,origin));
+        else delete next.webZipSourceProof;
         let job,previousJob;
         if(origin){
             const jobKey=key(sessionId,messageId,{...current,webZipRootId:next.webZipRootId});

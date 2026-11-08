@@ -106,7 +106,7 @@
             const message = mode === 'open-remote'
                 ? `${senderName} 请求打开你的摄像头并查看实时画面，是否允许？`
                 : `${senderName} 想把摄像头实时画面共享给你，是否接收？`;
-            const accepted = global.confirm ? global.confirm(message) : false;
+            const accepted = global.confirm ? (window.TunnelI18n?.confirm || global.confirm)(message) : false;
             this.pendingRequests.set(data.requestId, {
                 requestId: data.requestId,
                 targetDeviceId: data.from,

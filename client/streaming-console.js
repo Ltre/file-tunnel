@@ -727,8 +727,8 @@
                 if (view === 'local') {
                     if (s.manageable) actions.append(button('编辑节目单', () => navigate('edit', s.id)));
                     if (own(s) || !s.ownerId) actions.append(button('邀请与可见性', () => s.manageable ? navigate('access', s.id) : accountDialog()), button('观看者黑名单', () => s.manageable ? navigate('blacklist', s.id) : accountDialog()));
-                    if (!s.ownerId && currentUser) actions.append(button('认领', async () => { if (!confirm(t('确认将此串流台认领到当前账号？'))) return; await request('/stations/' + s.id + '/ownership', 'POST', { action: 'claim' }); await sync(); }));
-                    if (s.manageable || s.locked) actions.append(button('删除台', async () => { if (!confirm(t('删除台及其配置，保留原始来源文件？'))) return; await request('/stations/' + s.id, 'DELETE'); localStorage.removeItem(key('station:' + s.id)); delete ui.drafts[s.id]; saveUi(); await global.StreamingCache?.updateStation(config.deviceId(),s.id,[]); for (const [k, p] of players) if (k.startsWith(s.id + ':')) { p.close(); players.delete(k); } await refreshList(); }));
+                    if (!s.ownerId && currentUser) actions.append(button('认领', async () => { if (!(window.TunnelI18n?.confirm || confirm)(t('确认将此串流台认领到当前账号？'))) return; await request('/stations/' + s.id + '/ownership', 'POST', { action: 'claim' }); await sync(); }));
+                    if (s.manageable || s.locked) actions.append(button('删除台', async () => { if (!(window.TunnelI18n?.confirm || confirm)(t('删除台及其配置，保留原始来源文件？'))) return; await request('/stations/' + s.id, 'DELETE'); localStorage.removeItem(key('station:' + s.id)); delete ui.drafts[s.id]; saveUi(); await global.StreamingCache?.updateStation(config.deviceId(),s.id,[]); for (const [k, p] of players) if (k.startsWith(s.id + ':')) { p.close(); players.delete(k); } await refreshList(); }));
                 } else if (view === 'bookmarks') actions.append(button('取消订阅', async () => { await request('/stations/' + s.id + '/bookmark', 'DELETE'); await refreshList(); }));
                 if (s.owner) actions.append(button('创作者主页', () => { ui.creatorName = s.owner.name; navigate('creator', s.owner.id); }));
                 row.append(actions); list.append(row);
@@ -1200,7 +1200,7 @@
                 for (const item of selected) {
                     const row = document.createElement('article'); row.className = 'sc-selected-row';
                     const details = document.createElement('div'); details.className = 'sc-selected-info message-content';
-                    const name = document.createElement('strong'); name.textContent = item.name + ' · ' + formatSize(item.size); details.append(name);
+                    const name = document.createElement('strong'); name.textContent = item.name + ' · ' + formatSize(item.size); name.dataset.i18nRaw = 'true'; details.append(name);
                     if (item.location) { const path = document.createElement('p'); path.textContent = item.location; details.append(path); }
                     row.append(selectedThumbnail(item, row, cleanups), details, button('删除', () => {
                         pending.delete(candidateKey(item)); saveUi(); count.textContent = t('已选') + ' · ' + pending.size;
@@ -1651,7 +1651,7 @@
             globalControls.append(seek, button('调整全局进度', () => command('seek', { position: Number(seek.value) })), button('后退 10 秒', () => command('seek', { position: Math.max(0, (player?.snapshot() || snapshot).playback.position - 10) })), button('快进 10 秒', () => { const state = player?.snapshot() || snapshot, item = state.items.find(item => item.id === state.playback.itemId); return command('seek', { position: Math.min(item?.duration ? item.duration - item.start : item?.stay || 0, state.playback.position + 10) }); }));
             main.append(globalControls); actions.append(button('邀请与可见性', () => navigate('access', snapshot.id)));
             if (snapshot.local) actions.append(button('编辑节目单', () => navigate('edit', snapshot.id)));
-            if (snapshot.local && snapshot.ownerId) actions.append(button('放弃归属', async () => { if (!confirm(t('放弃台归属，保留普通观看许可和订阅？'))) return; await request('/stations/' + snapshot.id + '/ownership', 'POST', { action: 'release' }); navigate('local'); }));
+            if (snapshot.local && snapshot.ownerId) actions.append(button('放弃归属', async () => { if (!(window.TunnelI18n?.confirm || confirm)(t('放弃台归属，保留普通观看许可和订阅？'))) return; await request('/stations/' + snapshot.id + '/ownership', 'POST', { action: 'release' }); navigate('local'); }));
         }
     }
     function offlinePage(s) {
@@ -1659,14 +1659,14 @@
         if (s.manageable) main.append(button('邀请与可见性', () => navigate('access', s.id)));
         main.append(button('返回列表', returnToList));
     }
-    async function kick(stationId, deviceId) { if (confirm(t('终止此设备的观看并阻止旧入口重新进入？'))) { await request('/stations/' + stationId + '/access', 'POST', { deviceId, allow: false }); notice('已终止该设备对本台的访问'); } }
+    async function kick(stationId, deviceId) { if ((window.TunnelI18n?.confirm || confirm)(t('终止此设备的观看并阻止旧入口重新进入？'))) { await request('/stations/' + stationId + '/access', 'POST', { deviceId, allow: false }); notice('已终止该设备对本台的访问'); } }
     async function accessPage(version) {
         title('邀请与可见性'); const stationId = ui.stationId, s = await request('/stations/' + stationId + '?manage=1'); if (version !== renderVersion) return;
         const visibility = document.createElement('section'); visibility.className = 'sc-card'; const h = document.createElement('h2'); h.textContent = t('可见性'); visibility.append(h);
         for (const value of ['public', 'invite', 'offline']) visibility.append(button(stateLabel(value), async () => {
             const reset = value === 'invite' && (s.visibility === 'public' || s.visibility === 'offline');
-            if (reset && !confirm(t('改为仅邀请会退出旧观看端、撤销旧观看资格及此前所有邀请，保留订阅。继续？'))) return;
-            if (value === 'offline' && !confirm(t('下线将停止服务并保留订阅，继续？'))) return;
+            if (reset && !(window.TunnelI18n?.confirm || confirm)(t('改为仅邀请会退出旧观看端、撤销旧观看资格及此前所有邀请，保留订阅。继续？'))) return;
+            if (value === 'offline' && !(window.TunnelI18n?.confirm || confirm)(t('下线将停止服务并保留订阅，继续？'))) return;
             const fresh = await request('/stations/' + stationId + '?manage=1'); await request('/stations/' + stationId + '/visibility', 'POST', { visibility: value, version: fresh.playback.version, confirmReset: reset }); render();
         }, s.visibility === value ? 'selected' : ''));
         main.append(visibility); const inviteForm = document.createElement('section'); inviteForm.className = 'sc-card';
