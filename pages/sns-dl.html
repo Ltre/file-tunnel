@@ -419,7 +419,7 @@
         const actions=element('div','actions');
         actions.append(makeAction('复用此参数创建任务', () => downloadForms.reuse(task)));
         actions.append(makeAction(task.handled ? '标记为·待处理' : '✔标记为已处理', async () => {
-            if (!task.handled && !confirm('确定将这个任务标记为已处理吗？')) return;
+            if (!confirm(task.handled ? '确定将这个任务标记为待处理吗？' : '确定将这个任务标记为已处理吗？')) return;
             await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({handled:!task.handled}) });
             await loadTasks({force:true});
         }));

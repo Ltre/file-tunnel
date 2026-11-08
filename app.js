@@ -8344,7 +8344,7 @@ function renderMessageRecordActions(messageEl, message) {
         }));
     }
     if (!message.snsMarkdownProgress) menuItems.push(createRecordActionButton('⎇', message.type === 'markdown' ? '发送到其他隧道' : '发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
-        forwardHistoryMessage(message.id).catch(err => {
+        (async () => { const scope = state.sessionId; const target = await chooseForwardTargetSession(); if (target) { if (state.sessionId !== scope) throw Error('当前隧道已变化，请重新选择转发目标'); await forwardHistoryMessages([message], target); } })().catch(err => {
             (window.TunnelI18n?.alert || alert)(`转发失败：${err.message}`);
             historyLog('history-message-forward-failed', { messageId: message.id, error: err.message });
         });
@@ -8964,6 +8964,42 @@ async function chooseForwardTargetSession() {
     });
 }
 
+function showForwardHistoryProgress(records, done) {
+    const t = source => window.TunnelI18n?.t(source) || source;
+    const overlay = document.createElement('div'); overlay.className = 'send-mode-overlay history-forward-results';
+    const dialog = document.createElement('section'); dialog.className = 'send-mode-dialog history-forward-dialog';
+    dialog.setAttribute('role','dialog'); dialog.setAttribute('aria-modal','true'); dialog.setAttribute('aria-label',t('转发传输记录'));
+    const header = document.createElement('header'), title = document.createElement('h3'); title.textContent = t('转发传输记录');
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'btn btn-secondary'; close.textContent = t('关闭');
+    const list = document.createElement('div'); list.className = 'history-forward-list';
+    const summary = document.createElement('p'); summary.className = 'history-forward-summary'; summary.setAttribute('role','status');
+    const rows = new Map();
+    for (const record of records) {
+        const row = document.createElement('div'); row.className = 'history-forward-row'; row.dataset.recordId = record.id;
+        const content = document.createElement('div'), excerpt = document.createElement('div'); excerpt.className = 'history-forward-excerpt'; excerpt.dataset.i18nRaw = '';
+        excerpt.textContent = record.fileInfo?.name || record.collection?.name || (typeof recordTextPayload === 'function' ? recordTextPayload(record).text : record.text) || record.id;
+        excerpt.title = excerpt.textContent;
+        const id = document.createElement('small'); id.className = 'history-forward-id'; id.dataset.i18nRaw = ''; id.textContent = record.id;
+        const status = document.createElement('span'); status.className = 'history-forward-status';
+        content.append(excerpt,id); row.append(content,status); list.append(row); rows.set(record.id,{row,status});
+    }
+    const setState = (id, state, detail = '') => {
+        const entry = rows.get(id); if (!entry) return;
+        entry.row.dataset.state = state;
+        entry.status.classList.toggle('history-forward-spinner', ['waiting','sending','unconfirmed'].includes(state));
+        const label = ({waiting:'等待发送',sending:'正在发送',confirmed:'发送成功',failed:'发送失败',unsent:'尚未发送',unconfirmed:'转发结果尚未确认'})[state];
+        entry.status.textContent = state === 'confirmed' ? '✓' : ['failed','unsent'].includes(state) ? '✕' : '';
+        entry.status.setAttribute('aria-label',t(label)); entry.status.title = t(label) + (detail ? ': ' + t(detail) : '');
+    };
+    for (const record of records) setState(record.id,done.has(record.id)?'confirmed':'waiting');
+    const previousFocus = document.activeElement;
+    const finishClose = () => { document.removeEventListener('keydown',key,true); overlay.remove(); if(previousFocus?.isConnected)previousFocus.focus({preventScroll:true}); };
+    const key = event => { if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();finishClose();} };
+    close.onclick = finishClose; header.append(title,close); dialog.append(header,list,summary); overlay.append(dialog); document.body.append(overlay);
+    document.addEventListener('keydown',key,true); close.focus({preventScroll:true});
+    return {setState,finish(text){summary.textContent=text;}};
+}
+
 async function cloneForwardFileInfo(fileInfo, targetSessionId) {
     const nextId = generateId();
     const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
@@ -9070,21 +9106,22 @@ async function forwardHistoryMessages(records, targetSessionId) {
     const done = batches.get(batchKey) || new Set();
     if (!batches.has(batchKey) && batches.size >= 10) throw new Error('未完成的转发批次过多，请先核对目标隧道记录');
     batches.set(batchKey,done);
-    const progress = showBlockingProgressPanel('正在转发传输记录', `0 / ${records.length}`);
+    const progress = showForwardHistoryProgress(records, done);
     let confirmed = done.size, processed = 0;
     try {
         for (const record of records) {
             if (state.sessionId !== scope) break;
             if (done.has(record.id)) { processed++; continue; }
-            try { await forwardHistoryMessage(record.id,targetSessionId,{silent:true}); done.add(record.id); confirmed++; }
-            catch (error) { failures.push({id:record.id,error:error.message,unconfirmed:error.unconfirmed===true}); if (error.unconfirmed) { processed++; break; } }
-            processed++; progress.update(processed/records.length*100,`${confirmed} / ${records.length}`);
+            progress.setState(record.id,'sending');
+            try { await forwardHistoryMessage(record.id,targetSessionId,{silent:true}); done.add(record.id); confirmed++; progress.setState(record.id,'confirmed'); }
+            catch (error) { failures.push({id:record.id,error:error.message,unconfirmed:error.unconfirmed===true}); progress.setState(record.id,error.unconfirmed?'unconfirmed':'failed',error.message); if (error.unconfirmed) { processed++; break; } }
+            processed++;
         }
-    } finally { progress.close(); }
+    } finally { for (const record of records.slice(processed)) if(!done.has(record.id)) progress.setState(record.id,'unsent'); }
     if (confirmed === records.length) batches.delete(batchKey);
     const summary = text('已确认转发 {0} / {1} 条记录',confirmed,records.length);
-    if (failures.length || processed < records.length) (window.TunnelI18n?.alert || alert)(summary + '\n' + failures.map(item=>`${item.id}: ${window.TunnelI18n?.t(item.error)||item.error}`).join('\n') + (processed<records.length?'\n'+text('尚未发送 {0} 条记录',records.length-processed):''));
-    else showAppToast(summary);
+    progress.finish(summary + (processed<records.length?' · '+text('尚未发送 {0} 条记录',records.length-processed):'') + (failures.some(item=>item.unconfirmed)?' · '+text('转发结果尚未确认'):''));
+    if (!failures.length && processed === records.length) showAppToast(summary);
     return {confirmed,failures,unsent:records.length-processed};
 }
 

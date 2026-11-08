@@ -6,6 +6,7 @@ function client(){
     const sent=[],toasts=[],alerts=[],saved=new Map(),confirmed=new Map();let sequence=0,mode='normal',failAt='';
     const context={Map,Set,Date,Promise,Error,window:{},state:{sessionId:'A',deviceId:'actor',deviceName:'device'},LAST_FORWARD_SESSION_STORAGE_KEY:'last-forward',localStorage:{setItem(){}},generateId:()=> 'target-'+(++sequence),getFromStore:async(_store,id)=>({id,type:'text',text:'record '+id}),saveToStore:async(_store,message)=>saved.set(message.id,message),tunnelDeviceId:()=> 'actor-B',savedTunnelGrant:()=> 'valid',showAppToast:text=>toasts.push(text),alert:text=>alerts.push(text),historyLog(){},showBlockingProgressPanel:()=>({update(){},close(){}})};
     context.state.socket={timeout(){return this;},emit(event,data,ack){if(event==='forward-message-status')return ack(null,{ok:true,confirmed:confirmed.has(data.targetMessageId),message:confirmed.get(data.targetMessageId)});sent.push(data.message);if(data.message.forwardedFrom.messageId===failAt)return ack(null,{ok:false,error:'permission-denied'});if(mode==='unknown')return ack(Error('timeout'));confirmed.set(data.message.id,JSON.parse(JSON.stringify(data.message)));ack(mode==='late'?Error('timeout'):null,{ok:true,message:data.message});}};
+    context.showForwardHistoryProgress=()=>({setState(){},finish(){}});
     vm.runInNewContext(section(app,'async function cloneForwardFileInfo(','async function downloadFileFromMessage('),context);
     return{context,sent,toasts,alerts,saved,confirmed,setMode:value=>mode=value,setFailure:value=>failAt=value};
 }
@@ -22,7 +23,7 @@ test('an unknown outcome retains its stable message id and a resumed batch skips
     f.context.state.socket.emit=original;f.setMode('normal');const resumed=await f.context.forwardHistoryMessages(records,'B');assert.equal(resumed.confirmed,3);assert.equal(f.sent.filter(message=>message.forwardedFrom.messageId==='first').length,1);assert.equal(f.sent.filter(message=>message.forwardedFrom.messageId==='second').at(-1).id,pendingId);assert.equal(f.confirmed.size,3);
 });
 test('a definite refusal is listed while independent later records continue',async()=>{
-    const f=client();f.setFailure('bad');const result=await f.context.forwardHistoryMessages([{id:'first'},{id:'bad'},{id:'last'}],'B');assert.equal(result.confirmed,2);assert.equal(result.failures.length,1);assert.equal(result.unsent,0);assert.match(f.alerts[0],/bad/);assert.equal(f.toasts.length,0);
+    const f=client();f.setFailure('bad');const result=await f.context.forwardHistoryMessages([{id:'first'},{id:'bad'},{id:'last'}],'B');assert.equal(result.confirmed,2);assert.equal(result.failures.length,1);assert.equal(result.unsent,0);assert.equal(result.failures[0].id,'bad');assert.equal(f.alerts.length,0);assert.equal(f.toasts.length,0);
 });
 
 test('a later refusal cannot erase an earlier unknown outcome or allocate another record ID',async()=>{

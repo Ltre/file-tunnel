@@ -9518,6 +9518,8 @@ io.on('connection', (socket) => {
     let messageCount = 0;
     const MESSAGE_LIMIT = 100; // 每分钟最多100条消息
     let messageResetTime = Date.now() + 60000;
+    let signalCount = 0;
+    let signalResetTime = Date.now() + 60000;
     
     // 消息速率检查
     function checkMessageRate() {
@@ -9528,6 +9530,15 @@ io.on('connection', (socket) => {
         }
         messageCount++;
         return messageCount <= MESSAGE_LIMIT;
+    }
+
+    // Chat/editor/forward activity must not consume the budget needed to
+    // establish the file DataChannel. Keep the same bounded signal allowance.
+    function checkSignalRate() {
+        const now = Date.now();
+        if (now > signalResetTime) { signalCount = 0; signalResetTime = now + 60000; }
+        signalCount++;
+        return signalCount <= MESSAGE_LIMIT;
     }
 
     socket.on('register-profile-device', (data, ack) => {
@@ -10307,7 +10318,8 @@ io.on('connection', (socket) => {
     });
 
     socket.on('signal', (data) => {
-        if (!checkMessageRate()) {
+        if (!checkSignalRate()) {
+            if (signalCount === MESSAGE_LIMIT + 1) historyLog('p2p-signal-rate-limited', {sessionId:currentSession,deviceId:currentDevice,socketId:socket.id});
             return emitSocketError('error', '消息发送过于频繁');
         }
         

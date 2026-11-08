@@ -20,3 +20,10 @@ test('UI status-map values, conditional captions and element text are audited wi
  for(const text of ['正在播放','已停止','启用','停用','用户说明','已完成','进行中'])assert.ok(result.phrases.includes(text),text);
  for(const text of ['playing','技术栈信息','传输事件','协议值'])assert.equal(result.phrases.includes(text),false,text);
 });
+
+test('only explicitly identified human error-message dictionaries are audited; their technical keys remain unchanged',()=>{
+ const source="const codes={API_ERROR:'界面错误说明'};const wire={STATE:'程序协议字段'};Object.assign(codes,{LATE_ERROR:'稍后新增的说明'});codes.FINAL_ERROR='最终说明';";
+ assert.deepEqual(scan(source).phrases,[]);
+ const result=scan(source,{uiMaps:['codes'],rewrite:true});
+ assert.deepEqual(result.phrases,['界面错误说明','稍后新增的说明','最终说明']);assert.equal(result.source,source);assert.equal(result.rewritten,0);
+});

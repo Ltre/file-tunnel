@@ -7,6 +7,13 @@ const vm = require('node:vm');
 // Unit-level regression coverage only; browser ICE/DataChannel behavior requires an end-to-end test.
 const ROOT = path.resolve(__dirname, '..');
 
+test('chat and signaling retain independent bounded per-socket rate limits',()=>{
+    const source=fs.readFileSync(path.join(ROOT,'server.js'),'utf8'),start=source.indexOf('    let messageCount = 0;'),end=source.indexOf("    socket.on('register-profile-device'",start),context={Date};
+    vm.runInNewContext(source.slice(start,end),context);
+    for(let n=0;n<100;n++)assert.equal(context.checkMessageRate(),true);assert.equal(context.checkMessageRate(),false);
+    for(let n=0;n<100;n++)assert.equal(context.checkSignalRate(),true);assert.equal(context.checkSignalRate(),false);
+});
+
 test('SNS metadata parsing prefers local EJS and allows a bounded production wait', () => {
     const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
     assert.match(source, /Number\(process\.env\.SOCIAL_YTDLP_TIMEOUT_MS\) \|\| 90000/);

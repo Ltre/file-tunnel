@@ -1,0 +1,32 @@
+'use strict';
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),vm=require('node:vm');
+const express=require('express'),{Server}=require('socket.io'),{io}=require('socket.io-client');
+const {registerFileAssetHandlers}=require('../server/file-assets');
+const {chromium}=require(path.join(os.homedir(),'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'));
+test('nested magnet downloader acknowledges real relay chunks and enables downloading only after complete persisted bytes',{timeout:25000},async t=>{
+    const root=path.resolve(__dirname,'..'),app=express(),sessionId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',asset={id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',name:'isolated.bin',size:150001,type:'application/octet-stream'};
+    const bytes=new Uint8Array(asset.size);bytes.forEach((_value,n)=>bytes[n]=n%251);
+    const sessions=new Map([[sessionId,{devices:new Map(),fileAssets:new Map()}]]),deviceSockets=new Map(),events=[];
+    const magnet={id:'isolated-magnet-261108',sessionId,asset,assetId:asset.id,seedDevices:[{deviceId:'provider'}]};
+    app.use('/client',express.static(path.join(root,'client')));
+    for(const name of ['downloadList','downloader'])app.get('/'+name,(_q,res)=>res.sendFile(path.join(root,'pages/'+name+'.html')));
+    app.get('/api/magnets/:id',(_q,res)=>res.json(magnet));
+    const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));const base='http://127.0.0.1:'+server.address().port,sockets=new Server(server);
+    const source=fs.readFileSync(path.join(root,'server.js'),'utf8'),start=source.indexOf('    socket.use(([event,data],next)=>{'),end=source.indexOf("    socket.on('session-short-code-update'",start);
+    sockets.on('connection',socket=>{
+        let deviceId='';socket.on('join-session',data=>{deviceId=data.deviceId;socket.join(sessionId);deviceSockets.set(deviceId,socket);sessions.get(sessionId).devices.set(deviceId,{joinedAt:Date.now()});if(data.magnetId){socket.data.magnetAssetId=asset.id;socket.data.magnetId=magnet.id;}socket.emit('session-history',{sessionId,messages:[]});});
+        const ctx={socket,sessions,magnets:new Map([[magnet.id,magnet]]),infraStore:null,trustedInternalClient:false,canReadForwardedFile:()=>false,tunnelAccess:{verify:()=>false},emitSocketError:(event,message)=>socket.emit(event,{message})};
+        Object.defineProperties(ctx,{currentDevice:{get:()=>deviceId},currentSession:{get:()=>sessionId}});vm.runInNewContext(source.slice(start,end),ctx);
+        registerFileAssetHandlers(socket,{sessions,deviceSockets,getSessionId:()=>sessionId,getDeviceId:()=>deviceId,sanitize:String,isValidId:value=>typeof value==='string'&&!!value,historyLog:(event,details)=>events.push({event,details})});
+    });
+    const timers=new Set(),global={};vm.runInNewContext(fs.readFileSync(path.join(root,'client/file-assets.js'),'utf8'),{window:global,Blob,ArrayBuffer,Uint8Array,DataView,console,setInterval:()=>0,clearInterval(){},setTimeout:(fn,ms)=>{const timer=setTimeout(fn,ms);timers.add(timer);return timer;},clearTimeout});
+    const provider=io(base);t.after(()=>{provider.close();for(const timer of timers)clearTimeout(timer);sockets.close();server.closeAllConnections();});
+    const sender=new global.FileAssetTransfer({getSocket:()=>provider,getSessionId:()=>sessionId,getPeer:()=>null,connectPeer:async()=>{},load:async()=>({...asset,data:bytes.buffer}),log(){},onProgress(){},onUnavailable(){}});
+    provider.on('file-asset-request',data=>sender.handleRequest(data));provider.emit('join-session',{deviceId:'provider'});await new Promise(resolve=>provider.once('session-history',resolve));await sender.announce(asset);
+    const browser=await chromium.launch({channel:'chrome',headless:true});t.after(()=>browser.close());const page=await browser.newPage({locale:'zh-CN'});
+    await page.goto(base+'/downloadList?embedded=1');await page.locator('#magnetIdInput').fill(magnet.id);await page.getByRole('button',{name:'加载文件',exact:true}).click();
+    const downloader=page.frameLocator('#inlineDownloaderFrame');await downloader.locator('#downloadBtn').waitFor();
+    await downloader.locator('#downloadBtn').evaluate(node=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('relay did not complete')),8000);const observer=new MutationObserver(()=>{if(!node.disabled){clearTimeout(timer);observer.disconnect();resolve();}});observer.observe(node,{attributes:true,attributeFilter:['disabled']});if(!node.disabled){clearTimeout(timer);observer.disconnect();resolve();}}));
+    const stored=await downloader.locator('body').evaluate((_node,id)=>new Promise((resolve,reject)=>{const request=indexedDB.open('TunnelDownloaderDB',1);request.onerror=()=>reject(request.error);request.onsuccess=()=>{const db=request.result,get=db.transaction('magnetFiles').objectStore('magnetFiles').get(id);get.onsuccess=()=>{if(!get.result)return reject(Error('Missing persisted file'));resolve([...new Uint8Array(get.result.data)]);db.close();};get.onerror=()=>reject(get.error);};}),asset.id);
+    assert.deepEqual(stored,[...bytes]);assert.ok(events.some(item=>item.event==='file-asset-relay-completed'));
+});

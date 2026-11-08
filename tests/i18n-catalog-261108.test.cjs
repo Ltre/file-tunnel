@@ -8,4 +8,7 @@ test('catalog translations preserve their source placeholders and never silently
         if(!['zh-Hans','zh-Hant','ja'].includes(language)&&/\p{Script=Han}/u.test(value))errors.push({source,language,reason:'untranslated Chinese text'});
     }
     assert.deepEqual(errors,[]);
+    for(const [pattern,translations] of context.window.Drop2TunnelI18nConfig.templates){
+        assert.equal(translations.length,context.window.Drop2TunnelI18nConfig.dynamicLanguages.length,'every dynamic rule supports every language: '+pattern);
+    }
 });

@@ -20,11 +20,45 @@ test('an unsupported system locale renders English while retaining the translate
 test('explicit preferences win over system locale and switching to system stays distinct from English',async()=>{
     const f=await fixture({locale:'en-US',preference:'ja'});try{const {page}=f;assert.equal(await page.locator('h1').textContent(),'データトンネルに参加');assert.equal(await page.locator('#appLanguageSelect').inputValue(),'ja');await page.locator('#appLanguageSelect').selectOption('system');assert.equal(await page.locator('h1').textContent(),'Join a data tunnel');assert.equal(await page.evaluate(()=>localStorage.getItem('drop2tunnel.language')),'system');await page.locator('#appLanguageSelect').selectOption('zh-Hans');assert.equal(await page.locator('h1').textContent(),'加入数据隧道');assert.equal(await page.locator('#appLanguageSelect').inputValue(),'zh-Hans');}finally{await f.close();}
 });
+
+test('system follows the browser current language before the alternate content-language list, including mobile layout',async()=>{
+    const f=await fixture({locale:'en-US'});try{const {page}=f;await page.setViewportSize({width:390,height:844});
+        await page.evaluate(()=>{Object.defineProperty(navigator,'languages',{configurable:true,value:['zh-CN','en-US']});TunnelI18n.setLanguage('system');});
+        assert.equal(await page.locator('html').getAttribute('lang'),'en');assert.equal(await page.locator('h1').textContent(),'Join a data tunnel');assert.equal(await page.locator('#appLanguageSelect').inputValue(),'system');assert.equal(await page.locator('option[value="system"]').textContent(),'Use system language');
+        await page.locator('#appLanguageSelect').selectOption('ja');assert.equal(await page.locator('h1').textContent(),'データトンネルに参加');
+    }finally{await f.close();}
+});
 test('every supported language has native system and route entries with one runtime after compatibility scripts load',async()=>{
     const f=await fixture();try{const {page}=f;const result=await page.evaluate(()=>{const missing=[];for(const [language]of TunnelI18n.languages){if(language==='zh-Hans')continue;for(const key of ['使用系统语言','加入数据隧道','扫描隧道码','我没有暗号，创建一个隧道','没有找到该传输隧道，或它已经被删除。'])if(!Drop2TunnelI18nCatalog[key]?.[language])missing.push(language+':'+key);}return missing;});assert.deepEqual(result,[]);}finally{await f.close();}
 });
 test('dynamic labels retain raw parameters and can switch language after being formatted',async()=>{
     const f=await fixture();try{const {page}=f;const raw='sendFile:{权限字段}';await page.evaluate(raw=>{const node=document.createElement('p');node.id='formatted';node.textContent=TunnelI18n.format('已确认转发 {0} / {1} 条记录',raw,20);document.body.append(node);},raw);assert.ok((await page.locator('#formatted').textContent()).includes(raw));await page.locator('#appLanguageSelect').selectOption('en');assert.equal(await page.locator('#formatted').textContent(),'Confirmed '+raw+' / 20 forwarded records');}finally{await f.close();}
+});
+
+test('central action-slot rules translate system actions and retain a destination whose name equals a system label',async()=>{
+    const f=await fixture();try{const {page}=f;await page.locator('#appLanguageSelect').selectOption('en');
+        const result=await page.evaluate(()=>({formatted:TunnelI18n.format('已{0} {1} 项到“{2}”','移动',2,'设置'),dynamic:TunnelI18n.t('已移动 2 项到“设置”')}));
+        assert.equal(result.formatted,'Move: 2 items to “设置”');assert.equal(result.dynamic,result.formatted);
+    }finally{await f.close();}
+});
+
+test('dynamic source names and diagnostic payloads remain raw even when they equal a system label',async()=>{
+    const f=await fixture({locale:'en-US'});try{
+        const values=await f.page.evaluate(()=>['解析失败：设置','获取SNS媒体失败：设置','来源为 设置 获取','已配置 · 设置'].map(text=>TunnelI18n.t(text)));
+        assert.deepEqual(values,['Parsing failed: 设置','SNS media retrieval failed: 设置','Fetched from 设置 ','Configured · 设置']);
+    }finally{await f.close();}
+});
+
+test('central UI error composition translates explanations and request captions while retaining codes, paths and IDs',async()=>{
+    const f=await fixture({locale:'en-US'});try{
+        await f.page.addScriptTag({url:'http://i18n.test/client/disk-error-messages.js'});
+        const result=await f.page.evaluate(()=>{
+            const error=DiskErrorMessages.format({code:'CONTENT_COPY_SCOPE_INVALID',errorDetails:{requestId:'trace-设置'}});
+            return {error,translated:TunnelI18n.t(error),position:TunnelI18n.t('位置“/设置”：'+DiskErrorMessages.describe('DISK_NAME_CONFLICT'))};
+        });
+        assert.equal(result.translated,"The source and destination scopes do not meet this operation's requirements. Choose them again. [CONTENT_COPY_SCOPE_INVALID] · Request ID: trace-设置");
+        assert.equal(result.position,'Location “/设置”: The destination name is used by a file, folder, mount or active upload. Rename it or choose another location.');
+    }finally{await f.close();}
 });
 
 test('system error action labels translate but error payloads and tooltip parameters remain unchanged',async()=>{

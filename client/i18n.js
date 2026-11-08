@@ -18,6 +18,7 @@
     const DYNAMIC_LANGUAGES = window.Drop2TunnelI18nConfig?.dynamicLanguages || [];
     const DYNAMIC_TEMPLATES = window.Drop2TunnelI18nConfig?.templates || [];
     const TEXT_PATTERNS = window.Drop2TunnelI18nConfig?.textPatterns || [];
+    const TEMPLATE_LABELS = window.Drop2TunnelI18nConfig?.templateLabels || {};
 
     function canonicalKey(value) {
         return String(value || '').trim().replace(/\s+/g, '');
@@ -43,7 +44,8 @@
     const formattedSources = new Map();
     const parameterized = [...CATALOG.values()].filter(entry => /\{\d+\}/.test(entry.source) && /[\u3400-\u9fff].*[\u3400-\u9fff]/.test(entry.source) && !TEXT_PATTERNS.some(rule=>rule.key===entry.source)).map(entry => {
         const indices = [...entry.source.matchAll(/\{(\d+)\}/g)].map(match => Number(match[1]));
-        const pattern = entry.source.split(/(\{\d+\})/).map(part => /^\{\d+\}$/.test(part) ? '([\\s\\S]*?)' : part.replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/\s+/g,'\\s*')).join('');
+        const parts = entry.source.split(/(\{\d+\})/);
+        const pattern = parts.map((part,index) => /^\{\d+\}$/.test(part) ? '([\\s\\S]*?)' : /^\s+$/.test(part) && /^\{\d+\}$/.test(parts[index-1] || '') && /^\{\d+\}$/.test(parts[index+1] || '') ? '\\s+' : part.replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/\s+/g,'\\s*')).join('');
         return { entry, indices, pattern:new RegExp('^'+pattern+'$') };
     }).sort((a,b) => b.entry.source.length-a.entry.source.length);
 
@@ -53,6 +55,10 @@
             const values = new Map(); let consistent = true;
             indices.forEach((index,n) => { if (values.has(index) && values.get(index)!==match[n+1]) consistent=false; values.set(index,match[n+1]); });
             if (!consistent) continue;
+            for (const index of TEMPLATE_LABELS[entry.source] || []) {
+                const value = values.get(index);
+                if (resolveCatalogKey(value)) values.set(index,translateText(value,lang));
+            }
             const template = lang===DEFAULT_LANG ? entry.source : entry.translations[lang] || entry.translations.en || entry.source;
             return template.replace(/\{(\d+)\}/g,(_all,index) => values.get(Number(index)) ?? _all);
         }
@@ -76,7 +82,7 @@
 
     function currentLanguage() {
         const preference = languagePreference();
-        return preference === 'system' ? normalizeLanguage(navigator.languages?.[0] || navigator.language || 'en') : preference;
+        return preference === 'system' ? normalizeLanguage(navigator.language || navigator.languages?.[0] || 'en') : preference;
     }
 
     function resolveCatalogKey(value) {
@@ -86,16 +92,24 @@
 
     function translateDynamic(source, lang) {
         const text = String(source || '').trim();
-        for (const {pattern,key,labels=[]} of TEXT_PATTERNS) {
+        for (const {pattern,key,labels=[],optionalLabels=[]} of TEXT_PATTERNS) {
             const match=pattern.exec(text); if(!match)continue;
             const values=match.slice(1);
             // Only named system-label slots are translated. Error codes,
             // paths and all other parameter values are kept verbatim.
-            if(labels.some(index=>!CATALOG.has(canonicalKey(values[index]))))continue;
-            labels.forEach(index=>{values[index]=translateText(values[index],lang);});
+            let recognized=true;
+            for (const index of [...labels,...optionalLabels]) {
+                const value=values[index] || '', translated=translateText(value,lang);
+                if (!resolveCatalogKey(value) && translated===value) {
+                    if(labels.includes(index))recognized=false;
+                    continue;
+                }
+                values[index]=(value.match(/^\s*/)?.[0] || '')+translated.trim()+(value.match(/\s*$/)?.[0] || '');
+            }
+            if(!recognized)continue;
             return translateText(key,lang).replace(/\{(\d+)\}/g,(_all,index)=>values[Number(index)]??_all);
         }
-        for (const [pattern, values] of DYNAMIC_TEMPLATES) {
+        for (const [pattern, values, labels = []] of DYNAMIC_TEMPLATES) {
             const match = pattern.exec(text);
             if (!match) continue;
             if (lang === DEFAULT_LANG) return text;
@@ -107,8 +121,9 @@
                 return entry.translations[lang] || entry.translations.en || entry.source;
             };
             return template.replace(/\{(raw)?(\d+|n)\}/g, (_, raw, index) => {
-                const value = match[index === 'n' ? 1 : Number(index)] || '';
-                return raw ? value : localizeCapture(value);
+                const capture = index === 'n' ? 1 : Number(index);
+                const value = match[capture] || '';
+                return raw || !labels.includes(capture) ? value : localizeCapture(value);
             });
         }
         return '';
@@ -124,6 +139,7 @@
             if (lang === DEFAULT_LANG) return entry.source;
             return entry.translations[lang] || translateDynamic(entry.source,lang) || entry.translations.en || entry.source;
         }
+        if (lang === DEFAULT_LANG) return original;
         // Unknown numeric progress, filenames and technical identifiers cannot
         // match Chinese UI templates. Avoid scanning every template per tick.
         if (!/[\u3400-\u9fff]/.test(text)) return original;
@@ -131,8 +147,10 @@
     }
 
     function formatText(source, ...values) {
-        const substitute = template => template.replace(/\{(\d+)\}/g,(_all,index) => String(values[Number(index)] ?? _all));
-        const text = substitute(translateText(source)), original = substitute(String(source));
+        const entry = CATALOG.get(resolveCatalogKey(source));
+        const localizedValues = values.map((value,index) => (TEMPLATE_LABELS[entry?.source || source] || []).includes(index) && resolveCatalogKey(value) ? translateText(value) : value);
+        const substitute = (template,args) => template.replace(/\{(\d+)\}/g,(_all,index) => String(args[Number(index)] ?? _all));
+        const text = substitute(translateText(source),localizedValues), original = substitute(String(source),values);
         if (formattedSources.size>=2048) formattedSources.delete(formattedSources.keys().next().value);
         formattedSources.set(text,original);
         return text;

@@ -9,7 +9,7 @@ const { createDiskOidcReceipt } = require('../../server/disk-oidc-receipt');
 const { createDiskOperations } = require('../../server/disk-operations');
 const { createDiskAPI } = require('../../server/disk-api');
 const { createTelegramDriveStore } = require('../../server/telegram-drive');
-async function createFixture({ serverTransfers = false, listDelayMs = 0, extraUsers = [], adminAuthorized = () => true } = {}) {
+async function createFixture({ serverTransfers = false, listDelayMs = 0, extraUsers = [], adminAuthorized = () => true, i18n = false } = {}) {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pending-save-ui-'));
     const repository = openDiskRepository(dataDir);
     const fixtureUsers = [{ id: 'alice', username: 'alice', name: '验收甲账号' }, { id: 'bob', username: 'bob', name: '验收乙账号' }, ...extraUsers];
@@ -65,7 +65,7 @@ async function createFixture({ serverTransfers = false, listDelayMs = 0, extraUs
     });
     app.get('/fixture-before.css', (_req,res) => res.sendFile(path.join(root,'.npm-cache/261019-2-before.css')));
     app.get('/disk', (_req, res) => {
-        const scripts = ['cache-store', 'sns-download-cache', 'youtube-premium-cache', 'disk-pending-save', 'disk-error-messages', 'disk-file-editor', 'disk-folder-upload', 'disk-operation-order', 'disk-client', 'disk-directory-picker', 'disk-mount-ui', 'disk-trash-ui', 'disk-import-picker', 'account-ui', 'disk-ui'];
+        const scripts = [...(i18n ? ['i18n-catalog', 'i18n'] : []), 'cache-store', 'sns-download-cache', 'youtube-premium-cache', 'disk-pending-save', 'disk-error-messages', 'disk-file-editor', 'disk-folder-upload', 'disk-operation-order', 'disk-client', 'disk-directory-picker', 'disk-mount-ui', 'disk-trash-ui', 'disk-import-picker', 'account-ui', 'disk-ui'];
         let html = fs.readFileSync(path.join(root, 'pages/index.html'), 'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');
         html = html.replace('</body>', '<output id="fixtureStatus" style="position:fixed;bottom:0;left:0;z-index:10000;background:white;color:black"></output>' + scripts.map(name => '<script src="/client/' + name + '.js"></script>').join('') + '<script src="/fixture-ui.js"></script></body>');
         res.type('html').send(html);

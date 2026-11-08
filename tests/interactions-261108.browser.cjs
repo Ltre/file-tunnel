@@ -31,10 +31,16 @@ test('Orbit file metadata card uses theme background rather than white',async()=
 });
 test('transcode logs open at their latest line and preserve a reader who scrolled upward during refresh',async()=>{
     const page=await browser.newPage();try{
-        await page.route('**/api/video-transcode/**',route=>route.fulfill({json:route.request().url().endsWith('/tasks')?{tasks:[{id:'t1',fileName:'video.mp4',status:'running',createdAt:1,logs:Array.from({length:20},(_,n)=>'line '+n+' '.repeat(4)+'details\nmore details')}]}:route.request().url().endsWith('/profiles')?{profiles:[]}:{totalBytes:0}}));
+        await page.route('**/api/video-transcode/**',route=>route.fulfill({json:route.request().url().endsWith('/tasks')?{tasks:[{id:'t1',fileName:'video.mp4',status:'running',createdAt:1,logs:Array.from({length:20},(_,n)=>'line '+n+' details')}]}:route.request().url().endsWith('/profiles')?{profiles:[]}:{totalBytes:0}}));
         await page.goto(base+'/video-transcode');await page.locator('summary').filter({hasText:'FFmpeg 输出'}).click();const log=page.locator('.task pre');
+        assert.equal((await log.textContent()).split('\n').length,20,'each FFmpeg log entry must render as its own line');
         await page.waitForFunction(()=>{const node=document.querySelector('.task pre');return node.scrollTop>0&&node.scrollHeight-node.clientHeight-node.scrollTop<2;});
         await log.evaluate(node=>node.scrollTop=10);await page.getByRole('button',{name:'刷新任务',exact:true}).click();await page.waitForTimeout(80);assert.equal(await log.evaluate(node=>node.scrollTop),10);
+        // A polling response can replace a just-opened details element before
+        // its queued toggle event or first animation frame has run.
+        await page.reload();await page.locator('.task summary').waitFor();
+        await page.evaluate(()=>{const details=document.querySelector('.task details');details.open=true;renderTasks();});
+        await page.waitForTimeout(80);assert.ok(await log.evaluate(node=>node.scrollHeight-node.clientHeight-node.scrollTop<2),'opening during a poll still starts at the tail');
     }finally{await page.close();}
 });
 test('upload progress streams leave HTTP/1 connections available for an immediate directory read',async()=>{

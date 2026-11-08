@@ -424,6 +424,7 @@ async function resumeTelegramDrivePendingSave(id = telegramDrivePendingSaveId) {
                 if (!spaces.some(space => space.id === target.partitionId && telegramDriveSpaceKey(space) === target.diskSpace && (!space.state || space.state === 'ACTIVE'))) throw new Error('原目标分区已删除或不可用，请取消待转存后重新发起');
                 await pendingSaveRead('/list?path=' + encodeURIComponent(target.path), ctx);
             },
+            preflight: (_record, target, verify) => window.DiskClient.withActivity({ message:'正在核验目标目录和来源版本…', accountId:target.accountId }, verify),
             verifySaved: async record => {
                 viewingSavedFile = true;
                 if (!record.target || !await ensureAccount(record.target.accountId, record)) {

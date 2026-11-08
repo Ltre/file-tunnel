@@ -430,8 +430,9 @@
             target = { ...target, accountName:target.accountName || account.name || account.username || account.id };
             if (!target.accountId || !target.partitionId || typeof target.path !== 'string') throw new Error('请选择有效的账号、分区和目标目录');
             stage('正在核验目标目录和来源版本…');
-            await hooks.verifyTarget?.(record, target);
-            await verifySource(record);
+            const verify = async () => { await hooks.verifyTarget?.(record, target); await verifySource(record); };
+            if (hooks.preflight) await hooks.preflight(record, target, verify);
+            else await verify();
             stage('请确认转存目标');
             if (!await hooks.confirm(record, target)) return record;
             record = await update(id, { status: 'uploading', target, attemptedAt: Date.now(), error: '' });

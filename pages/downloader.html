@@ -413,9 +413,14 @@
         socket.on('file-asset-manifest', data => transfer.handleManifest(data));
         socket.on('file-asset-unavailable', data => transfer.handleUnavailable(data));
         socket.on('file-asset-available', data => transfer.handleAvailable(data));
-        socket.on('file-asset-relay-start', data => transfer.handleRelayStart(data));
-        socket.on('file-asset-relay-chunk', data => transfer.handleRelayChunk(data));
-        socket.on('file-asset-relay-complete', data => transfer.handleRelayComplete(data));
+        socket.on('file-asset-transfer-status', data => transfer.handleTransferStatus(data));
+        for (const [event, method] of [['start','handleRelayStart'], ['chunk','handleRelayChunk'], ['complete','handleRelayComplete']]) {
+            socket.on('file-asset-relay-' + event, (data, ack) => {
+                Promise.resolve().then(() => transfer[method](data))
+                    .then(result => ack?.(result || { ok: true }))
+                    .catch(error => { ack?.({ ok: false, reason: error.message }); setStatus(`获取文件失败：${error.message}`); });
+            });
+        }
     }
 
     async function start() {
