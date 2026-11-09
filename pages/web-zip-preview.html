@@ -11,6 +11,8 @@
 <body>
     <header><strong id="title">网页 ZIP 预览</strong><button id="reloadBtn" type="button">重新加载</button><button type="button" onclick="window.close()">关闭</button></header>
     <main><div class="status" id="status"><div><span class="spinner"></span><br><span id="statusText">正在等待网页 ZIP 缓存…</span></div></div><iframe id="viewer" sandbox="allow-same-origin allow-scripts allow-forms allow-modals allow-downloads allow-popups" hidden></iframe></main>
+    <script src="/client/i18n-catalog.js"></script>
+    <script src="/client/i18n.js"></script>
     <script src="/client/cache-store.js"></script>
     <script src="/client/folder-archive.js"></script>
     <script src="/client/web-zip-runtime.js"></script>
@@ -19,6 +21,7 @@
         const params=new URLSearchParams(location.search),pageTitle=params.get('name')||'网页 ZIP 预览';
         document.body.classList.toggle('bare', params.get('bare') === '1');
         document.title=pageTitle;document.getElementById('title').textContent=pageTitle;
+        document.querySelector('title').toggleAttribute('data-i18n-raw',Boolean(params.get('name')));document.getElementById('title').toggleAttribute('data-i18n-raw',Boolean(params.get('name')));
         let runtimeId='',renderEpoch=0;
         const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
         function getRecord(){return new Promise((resolve,reject)=>{const open=indexedDB.open('TunnelDB');open.onerror=()=>reject(open.error);open.onsuccess=()=>{const db=open.result;if(!db.objectStoreNames.contains('files')){db.close();return resolve(null)}const tx=db.transaction('files','readonly'),request=tx.objectStore('files').get(fileId);request.onsuccess=()=>{resolve(request.result);db.close()};request.onerror=()=>{reject(request.error);db.close()}}})}

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v132-content-v8-control-center-backup-261107-1';
+const CACHE_NAME = 'instant-tunnel-v137-content-v8-language-origin-261109-5';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -108,7 +108,7 @@ self.addEventListener('install', event => {
 self.addEventListener('activate', event => {
     event.waitUntil(
         caches.keys()
-            .then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))))
+            .then(keys => Promise.all(keys.filter(key => key.startsWith('instant-tunnel-') && key !== CACHE_NAME).map(key => caches.delete(key))))
             .then(() => self.clients.claim())
     );
 });

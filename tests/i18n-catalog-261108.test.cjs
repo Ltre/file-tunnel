@@ -12,3 +12,15 @@ test('catalog translations preserve their source placeholders and never silently
         assert.equal(translations.length,context.window.Drop2TunnelI18nConfig.dynamicLanguages.length,'every dynamic rule supports every language: '+pattern);
     }
 });
+
+test('audited frontend UI and runtime drive error explanations have every supported target language',()=>{
+    const report=require('../tools/frontend-i18n-audit').run();
+    assert.deepEqual(report.filter(item=>item.missing.length),[],'audit candidates must resolve in all 15 target languages');
+    const context={window:{}};vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../client/i18n-catalog.js'),'utf8'),context);
+    const canonical=value=>value.replace(/\s/g,''),catalog=new Map(Object.entries(context.window.Drop2TunnelI18nCatalog).map(([key,value])=>[canonical(key),value]));
+    const errors=require('../client/disk-error-messages'),missing=[];
+    for(const text of new Set([...Object.values(errors.codes),...Object.values(errors.reasons),errors.describe('unknown')])){
+        for(const language of context.window.Drop2TunnelI18nConfig.dynamicLanguages)if(!catalog.get(canonical(text))?.[language])missing.push({text,language});
+    }
+    assert.deepEqual(missing,[],'runtime codes, including final overrides, retain technical keys and have native UI explanations');
+});

@@ -20,8 +20,12 @@ test('分区稳定身份、显示名、Shared Content 复刻与删除隔离', as
     const old = initial.data.spaces.find(item => item.scopeKey === '相册&照片');
     const home = initial.data.spaces.find(item => item.isDefault);
     assert.ok(old?.id); assert.equal(home.scopeKey, '');
+    assert.equal(home.nameIsDefault, true, '新默认分区的系统显示名不是用户命名');
+    const explicitDefault = await call('alice', '/spaces/' + home.id, 'PATCH', { name: home.name });
+    assert.equal(explicitDefault.status, 200); assert.equal(explicitDefault.data.partition.nameIsDefault, false, '用户明确保存同名也保留命名意图');
     const renamedDefault = await call('alice', '/spaces/' + home.id, 'PATCH', { name: '我的网盘' });
     assert.equal(renamedDefault.status, 200); assert.equal(renamedDefault.data.partition.scopeKey, '');
+    assert.equal(renamedDefault.data.partition.nameIsDefault, false);
     assert.equal((await call('alice', '/spaces', 'POST', { name: '我的网盘' })).status, 409);
     assert.equal((await call('bob', '/spaces', 'POST', { name: '我的网盘' })).status, 201,
         '不同用户可以使用相同显示名称');

@@ -6,7 +6,7 @@ const dialogs=new Set(['alert','confirm','prompt']);
 const calls=new Set(['t','format','showAppToast','showToast','button','action','text','label','field','createFileActionButton','createResourceBrowserButton','showBlockingProgressPanel','setStatus','pendingSaveFeedback']);
 const properties=new Set(['textContent','innerText','title','placeholder','label','description','hint','ariaLabel']);
 const canonical=value=>String(value).replace(/\s+/g,'');
-function scan(source,{html=false,rewrite=false,uiMaps=[]}={}){
+function scan(source,{html=false,rewrite=false,uiMaps=[],uiCalls=[],uiMethods=[],uiErrors=false}={}){
  const phrases=new Set(),edits=[],candidates=[];
  const bindings=(node,scope)=>{
   if(!node)return;if(node.type==='Identifier')scope.names.add(node.name);
@@ -48,13 +48,14 @@ function scan(source,{html=false,rewrite=false,uiMaps=[]}={}){
    const right=node.callee.right;
    const wrapped=node.callee.type==='LogicalExpression'&&node.callee.operator==='||'&&dialogs.has(right?.type==='Identifier'?right.name:right?.type==='MemberExpression'?right.property.name:'')&&source.slice(node.callee.start,node.callee.end).startsWith('window.TunnelI18n?.');
    const name=node.callee.type==='Identifier'?node.callee.name:node.callee.type==='MemberExpression'&&!node.callee.computed?node.callee.property.name:'';
-   if(wrapped||calls.has(name)){ui(node.arguments[0]);if(name==='text'&&/^[a-z][a-z0-9-]*$/.test(literal(node.arguments[0])||'')&&!['pre','code','textarea','script','style'].includes(literal(node.arguments[0])))ui(node.arguments[1]);}
+   if(wrapped||calls.has(name)||(node.callee.type==='Identifier'&&uiCalls.includes(name))||(node.callee.type==='MemberExpression'&&uiMethods.includes(name))){ui(node.arguments[0]);if(name==='text'&&/^[a-z][a-z0-9-]*$/.test(literal(node.arguments[0])||'')&&!['pre','code','textarea','script','style'].includes(literal(node.arguments[0])))ui(node.arguments[1]);}
    if(name==='setAttribute'&&['title','placeholder','aria-label'].includes(literal(node.arguments[0])))add(literal(node.arguments[1]));
    if(name==='assign'&&node.callee.object?.name==='Object'&&uiMaps.includes(node.arguments[0]?.name))node.arguments.slice(1).forEach(ui);
    if(dialogs.has(name)&&(node.callee.type==='Identifier'||node.callee.type==='MemberExpression'&&!node.callee.computed&&node.callee.object.type==='Identifier')){
     candidates.push({node,scope,name,object:node.callee.type==='MemberExpression'?node.callee.object.name:''});
    }
   }
+  if(uiErrors&&node.type==='NewExpression'&&['Error','DOMException'].includes(node.callee?.name))ui(node.arguments[0]);
   if(node.type==='AssignmentExpression'&&node.left.type==='MemberExpression'){
    const name=node.left.property.name,value=literal(node.right);
    if(name==='innerHTML'&&value!==null)markup(value);else if(properties.has(name)||uiMaps.includes(node.left.object?.name))ui(node.right);
@@ -76,7 +77,7 @@ function scan(source,{html=false,rewrite=false,uiMaps=[]}={}){
  return{phrases:[...phrases],source:rewritten,rewritten:edits.length};
 }
 function run(){
- const root=path.resolve(__dirname,'..'),index=fs.readFileSync(path.join(root,'pages/index.html'),'utf8'),files=new Set(['app.js','pages/index.html','pages/tunnel-entry.html','client/tunnel-entry.js','pages/downloadList.html','pages/downloader.html','client/disk-error-messages.js']);
+ const root=path.resolve(__dirname,'..'),index=fs.readFileSync(path.join(root,'pages/index.html'),'utf8'),files=new Set(['app.js','pages/index.html','pages/device.html','pages/tunnel-entry.html','client/tunnel-entry.js','pages/downloadList.html','pages/downloader.html','client/disk-error-messages.js','pages/disk-share.html','pages/disk-collaboration.html','client/disk-share.js','client/disk-collaboration.js','pages/web-zip-preview.html','client/web-zip-runtime.js']);
  for(const match of index.matchAll(/src=["']\/(client\/[^"'$?]+\.js)/g))if(!/i18n|vendor|qrcode/.test(match[1]))files.add(match[1]);
  const context={window:{addEventListener(){}},document:{readyState:'loading',addEventListener(){}},navigator:{language:'en'},localStorage:{getItem:()=>null}};
  vm.runInNewContext(fs.readFileSync(path.join(root,'client/i18n-catalog.js'),'utf8'),context);
@@ -85,17 +86,20 @@ function run(){
  const changes=[];
  for(const file of files){
   if(!fs.existsSync(path.join(root,file)))continue; // Generated vendor routes are not source UI.
-  const source=fs.readFileSync(path.join(root,file),'utf8'),result=scan(source,{html:file.endsWith('.html'),rewrite:process.argv.includes('--rewrite-dialogs')&&!file.endsWith('.html'),uiMaps:file==='client/disk-error-messages.js'?['codes','reasons']:[]});
+  const source=fs.readFileSync(path.join(root,file),'utf8'),result=scan(source,{html:file.endsWith('.html'),rewrite:process.argv.includes('--rewrite-dialogs')&&!file.endsWith('.html'),uiMaps:file==='client/disk-error-messages.js'?['codes','reasons']:[],uiCalls:file==='client/disk-collaboration.js'?['status']:[],uiMethods:file==='client/web-zip-runtime.js'?['onStatus']:[],uiErrors:['client/disk-share.js','client/disk-collaboration.js','pages/web-zip-preview.html'].includes(file)});
   if(result.rewritten){changes.push({file,source:result.source});rewritten+=result.rewritten;}
   for(const phrase of result.phrases){const key=canonical(phrase);if(!found.has(key))found.set(key,{phrase,files:[]});found.get(key).files.push(file);}
  }
  for(const change of changes)fs.writeFileSync(path.join(root,change.file),change.source);
  const languages=context.window.Drop2TunnelI18nConfig.languages.map(([code])=>code).filter(code=>code!=='zh-Hans');
- const report=[...found].map(([key,value])=>({...value,missing:languages.filter(language=>catalog.has(key)?!catalog.get(key)[language]:context.window.TunnelI18n.t(value.phrase,language)===value.phrase),inCatalog:catalog.has(key)}));
+ const report=[...found].map(([key,value])=>({...value,missing:languages.filter(language=>{
+  const translated=catalog.has(key)?catalog.get(key)[language]:context.window.TunnelI18n.t(value.phrase,language);
+  return !translated||(!catalog.has(key)&&translated===value.phrase)||(!['zh-Hant','ja'].includes(language)&&/\p{Script=Han}/u.test(translated));
+ }),inCatalog:catalog.has(key)}));
  const summary={files:files.size,phrases:report.length,missingCatalog:report.filter(item=>!item.inCatalog).length,missingJapanese:report.filter(item=>item.missing.includes('ja')).length,rewrittenDialogs:rewritten};
  const output=process.argv.indexOf('--output');if(output>=0)fs.writeFileSync(path.resolve(root,process.argv[output+1]),JSON.stringify({summary,phrases:report},null,2));
  console.log(JSON.stringify(summary));
  return report;
 }
 if(require.main===module)run();
-module.exports={scan};
+module.exports={scan,run};

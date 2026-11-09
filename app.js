@@ -9776,7 +9776,11 @@ function openRemotePreviewDeviceModal() {
         remotePreviewSelection.devices.set(deviceId, entry);
         beginRemotePreviewCacheCheck(entry);
     });
-    document.getElementById('remotePreviewFileName').textContent = `文件：${fileInfo.name}`;
+    const fileLabel = document.getElementById('remotePreviewFileName');
+    fileLabel.dataset.i18nUi = 'true';
+    const caption = document.createElement('span'); caption.textContent = '文件：';
+    const filename = document.createElement('span'); filename.dataset.i18nRaw = 'true'; filename.textContent = fileInfo.name;
+    fileLabel.replaceChildren(caption, filename);
     renderRemotePreviewDeviceList();
     showRemotePreviewDeviceModal();
     historyLog('remote-preview-device-picker-opened', { fileId:fileInfo.id, candidateCount:devices.size });
@@ -13235,25 +13239,29 @@ async function showFileDetailsForInfo(fileInfo, message = {}) {
     const hasLocalData = hasCompleteFileCache(storedFile, fileInfo);
     activeFileDetailsMessageId = message.messageId || message.id || '';
     activeFileDetailsFileId = fileInfo.id;
+    const displayName = getFileDisplayName(fileInfo);
+    const rawName = String(fileInfo.name || '');
+    const extensionIndex = rawName.lastIndexOf('.');
     const details = [
-        ['文件名', getFileDisplayName(fileInfo) || '未知文件'],
-        ['扩展名', getFileExtension(fileInfo.name)],
-        ['MIME 类型', fileInfo.type || 'application/octet-stream'],
-        ['文件大小', formatFileSize(Number(fileInfo.size) || 0)],
-        ['上传时间', formatDateTime(message.timestamp || fileInfo.timestamp || Date.now())],
-        ['最初上传设备', message.senderName || fileInfo.senderName || '未知设备'],
-        ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知'],
+        ['文件名', displayName || '未知文件', Boolean(displayName)],
+        ['扩展名', getFileExtension(fileInfo.name), extensionIndex > 0 && extensionIndex < rawName.length - 1],
+        ['MIME 类型', fileInfo.type || 'application/octet-stream', true],
+        ['文件大小', formatFileSize(Number(fileInfo.size) || 0), true],
+        ['上传时间', formatDateTime(message.timestamp || fileInfo.timestamp || Date.now()), true],
+        ['最初上传设备', message.senderName || fileInfo.senderName || '未知设备', Boolean(message.senderName || fileInfo.senderName)],
+        ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知', Boolean(fileInfo.ownerDeviceId || message.sender)],
         ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')],
         ['提示', isLikelyTouchDevice() ? '手指长按文件旁边的空白处，即可查看详情' : '在文件旁边的空白处点击右键即可查看详情']
     ];
     const list = document.getElementById('fileDetailsList');
     list.replaceChildren();
-    details.forEach(([label, value]) => {
+    details.forEach(([label, value, raw]) => {
         const row = document.createElement('div');
         row.className = 'file-details-row';
         const term = document.createElement('dt');
         term.textContent = label;
         const description = document.createElement('dd');
+        if (raw) description.dataset.i18nRaw = 'true';
         description.textContent = value;
         description.title = value;
         row.append(term, description);
@@ -16975,7 +16983,11 @@ function renderDeviceRow(device, options = {}) {
     `;
     const name = el.querySelector('.name');
     const localRemark = isSelf ? '' : getLocalDeviceRemark(normalized.deviceId)?.remark;
-    name.textContent = `${getDeviceDisplayName(normalized, { isSelf })}${isSelf ? ' (我)' : ''}`;
+    const displayName = document.createElement('span');
+    displayName.dataset.i18nRaw = 'true';
+    displayName.textContent = getDeviceDisplayName(normalized, { isSelf });
+    name.append(displayName);
+    if (isSelf) name.append(document.createTextNode(' (我)'));
     if (localRemark) name.title = `设备原名：${normalized.name || normalized.deviceId}`;
     makeDeviceNameInteractive(name, normalized);
     const status = el.querySelector('.status');
@@ -20066,6 +20078,16 @@ async function announceKnownSessionCodes() {
     if (state.sessionId && state.shortCode && !entries.some(entry => entry.sessionId === state.sessionId)) {
         entries.push({ sessionId: state.sessionId, shortCode: state.shortCode });
     }
+    // A saved admission is independent of a cached directory entry or its old
+    // join code. Let the server verify it without joining that tunnel.
+    try {
+        for (let index=0;index<localStorage.length;index++) {
+            const key=localStorage.key(index);
+            if (!key?.startsWith('tunnel-authorization:')) continue;
+            const sessionId=key.slice('tunnel-authorization:'.length);
+            if (/^[a-zA-Z0-9_-]{8,64}$/.test(sessionId) && !entries.some(entry=>entry.sessionId===sessionId) && savedTunnelGrant(sessionId)) entries.push({sessionId,shortCode:''});
+        }
+    } catch (error) { historyLog('session-access-directory-read-failed',{error:error.message}); }
     socket.emit('register-session-codes', { deviceId:state.deviceId,entries:entries.map(entry=>({...entry,deviceId:tunnelDeviceId(entry.sessionId),accessGrant:savedTunnelGrant(entry.sessionId)})) });
     historyLog('session-code-directory-announced', { entryCount: entries.length });
 }

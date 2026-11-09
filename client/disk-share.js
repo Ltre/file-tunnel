@@ -136,14 +136,14 @@
             const data = await (await request('?path=' + encodeURIComponent(path), signal)).json();
             if (signal.aborted) return;
             $('shareStatus').textContent = '';
-            $('shareTitle').textContent = data.title; $('shareBreadcrumbs').replaceChildren();
+            $('shareTitle').dataset.i18nRaw = 'true'; $('shareTitle').textContent = data.title; $('shareBreadcrumbs').replaceChildren();
             const parts = path.split('/').filter(Boolean);
             for (let index = 0; index <= parts.length; index++) {
-                const button = document.createElement('button'); button.textContent = index ? parts[index - 1] : '根目录'; button.onclick = () => list(parts.slice(0, index).join('/')); $('shareBreadcrumbs').append(button);
+                const button = document.createElement('button'); if (index) button.dataset.i18nRaw = 'true'; button.textContent = index ? parts[index - 1] : '根目录'; button.onclick = () => list(parts.slice(0, index).join('/')); $('shareBreadcrumbs').append(button);
             }
             for (const item of [...data.folders, ...data.files]) {
                 const row = document.createElement('div'); row.className = 'disk-public-item';
-                const open = document.createElement('button'); open.className = 'disk-public-name'; open.textContent = (item.kind === 'directory' ? '📁 ' : '📄 ') + item.name;
+                const open = document.createElement('button'); open.className = 'disk-public-name'; open.dataset.i18nRaw = 'true'; open.textContent = (item.kind === 'directory' ? '📁 ' : '📄 ') + item.name;
                 const previewable = /^(image|audio|video|text)\//.test(item.type || '') || item.type === 'application/pdf';
                 open.onclick = () => item.kind === 'directory' ? list(item.path) : openFile(item, previewable);
                 row.append(open);

@@ -54,7 +54,7 @@ function loginUI(raw) {
         telegramDriveLoginAttempt: 'current-attempt-001', telegramDriveLoginTarget: null, telegramDriveLoginBaseline: [{ id: 'account', expiresAt: 500 }], telegramDrivePendingSaveId: '',
         switchTelegramDriveAccount: async id => selected.push(id), renderTelegramDrive: async () => {},
         showAppToast: message => successes.push(message), alert: message => errors.push(message), historyLog() {},
-        setTimeout: (callback, delay) => { timers.push({ callback, delay }); }, Date, encodeURIComponent });
+        setTimeout: (callback, delay) => { timers.push({ callback, delay }); }, clearTimeout() {}, Date, encodeURIComponent });
     const start = ui.indexOf('async function finishTelegramDriveOidcLogin('), end = ui.indexOf('\nlet diskExporter', start);
     vm.runInContext(ui.slice(start, end), context);
     return { context, popup, errors, successes, selected, timers, poll: () => context.pollTelegramDriveOidcLogin(popup, 1, Date.now()) };
@@ -66,17 +66,24 @@ test('同账号与有效期不变且 opener 通知缺失时，匹配的完成回
     f.popup.closed = true; await f.poll();
     assert.deepEqual(f.selected, ['account']); assert.equal(f.successes.length, 1); assert.equal(f.errors.length, 0);
 });
-test('已有登录不能当作此次成功：手动关窗复查一次后正确报告未完成', async () => {
+test('已有登录不能当作此次成功，关闭或被隔离的窗口继续等待本次回执而不提前取消', async () => {
     let reads = 0; const f = loginUI(async () => { reads++; return status(); }); f.popup.closed = true;
-    await f.poll(); assert.equal(f.timers[0].delay, 250); assert.equal(f.errors.length, 0);
+    await f.poll(); assert.equal(f.timers[0].delay, 2000); assert.equal(f.errors.length, 0);
     await f.timers.shift().callback(); await new Promise(resolve => setImmediate(resolve));
-    assert.equal(reads, 2); assert.equal(f.successes.length, 0); assert.match(f.errors[0], /登录窗口已关闭/);
+    assert.equal(reads, 2); assert.equal(f.successes.length, 0); assert.equal(f.errors.length,0);
 });
 test('已有登录与其它窗口的账号变化都不代替本次授权完成', async () => {
     const f = loginUI(async () => status()); f.context.telegramDriveLoginBaseline = [];
     await f.poll(); assert.equal(f.successes.length, 0); assert.equal(f.timers[0].delay, 2000);
     const another = loginUI(async () => ({ identity: { id: 'other' }, accounts: [{ identity: { id: 'other' }, expiresAt: 1000 }] }));
     await another.poll(); assert.equal(another.successes.length, 0); assert.equal(another.timers[0].delay, 2000);
+});
+
+test('返回页面时复用进行中的回执查询，不增加并行轮询或重复完成登录',async()=>{
+    let release,reads=0;const f=loginUI(route=>{reads++;return route.includes('oidc_attempt')?new Promise(resolve=>release=resolve):Promise.resolve(status());});
+    const pending=f.poll();f.context.resumeTelegramDriveOidcLogin();f.context.resumeTelegramDriveOidcLogin();assert.equal(reads,1);
+    release(status({attemptId:'current-attempt-001',result:'success',accountId:'account'}));await pending;
+    assert.equal(f.successes.length,1);assert.equal(f.timers.length,0);f.context.resumeTelegramDriveOidcLogin();assert.equal(reads,2,'the successful final account verification was the only additional read');
 });
 test('轮询收到旧响应时，成功通知和取消都不会被迟到响应覆盖', async () => {
     for (const cancel of [false, true]) {

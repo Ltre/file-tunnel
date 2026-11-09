@@ -21,7 +21,9 @@ function createDiskPartitions({ dataDir, spaces, s3Credentials }) {
     const active = item => item.state === ACTIVE;
     const publicItem = item => ({ id: item.id, partitionId: item.id, scopeKey: item.scopeKey,
         diskSpace: item.scopeKey, name: item.displayName, displayName: item.displayName,
-        isDefault: Boolean(item.isDefault), state: item.state, settings: structuredClone(item.settings || { version: 1 }),
+        isDefault: Boolean(item.isDefault),
+        nameIsDefault: Boolean(item.isDefault && (item.nameIsDefault ?? (item.displayName === '默认分区' && item.createdAt === item.updatedAt))),
+        state: item.state, settings: structuredClone(item.settings || { version: 1 }),
         createdAt: item.createdAt, updatedAt: item.updatedAt });
     const commit = (state, items) => repository.replaceMany([{ table: 'partitions', items,
         keyOf: item => item.id, base: state.revisions }]);
@@ -53,7 +55,7 @@ function createDiskPartitions({ dataDir, spaces, s3Credentials }) {
                 }
                 const now = Date.now();
                 items.push({ id: crypto.randomUUID(), ownerId: userId, scopeKey, displayName,
-                    isDefault: scopeKey === '', state: ACTIVE, settings: { version: 1 },
+                    isDefault: scopeKey === '', nameIsDefault: scopeKey === '', state: ACTIVE, settings: { version: 1 },
                     createdAt: now, updatedAt: now });
                 occupied.add(scopeKey); changed = true;
             }
@@ -152,6 +154,7 @@ function createDiskPartitions({ dataDir, spaces, s3Credentials }) {
                 if (items.some(other => other.id !== item.id && other.ownerId === ownerId && active(other)
                     && normalizeName(other.displayName) === normalizeName(displayName))) throw new Error('DISK_SPACE_EXISTS');
                 item.displayName = displayName;
+                item.nameIsDefault = false;
             });
         },
         updateSettings(ownerId, id, value) {

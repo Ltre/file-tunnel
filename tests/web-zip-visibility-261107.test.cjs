@@ -60,3 +60,38 @@ test('nearby online devices qualify without sharing the editing tunnel, but unre
  f.context.getNearbyCandidates=()=>[{deviceId:'nearby-other-identity'}];assert.equal(f.context.canSyncWebZipSource('editor-B','A','B'),true);
  f.context.getNearbyCandidates=()=>[{deviceId:'nearby-source'}];f.socket.connected=false;assert.equal(f.context.canSyncWebZipSource('editor-B','A','B'),false);
 });
+
+test('a verified source membership permits sync while every page stays in the editing tunnel and the source has no online device',t=>{
+ const f=setup(t);f.sessions.get('A').devices.clear();f.socket.data.deviceId='editor-B';
+ f.sessions.set('B',{devices:new Map([['editor-B',{socketId:f.socket.id}]])});f.register();
+ assert.equal(f.context.canSyncWebZipSource('editor-B','A','B'),true);
+ assert.equal(f.sessions.get('A').devices.size,0,'checking access never joins the source');
+ const grant=f.socket.data.webZipSyncAccessGrants.get('A');grant.grant='forged';assert.equal(f.context.canSyncWebZipSource('editor-B','A','B'),false,'an anchor or unverified grant cannot replace source access');
+ grant.grant=f.context.tunnelAccess.issue('A','editor-A');
+ f.context.canUseTunnelCapability=(_session,id)=>id!=='editor-A';assert.equal(f.context.canSyncWebZipSource('editor-B','A','B'),false,'current source read permission is still required');
+});
+
+test('a saved admission is announced even when its old local session directory entry is absent',async()=>{
+ const app=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8'),start=app.indexOf('async function announceKnownSessionCodes()'),end=app.indexOf('\n}',start)+2;
+ const A='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',B='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',sent=[];
+ const context={state:{sessionId:B,shortCode:'BBBBB',deviceId:'editor-B',socket:{connected:true,emit:(name,value)=>sent.push({name,value})}},getAllFromStore:async()=>[],normalizeLocalShortCode:value=>value,historyLog(){},
+  localStorage:{length:1,key:()=> 'tunnel-authorization:'+A},savedTunnelGrant:id=>'signed-'+id,tunnelDeviceId:id=>id===A?'editor-A':'editor-B'};
+ vm.runInNewContext(app.slice(start,end),context);await context.announceKnownSessionCodes();
+ assert.equal(sent.length,1);const proof=sent[0].value.entries.find(entry=>entry.sessionId===A);assert.equal(proof.shortCode,'');assert.equal(proof.deviceId,'editor-A');assert.equal(proof.accessGrant,'signed-'+A);
+});
+
+test('a source access grant survives short-code rotation without registering the obsolete short code',t=>{
+ const f=setup(t);f.sessions.get('A').devices.clear();f.socket.data.deviceId='editor-B';f.sessions.set('B',{devices:new Map([['editor-B',{socketId:f.socket.id}]])});
+ f.sessions.get('A').shortCode='NEWAA';f.context.infraStore.findShortCodeForSession=id=>id==='A'?'NEWAA':'BBBBB';
+ const reserved=[];f.context.reserveShortCode=(code,id)=>{reserved.push([code,id]);return true;};f.register();
+ assert.equal(f.context.canSyncWebZipSource('editor-B','A','B'),true);assert.equal(reserved.some(([code])=>code==='AAAAA'),false);
+});
+
+test('a visible online device can prove its source membership without opening the source, but an unrelated device cannot',t=>{
+ const f=setup(t);f.sessions.get('A').devices.clear();f.socket.data.deviceId='helper-B';
+ f.register(f.socket,{A:'helper-A',B:'helper-B'});
+ f.sessions.set('B',{devices:new Map([['editor-B',{socketId:'editor-B'}],['helper-B',{socketId:f.socket.id}]])});f.sockets.set('editor-B',{connected:true,data:{deviceId:'editor-B'}});
+ assert.equal(f.context.canSyncWebZipSource('editor-B','A','B'),true);f.sessions.get('B').devices.delete('helper-B');
+ assert.equal(f.context.canSyncWebZipSource('editor-B','A','B'),false);f.context.getNearbyCandidates=()=>[{deviceId:'helper-B'}];
+ assert.equal(f.context.canSyncWebZipSource('editor-B','A','B'),true);f.socket.connected=false;assert.equal(f.context.canSyncWebZipSource('editor-B','A','B'),false);
+});

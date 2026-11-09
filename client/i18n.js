@@ -11,8 +11,9 @@
     const TEXT_SOURCES = new WeakMap();
     const ATTRIBUTE_SOURCES = new WeakMap();
     const TEXT_RENDERED = new WeakMap();
+    const TEXT_SPACING = new WeakMap();
     const ATTRIBUTE_RENDERED = new WeakMap();
-    const PROTECTED_ATTRIBUTES = 'script,style,code,pre,[data-i18n-raw],[translate="no"]:not(html):not(body),.message-content,.file-name,.collection-file-name,.telegram-drive-item-name,.web-tree-name,.web-draft-title>strong,.file-preview-title-name,.remote-preview-file-name,.disk-editor-preview,#diskPreviewName,#richViewerContent';
+    const PROTECTED_ATTRIBUTES = 'script,style,code,pre,[data-i18n-raw],[translate="no"]:not(html):not(body),.message-content,.file-name,.collection-file-name,.telegram-drive-item-name,.web-tree-name,.web-draft-title>strong,.file-preview-title-name,.remote-preview-file-name:not([data-i18n-ui]),.remote-preview-device-name,#remotePreviewControlTitle,.disk-editor-preview,#diskPreviewName,#richViewerContent';
     const PROTECTED_CONTENT = 'textarea,[contenteditable="true"],.rich-message-editor,' + PROTECTED_ATTRIBUTES;
     let applyingTranslations = false;
     const DYNAMIC_LANGUAGES = window.Drop2TunnelI18nConfig?.dynamicLanguages || [];
@@ -157,6 +158,8 @@
     }
 
     function dialog(kind,args) {
+        const defaults = window.Drop2TunnelI18nConfig?.promptDefaults?.[canonicalKey(args[0])];
+        if (kind==='prompt' && defaults?.includes(args[1])) args[1]=translateText(args[1]);
         if (typeof args[0]==='string') args[0]=translateText(args[0]);
         return window[kind](...args);
     }
@@ -168,7 +171,14 @@
 
     function rememberTextSource(node) {
         const saved = TEXT_SOURCES.get(node);
-        if (saved && node.nodeValue.trim()===TEXT_RENDERED.get(node)) return saved;
+        if (saved && node.nodeValue===TEXT_RENDERED.get(node)) return saved;
+        // Preserve whitespace authored by the caller, not whitespace inserted
+        // by our previous translation. Otherwise a padded label can grow on
+        // every MutationObserver pass and keep the renderer permanently busy.
+        TEXT_SPACING.set(node, {
+            leading: node.nodeValue.match(/^\s*/)?.[0] || '',
+            trailing: node.nodeValue.match(/\s*$/)?.[0] || ''
+        });
         const current = formattedSources.get(node.nodeValue.trim()) || node.nodeValue;
         const currentKey = resolveCatalogKey(current);
         const source=currentKey ? CATALOG.get(currentKey).source : current.trim();
@@ -181,11 +191,10 @@
         const source = rememberTextSource(node);
         // Dynamic system labels retain their source across language switches,
         // just as catalog entries do. Authored content is still skipped above.
-        const leading = node.nodeValue.match(/^\s*/)?.[0] || '';
-        const trailing = node.nodeValue.match(/\s*$/)?.[0] || '';
+        const { leading, trailing } = TEXT_SPACING.get(node);
         const next = `${leading}${translateText(source.trim(), lang)}${trailing}`;
         if (node.nodeValue !== next) node.nodeValue = next;
-        TEXT_RENDERED.set(node,next.trim());
+        TEXT_RENDERED.set(node,next);
     }
 
     function translateAttributes(element, lang) {
@@ -266,6 +275,7 @@
         const preference = lang === 'system' ? 'system' : normalizeLanguage(lang);
         localStorage.setItem(STORAGE_KEY, preference);
         translateNode(document.body);
+        translateNode(document.querySelector('title'));
         document.querySelectorAll('#appLanguageSelect').forEach(select => { select.value = preference; });
         window.dispatchEvent(new CustomEvent('drop2tunnel-language-changed', { detail: { language: currentLanguage(), preference } }));
     }
@@ -273,6 +283,8 @@
     let observer = null;
     function start() {
         translateNode(document.body);
+        const pageTitle = document.querySelector('title');
+        translateNode(pageTitle);
         observer = new MutationObserver(records => {
             if (applyingTranslations) return;
             const roots = new Set();
@@ -290,6 +302,7 @@
             attributes: true,
             attributeFilter: ['title', 'placeholder', 'aria-label']
         });
+        if (pageTitle) observer.observe(pageTitle, { childList:true, subtree:true, characterData:true });
     }
 
     window.TunnelI18n = {
@@ -310,7 +323,14 @@
     window.addEventListener('languagechange', () => {
         if (languagePreference() !== 'system') return;
         translateNode(document.body);
+        translateNode(document.querySelector('title'));
         window.dispatchEvent(new CustomEvent('drop2tunnel-language-changed', { detail:{ language:currentLanguage(), preference:'system' } }));
+    });
+    window.addEventListener('storage', event => {
+        if (event.key !== STORAGE_KEY && event.key !== null) return;
+        translateNode(document.body);
+        translateNode(document.querySelector('title'));
+        window.dispatchEvent(new CustomEvent('drop2tunnel-language-changed', { detail:{ language:currentLanguage(), preference:languagePreference() } }));
     });
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);

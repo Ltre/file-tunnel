@@ -23,10 +23,10 @@
 		</main>
 		<section id="sharePreview" hidden role="dialog" aria-modal="true" aria-label="文件预览">
 			<header>
-				<strong id="sharePreviewName"></strong>
+		<strong id="sharePreviewName" data-i18n-raw></strong>
 				<button id="sharePreviewClose" type="button">关闭预览</button>
 			</header>
-			<div id="sharePreviewBody"></div>
+			<div id="sharePreviewBody" data-i18n-raw></div>
 		</section>
 		<div id="shareLoading" hidden role="status" aria-live="polite">
 			<div class="disk-loading-card">
@@ -36,10 +36,12 @@
 				<button id="shareCancel" type="button">取消</button>
 			</div>
 		</div>
-		<script src="/client/telegram-drive-cache.js"></script>
-		<script src="/client/disk-directory-picker.js"></script>
-		<script src="/client/disk-copy-picker.js"></script>
-		<script src="/client/disk-error-messages.js"></script>
-<script src="/client/disk-share.js"></script>
+		<script defer src="/client/i18n-catalog.js"></script>
+		<script defer src="/client/i18n.js"></script>
+		<script defer src="/client/telegram-drive-cache.js"></script>
+		<script defer src="/client/disk-directory-picker.js"></script>
+		<script defer src="/client/disk-copy-picker.js"></script>
+		<script defer src="/client/disk-error-messages.js"></script>
+<script defer src="/client/disk-share.js"></script>
 	</body>
 </html>

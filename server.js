@@ -2387,10 +2387,10 @@ function sendTelegramOidcPopupCompletion(res, openerOrigin, result, error = '', 
     const success = result === 'success';
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     res.status(200).type('html').send(`<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram 登录${success ? '完成' : '失败'}</title></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram 登录${success ? '完成' : '失败'}</title><script defer src="/client/i18n-catalog.js"></script><script defer src="/client/i18n.js"></script></head>
 <body style="font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f5f7fb;color:#26324d">
-<main style="max-width:420px;padding:28px;text-align:center"><h1 style="font-size:1.25rem">Telegram 登录${success ? '成功' : '未完成'}</h1><p id="telegramOidcPopupStatus">正在通知原页面，本窗口将自动关闭…</p><button type="button" onclick="window.close()">关闭窗口</button></main>
-<script>(()=>{const payload=${serializeTelegramOidcInlineValue(payload)};const targetOrigin=${serializeTelegramOidcInlineValue(openerOrigin)};try{if(window.opener&&!window.opener.closed)window.opener.postMessage(payload,targetOrigin);}finally{setTimeout(()=>window.close(),60);setTimeout(()=>{document.getElementById('telegramOidcPopupStatus').textContent='已通知原页面；如果窗口没有自动关闭，请手动关闭。';},500);}})();</script>
+<main style="max-width:420px;padding:28px;text-align:center"><h1 style="font-size:1.25rem">Telegram 登录${success ? '成功' : '未完成'}</h1><p id="telegramOidcPopupStatus">${success ? '登录凭据已保存，请返回原页面确认登录状态。' : '本次登录未完成，请返回原页面重试。'}</p><button id="telegramOidcClose" type="button">关闭窗口</button> <a id="telegramOidcReturn" href="/">返回首页</a></main>
+<script>(()=>{const payload=${serializeTelegramOidcInlineValue(payload)};const targetOrigin=${serializeTelegramOidcInlineValue(openerOrigin)};let sent=false;try{if(window.opener&&!window.opener.closed){window.opener.postMessage(payload,targetOrigin);sent=true;}}catch(_){}document.getElementById('telegramOidcReturn').href=targetOrigin+'/';const status=document.getElementById('telegramOidcPopupStatus');const close=manual=>{try{window.close();}catch(_){}setTimeout(()=>{status.textContent=manual?'浏览器无法关闭此页，请手动返回原页面或关闭此页。':payload.result!=='success'?'本次登录未完成，请返回原页面重试。':sent?'已发送登录结果，请返回原页面确认；此页可手动关闭。':'登录凭据已保存，请返回原页面确认登录状态。';},150);};document.getElementById('telegramOidcClose').onclick=()=>close(true);setTimeout(()=>close(false),60);})();</script>
 </body></html>`);
 }
 
@@ -9370,14 +9370,29 @@ function writeWebZipRecord(sessionId, previous, next, options = {}) {
 }
 
 function canSyncWebZipSource(deviceId, sourceSessionId, editingSessionId) {
-    const source = sessions.get(sourceSessionId);
+    let source = sessions.get(sourceSessionId);
+    if (!source) {
+        const stored = infraStore?.getTunnel?.(sourceSessionId);
+        if (stored) source = { devices:new Map(), ownerDeviceId:stored.owner_device_id || '', ...parseStoredTunnelAccess(stored.permissions_json) };
+    }
+    if (!source) return false;
     const online = id => { const member = source?.devices?.get(id), peer = io.sockets.sockets.get(member?.socketId); return Boolean(peer?.connected && peer.data?.deviceId === id && canUseTunnelCapability(source,id,'read')); };
+    const hasSourceAccess = peer => {
+        const proof = peer?.data?.webZipSyncAccessGrants?.get(sourceSessionId);
+        return Boolean(peer?.connected && proof && tunnelAccess.verify(proof.grant,sourceSessionId,proof.deviceId) && canUseTunnelCapability(source,proof.deviceId,'read'));
+    };
     // A browser can hold a different identity in each tunnel. Only proofs
     // verified on that live socket connect those identities for visibility;
     // they do not merge roles, editing permissions or tunnel memberships.
     const actors = new Set([deviceId]);
+    const editingMember = sessions.get(editingSessionId)?.devices?.get(deviceId);
+    const editingPeer = io.sockets.sockets.get(editingMember?.socketId);
+    if (editingPeer?.data?.deviceId === deviceId && hasSourceAccess(editingPeer)) return true;
     if (editingSessionId) for (const peer of io.sockets.sockets.values()) {
-        if (peer.connected && peer.data?.webZipSyncIdentities?.get(editingSessionId) === deviceId) actors.add(peer.data.deviceId);
+        if (peer.connected && peer.data?.webZipSyncIdentities?.get(editingSessionId) === deviceId) {
+            actors.add(peer.data.deviceId);
+            if (hasSourceAccess(peer)) return true;
+        }
     }
     if ([...actors].some(online)) return true;
     const visible = new Set(), nearby = new Set(), visibleMembers = new Map();
@@ -9393,6 +9408,15 @@ function canSyncWebZipSource(deviceId, sourceSessionId, editingSessionId) {
             }
             visibleMembers.set(sessionId,members);
         }
+    }
+    // Source membership is proven by the signed grant, not by keeping a page
+    // in that tunnel. A visible peer may prove the same access while elsewhere.
+    for (const peer of io.sockets.sockets.values()) {
+        if (!hasSourceAccess(peer)) continue;
+        if (visible.has(peer.data.deviceId)) return true;
+        const identities = peer.data.webZipSyncIdentities;
+        if (identities && [...identities.values()].some(identity => nearby.has(identity))) return true;
+        for (const [sessionId,members] of visibleMembers) if (members.has(identities?.get(sessionId))) return true;
     }
     for (const [id, member] of source?.devices || []) {
         if (!online(id)) continue;
@@ -10193,18 +10217,29 @@ io.on('connection', (socket) => {
             const entries = Array.isArray(data?.entries) ? data.entries.slice(0, 200) : [];
             const identities = new Map();
             socket.data.webZipSyncIdentities = identities;
+            const accessGrants = new Map();
+            socket.data.webZipSyncAccessGrants = accessGrants;
             let acceptedCount = 0;
             let rejectedCount = 0;
             for (const entry of entries) {
                 const sessionId = entry && entry.sessionId;
                 const shortCode = normalizeShortCode(entry && entry.shortCode);
-                if (!isValidSessionId(sessionId) || !shortCode) {
+                if (!isValidSessionId(sessionId)) {
                     rejectedCount++;
                     continue;
                 }
                 const session = sessions.get(sessionId);
                 const storedCode=infraStore?.findShortCodeForSession(sessionId);
-                if (!tunnelAccess.verify(entry.accessGrant,sessionId,entry.deviceId||data?.deviceId||currentDevice||profileDevice)||(storedCode&&storedCode!==shortCode)||(session?.shortCode && session.shortCode !== shortCode)) {
+                const deviceId = entry.deviceId||data?.deviceId||currentDevice||profileDevice;
+                if (!tunnelAccess.verify(entry.accessGrant,sessionId,deviceId)) {
+                    rejectedCount++;
+                    continue;
+                }
+                identities.set(sessionId,deviceId);
+                accessGrants.set(sessionId,{deviceId,grant:entry.accessGrant});
+                // Rotating a join code does not revoke an admitted device. Keep
+                // its verified access without re-registering an obsolete code.
+                if (!shortCode || (storedCode&&storedCode!==shortCode) || (session?.shortCode&&session.shortCode!==shortCode)) {
                     rejectedCount++;
                     continue;
                 }
@@ -10216,10 +10251,9 @@ io.on('connection', (socket) => {
                 if (session && !session.shortCode) {
                     session.shortCode = shortCode;
                 }
-                identities.set(sessionId,entry.deviceId||data?.deviceId||currentDevice||profileDevice);
                 acceptedCount++;
             }
-            if (acceptedCount) webZipSync.topologyChanged();
+            if (accessGrants.size) webZipSync.topologyChanged();
             historyLog('session-codes-registered', {
                 sessionId: currentSession,
                 deviceId: currentDevice,
@@ -10227,7 +10261,8 @@ io.on('connection', (socket) => {
                 clientIp,
                 submittedCount: entries.length,
                 acceptedCount,
-                rejectedCount
+                rejectedCount,
+                verifiedAccessCount:accessGrants.size
             });
         } catch (err) {
             console.error('register-session-codes error:', err);

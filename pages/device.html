@@ -594,7 +594,7 @@ function acceptIncomingInvite(invite) {
         return new Date(timestamp).toLocaleString('zh-CN');
     }
 
-    function addField(label, value) {
+    function addField(label, value, raw = true) {
         const item = document.createElement('div');
         item.className = 'field';
         const labelEl = document.createElement('div');
@@ -602,6 +602,7 @@ function acceptIncomingInvite(invite) {
         labelEl.textContent = label;
         const valueEl = document.createElement('div');
         valueEl.className = 'value';
+        if (raw) valueEl.dataset.i18nRaw = 'true';
         valueEl.textContent = value || '-';
         item.append(labelEl, valueEl);
         fields.appendChild(item);
@@ -611,10 +612,11 @@ function acceptIncomingInvite(invite) {
         currentDeviceProfile = device;
         document.title = `${device.deviceName || '设备'} - 设备主页`;
         document.getElementById('deviceName').textContent = device.deviceName || '未命名设备';
+        document.getElementById('deviceName').toggleAttribute('data-i18n-raw', Boolean(device.deviceName));
         document.getElementById('deviceIdText').textContent = device.deviceId;
         fields.innerHTML = '';
-        addField('在线状态', device.online ? '在线' : '离线');
-        addField('活跃状态', device.active ? '活跃' : '不活跃');
+        addField('在线状态', device.online ? '在线' : '离线', false);
+        addField('活跃状态', device.active ? '活跃' : '不活跃', false);
         addField('设备型号', device.deviceModel);
         addField('内网 IP', device.localIp);
         addField('外网 IP', device.externalIp || device.ip);

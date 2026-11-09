@@ -27,3 +27,10 @@ test('only explicitly identified human error-message dictionaries are audited; t
  const result=scan(source,{uiMaps:['codes'],rewrite:true});
  assert.deepEqual(result.phrases,['界面错误说明','稍后新增的说明','最终说明']);assert.equal(result.source,source);assert.equal(result.rewritten,0);
 });
+
+test('page-specific UI status and human error constructors are opt-in and never rewrite exception contents',()=>{
+ const source="status('用户状态');new Error('用户错误');new Error('WIRE_CODE');api.status('程序对接');options.onStatus?.('界面进度');";
+ assert.deepEqual(scan(source).phrases,[]);
+ const result=scan(source,{uiCalls:['status'],uiErrors:true});assert.ok(result.phrases.includes('用户状态'));assert.ok(result.phrases.includes('用户错误'));assert.equal(result.phrases.includes('WIRE_CODE'),false);assert.equal(result.phrases.includes('程序对接'),false);assert.equal(result.source,source);
+ assert.ok(scan(source,{uiMethods:['onStatus']}).phrases.includes('界面进度'));
+});

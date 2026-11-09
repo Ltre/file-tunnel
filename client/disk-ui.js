@@ -2358,7 +2358,7 @@ async function manageTelegramDriveSpaces() {
     const updateHeading = () => { const space = currentPartition(); heading.textContent = `当前分区：${space?.name || '默认分区'}。修改名称不会移动底层文件；每个分区最多启用一个 S3 Bucket。`; };
     updateHeading();
     const createRow = document.createElement('div'); createRow.className = 'telegram-drive-space-create';
-    const name = document.createElement('input'); name.type = 'text'; name.maxLength = 100; name.value = currentPartition()?.name || '默认分区'; name.placeholder = '当前分区名称'; name.setAttribute('aria-label', '重命名当前分区');
+    const name = document.createElement('input'); name.type = 'text'; name.maxLength = 100; name.value = currentPartition()?.nameIsDefault ? '' : (currentPartition()?.name || ''); name.placeholder = '当前分区名称'; name.setAttribute('aria-label', '重命名当前分区');
     const create = document.createElement('button'); create.type = 'button'; create.className = 'btn'; create.textContent = '+ 新建分区';
     const message = document.createElement('p'); message.setAttribute('role', 'status');
     create.onclick = async () => {
@@ -2758,8 +2758,8 @@ function prepareTelegramDrivePicker() {
 }
 function startTelegramDriveLogin(targetOverride, accountHint = '') {
     const target = targetOverride?.append ? targetOverride : document.getElementById('telegramDriveAuth');
-    if (telegramDriveOidcPopup && !telegramDriveOidcPopup.closed) {
-        telegramDriveOidcPopup.focus();
+    if (telegramDriveOidcPopup) {
+        if (!telegramDriveOidcPopup.closed) telegramDriveOidcPopup.focus();
         return;
     }
     window.DiskClient.invalidateAccountStatus?.();
@@ -2783,6 +2783,8 @@ function startTelegramDriveLogin(targetOverride, accountHint = '') {
 
 function cancelTelegramDriveLogin() {
     telegramDriveOidcPollGeneration += 1;
+    clearTimeout(pollTelegramDriveOidcLogin.timer);
+    pollTelegramDriveOidcLogin.pending = null;
     if (telegramDriveOidcPopup && !telegramDriveOidcPopup.closed) telegramDriveOidcPopup.close();
     telegramDriveOidcPopup = null;
     window.AccountUI?.refresh();
@@ -2792,6 +2794,8 @@ function cancelTelegramDriveLogin() {
 async function finishTelegramDriveOidcLogin(result, error = '', accountId = '') {
     const loginTarget = telegramDriveLoginTarget;
     telegramDriveOidcPollGeneration += 1;
+    clearTimeout(pollTelegramDriveOidcLogin.timer);
+    pollTelegramDriveOidcLogin.pending = null;
     if (telegramDriveOidcPopup && !telegramDriveOidcPopup.closed) telegramDriveOidcPopup.close();
     telegramDriveOidcPopup = null;
     let verifiedAccount = '';
@@ -2819,8 +2823,15 @@ async function finishTelegramDriveOidcLogin(result, error = '', accountId = '') 
     }
 }
 
-async function pollTelegramDriveOidcLogin(popup, generation, startedAt, closedRechecked = false) {
+async function pollTelegramDriveOidcLogin(popup, generation, startedAt) {
     if (generation !== telegramDriveOidcPollGeneration || popup !== telegramDriveOidcPopup) return;
+    clearTimeout(pollTelegramDriveOidcLogin.timer);
+    const active = pollTelegramDriveOidcLogin.request;
+    if (active?.popup === popup && active.generation === generation) return;
+    const request = { popup, generation, startedAt };
+    pollTelegramDriveOidcLogin.request = request;
+    pollTelegramDriveOidcLogin.pending = request;
+    try {
     const attempt = telegramDriveLoginAttempt;
     const status = await window.DiskClient.raw('/me?oidc_attempt=' + encodeURIComponent(attempt), { accountId: '' }).catch(() => null);
     // A completion message or a cancellation can arrive during this request.
@@ -2836,13 +2847,23 @@ async function pollTelegramDriveOidcLogin(popup, generation, startedAt, closedRe
         if (text) text.textContent = '尚未完成 Telegram 授权。若弹窗提示等待确认但没有通知，请检查已登录的 Telegram 客户端服务通知及网络，或取消后使用 Passkey。本站不能代 Telegram 发出或批准登录确认；管理员可检查 OIDC 阶段日志。';
     }
     if (popup.closed) {
-        // The poll may have read the old cookie immediately before callback
-        // headers arrived. Recheck once; an old valid login alone is no success.
-        if (!closedRechecked) return setTimeout(() => pollTelegramDriveOidcLogin(popup, generation, startedAt, true).catch(error => historyLog('telegram-drive-oidc-poll-failed', { error: error.message })), 250);
-        return finishTelegramDriveOidcLogin('error', '登录窗口已关闭或登录未完成');
+        // COOP or an app handoff can sever the WindowProxy while authorization
+        // continues. Only a matching signed receipt, cancellation or timeout
+        // ends this attempt; an existing account alone is never success.
+        const text = telegramDriveLoginTarget?.querySelector?.('span') || document.querySelector('#telegramDriveAuth > span');
+        if (text) text.textContent = '仍在等待 Telegram 授权结果。请在 Telegram 完成登录后返回本页，或取消登录。';
     }
     if (Date.now() - startedAt >= 10 * 60 * 1000) return finishTelegramDriveOidcLogin('error', '登录已超时');
-    setTimeout(() => pollTelegramDriveOidcLogin(popup, generation, startedAt).catch(error => historyLog('telegram-drive-oidc-poll-failed', { error: error.message })), 2000);
+    pollTelegramDriveOidcLogin.timer = setTimeout(() => pollTelegramDriveOidcLogin(popup, generation, startedAt).catch(error => historyLog('telegram-drive-oidc-poll-failed', { error: error.message })), 2000);
+    } finally {
+        if (pollTelegramDriveOidcLogin.request === request) pollTelegramDriveOidcLogin.request = null;
+    }
+}
+
+function resumeTelegramDriveOidcLogin() {
+    const pending = pollTelegramDriveOidcLogin.pending;
+    if (document.visibilityState === 'hidden' || !pending || !telegramDriveOidcPopup) return;
+    pollTelegramDriveOidcLogin(pending.popup, pending.generation, pending.startedAt).catch(error => historyLog('telegram-drive-oidc-poll-failed', { error:error.message }));
 }
 
 function handleTelegramDriveOidcPopupMessage(event) {
@@ -4078,6 +4099,8 @@ function init(options = {}) {
     const driveDialog = document.getElementById('telegramDriveDialog');
     if (driveDialog && driveDialog.parentElement !== document.body) document.body.append(driveDialog);
     window.addEventListener('message', handleTelegramDriveOidcPopupMessage);
+    window.addEventListener('focus', resumeTelegramDriveOidcLogin);
+    document.addEventListener('visibilitychange', resumeTelegramDriveOidcLogin);
     window.addEventListener('disk-cache-changed', updateDiskCacheLabels);
     window.addEventListener('focus', updateDiskCacheLabels);
     document.getElementById('closeTelegramDriveBtn')?.addEventListener('click', () => closeTelegramDrive({ forget: true }));
