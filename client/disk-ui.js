@@ -1007,7 +1007,7 @@ async function showTelegramDriveProperties(item) {
         ? [['名称', data.name], ['位置', telegramDriveDisplayPath(data.parentPath)], ['类型', '文件夹'], ['审核状态', data.reviewStatus === 'deleted' ? '目录内容已删除，仅保留节点' : data.reviewStatus === 'blocked' ? '已屏蔽，仅自己可见且不可分享' : '正常'], ['内容', `${data.folderCount} 个子目录，${data.fileCount} 个文件`], ['占用空间', formatFileSize(data.size || 0)], ['创建时间', telegramDriveFormatDate(data.createdAt)], ['最后修改', telegramDriveFormatDate(data.updatedAt)]]
         : [['名称', data.name], ['位置', telegramDriveDisplayPath(data.folderPath)], ['类型', telegramDriveFileType(data)], ['审核状态', data.reviewStatus === 'deleted' ? '文件实体已删除，仅保留节点' : data.reviewStatus === 'blocked' ? '已屏蔽，仅自己可见且不可分享' : '正常'], ['大小', `${formatFileSize(data.size || 0)}（${Number(data.size || 0).toLocaleString('zh-CN')} 字节）`], ['创建时间', telegramDriveFormatDate(data.createdAt)], ['最后修改', telegramDriveFormatDate(data.updatedAt)], ['防失联检测', data.lastCheckedAt ? telegramDriveFormatDate(data.lastCheckedAt) : '尚未检测']];
     const dl = document.createElement('dl'); dl.className = 'telegram-drive-property-grid';
-    entries.forEach(([name, value]) => { const dt = document.createElement('dt'); dt.textContent = name; const dd = document.createElement('dd'); dd.textContent = value; dl.append(dt, dd); });
+    entries.forEach(([name, value]) => { const dt = document.createElement('dt'); dt.textContent = name; const dd = document.createElement('dd'); dd.textContent = value; if (name === '名称' || name === '位置') dd.dataset.i18nRaw = 'true'; dl.append(dt, dd); });
     await openTelegramDriveDialog({ title: `“${data.name}”属性`, body: dl, confirmText: '关闭', cancelText: '', historyEntry: true, dismissOnBackdrop: true });
 }
 
@@ -1370,7 +1370,10 @@ async function showDiskCollaborations() {
         const row = document.createElement('div'); row.className = 'disk-collaboration-list-row ' + (entry.owned ? 'is-owned' : 'is-invited');
         const button = document.createElement('button'); button.type = 'button'; button.className = 'disk-collaboration-entry';
         const ownerSpace = telegramDriveSpaces.find(space => telegramDriveSpaceKey(space) === entry.diskSpace);
-        button.textContent = `${entry.owned ? '我创建的' : '受邀加入'} · ${entry.name} · ${entry.kind === 'directory' ? '📁' : '📄'}${entry.owned && ownerSpace ? ' · <' + ownerSpace.name + '>' : ''}`;
+        const origin = document.createElement('span'); origin.textContent = entry.owned ? '我创建的' : '受邀加入';
+        const name = document.createElement('span'); name.dataset.i18nRaw = 'true';
+        name.textContent = ` · ${entry.name} · ${entry.kind === 'directory' ? '📁' : '📄'}${entry.owned && ownerSpace ? ' · <' + ownerSpace.name + '>' : ''}`;
+        button.append(origin, name);
         if (entry.owned) {
             const parent = entry.kind === 'directory' ? entry.path.split('/').slice(0, -1).join('/') : entry.path;
             const position = `所在目录：${telegramDriveDisplayPath(parent)}${ownerSpace ? ' · ' + ownerSpace.name : ''}`;
@@ -1985,7 +1988,7 @@ async function showTelegramDriveItemMenu(item, anchor) {
     const chosen = telegramDriveActionItems(item);
     let actions = item.kind === 'directory'
         ? [['打开', () => openTelegramDriveItem(item)], ['重命名', () => renameTelegramDriveItem(item)], ['复制/移动', () => chooseTelegramDriveTransfer([item])], ['复制路径', () => copyTelegramDriveItemPath(item)], ['属性', () => showTelegramDriveProperties(item)], ['删除', () => deleteTelegramDriveItems([item]), true]]
-        : [['下载并缓存', () => downloadTelegramDriveItem(item)], ['重命名', () => renameTelegramDriveItem(item)], ['复制/移动', () => chooseTelegramDriveTransfer([item])], ['防失联检测', () => checkTelegramDriveItem(item)], ['复制路径', () => copyTelegramDriveItemPath(item)], ['属性', () => showTelegramDriveProperties(item)], ['删除', () => deleteTelegramDriveItems([item]), true]];
+        : [['下载', () => downloadTelegramDriveItem(item)], ['重命名', () => renameTelegramDriveItem(item)], ['复制/移动', () => chooseTelegramDriveTransfer([item])], ['防失联检测', () => checkTelegramDriveItem(item)], ['复制路径', () => copyTelegramDriveItemPath(item)], ['属性', () => showTelegramDriveProperties(item)], ['删除', () => deleteTelegramDriveItems([item]), true]];
     if(item.kind==='file' && item.reviewStatus!=='deleted')actions.unshift(['编辑文件',()=>window.DiskFileEditor.open({item,openDialog:openTelegramDriveDialog,onSaved:()=>refreshTelegramDriveContents()})]);
     if (item.reviewStatus === 'deleted') actions = [['属性', () => showTelegramDriveProperties(item)], ['删除节点', () => deleteTelegramDriveItems(chosen), true]];
     if (item.kind === 'directory' && item.reviewStatus !== 'deleted') actions.splice(1, 0, ['新建子目录', () => createTelegramDriveFolder(item.path)]);
@@ -2410,7 +2413,7 @@ async function manageTelegramDriveSpaces() {
                 `将跳过协同挂载：${impact.skippedMounts ?? impact.mounts ?? '未知'} 个`,
                 `将跳过审核不可用文件：${impact.skippedFiles ?? '未知'} 个`,
                 `将跳过审核不可用目录：${impact.skippedDirectories ?? '未知'} 个`
-            ].join('\n');
+            ].map(line => window.TunnelI18n?.t(line) || line).join('\n');
             if (!(window.TunnelI18n?.confirm || confirm)(`复刻“${current.name}”为“${targetName}”？\n${detail}\n\n分享、协同状态、静态资源和 S3 凭证不会复刻。`)) return;
             if (!(window.TunnelI18n?.confirm || confirm)(`再次确认：创建新分区“${targetName}”并复刻上述原生内容？`)) return;
             const data = await window.DiskClient.withActivity({ message: `正在复刻分区“${current.name}”`, folderPath: '' }, async update => {

@@ -11,7 +11,7 @@ test('the full frontend streaming console translates the real navigation in all 
  await page.waitForSelector('.sc-nav [data-sc-view="discover"]');
  for(const [language]of await page.evaluate(()=>TunnelI18n.languages)){
   await page.evaluate(language=>TunnelI18n.setLanguage(language),language);
-  for(const [view,key]of [['discover','发现'],['local','我创建的'],['bookmarks','我订阅的']]){
+  for(const [view,key]of [['discover','发现'],['local','我创建的'],['bookmarks','我收藏的']]){
    assert.equal(await page.locator('.sc-nav [data-sc-view="'+view+'"]').textContent(),await page.evaluate(key=>TunnelI18n.t(key),key),language+':'+view);
   }
  }

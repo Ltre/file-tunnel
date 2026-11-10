@@ -1470,6 +1470,8 @@ app.get('/youtube-premium-dl', (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'youtube-premium-dl.html'));
 });
 
+app.use('/api/admin-forms', adminAuth.requireAuth, require('./server/admin-form-cache').createAdminFormRouter({ dataDir: SERVER_DATA_DIR }));
+
 app.get(['/sns-dl', '/sns-dl.html'], (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'pages', 'sns-dl.html'));
@@ -2387,7 +2389,7 @@ function sendTelegramOidcPopupCompletion(res, openerOrigin, result, error = '', 
     const success = result === 'success';
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     res.status(200).type('html').send(`<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram 登录${success ? '完成' : '失败'}</title><script defer src="/client/i18n-catalog.js"></script><script defer src="/client/i18n.js"></script></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram 登录${success ? '完成' : '失败'}</title><script defer src="/client/i18n-bootstrap.js"></script><script defer src="/client/i18n.js"></script></head>
 <body style="font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f5f7fb;color:#26324d">
 <main style="max-width:420px;padding:28px;text-align:center"><h1 style="font-size:1.25rem">Telegram 登录${success ? '成功' : '未完成'}</h1><p id="telegramOidcPopupStatus">${success ? '登录凭据已保存，请返回原页面确认登录状态。' : '本次登录未完成，请返回原页面重试。'}</p><button id="telegramOidcClose" type="button">关闭窗口</button> <a id="telegramOidcReturn" href="/">返回首页</a></main>
 <script>(()=>{const payload=${serializeTelegramOidcInlineValue(payload)};const targetOrigin=${serializeTelegramOidcInlineValue(openerOrigin)};let sent=false;try{if(window.opener&&!window.opener.closed){window.opener.postMessage(payload,targetOrigin);sent=true;}}catch(_){}document.getElementById('telegramOidcReturn').href=targetOrigin+'/';const status=document.getElementById('telegramOidcPopupStatus');const close=manual=>{try{window.close();}catch(_){}setTimeout(()=>{status.textContent=manual?'浏览器无法关闭此页，请手动返回原页面或关闭此页。':payload.result!=='success'?'本次登录未完成，请返回原页面重试。':sent?'已发送登录结果，请返回原页面确认；此页可手动关闭。':'登录凭据已保存，请返回原页面确认登录状态。';},150);};document.getElementById('telegramOidcClose').onclick=()=>close(true);setTimeout(()=>close(false),60);})();</script>

@@ -59,7 +59,7 @@ test('seven themes have equal wide columns, live scrollable progress and unread 
   assert.ok(Math.abs(geometry.a-460)<2,theme+JSON.stringify(geometry));assert.equal(geometry.a,geometry.b);assert.equal(geometry.leftTop,geometry.rightTop);assert.equal(geometry.scroll,true);assert.equal(geometry.count,28);assert.equal(geometry.unread,1);
   assert.equal(await page.locator('[data-control-tile="magnet"]').evaluate(node=>getComputedStyle(node).whiteSpace),'nowrap');
   assert.equal(await page.locator('[data-control-tile="theme"]').evaluate(node=>getComputedStyle(node).fontSize),'24px');
-  assert.equal(await page.locator('.control-center [data-notification-count]').textContent(),'1');
+  assert.equal(await page.locator('.control-center-notifications [data-notification-count]').textContent(),'1');
   if(theme==='orbit')assert.equal(geometry.bg,'rgb(32, 39, 57)');
   assert.match(await page.locator('[data-control-progress-summary]').textContent(),/28.*进行中.*准备|28.*进行中.*等待/);
   await page.locator('[data-control-progress-list]').evaluate(node=>node.scrollTop=180);await page.evaluate(()=>updateProgress('task1',77,'P2P',{route:'sending-p2p'}));
@@ -127,7 +127,7 @@ test('drag follows the pointer, displaces tiles and stays above the tunnel panel
  const ghost=await page.locator('.control-center-drag-ghost').boundingBox(),grid=await page.locator('[data-control-side="before"]').boundingBox();assert.ok(ghost.y+ghost.height<=grid.y+grid.height+1);
  await page.mouse.up();assert.equal(await page.locator('[data-control-side="after"]>*').count(),0);
  await page.setViewportSize({width:390,height:844});assert.equal(await page.locator('.control-center-live').isVisible(),false);assert.ok((await page.locator('.control-center').boundingBox()).width<=390);
- await page.locator('#closeSessionSwitcher').click();await page.locator('#open').click();assert.equal(await page.locator('[data-control-tile]').count(),13);
+ await page.locator('#closeSessionSwitcher').click();await page.locator('#open').click();assert.equal(await page.locator('[data-control-tile]').count(),14);
  }finally{await page.close();}
 });
 
@@ -184,4 +184,18 @@ test('an accepted real server backup continues after the initiating page closes'
   assert.equal(accepted.status,202);await entering;await page.close();assert.equal(fixture.backup.state().active,accepted.job.id);
   release();await fixture.backup.wait();const done=fixture.backup.state().jobs[0];assert.equal(done.status,'completed',done.error);assert.equal(done.completedFiles,done.totalFiles);
  }finally{release();await page.close();await fixture.close();}
+});
+
+test('the account tile opens the common account dialog and the notification tile shows a live themed unread count',async()=>{
+ const page=await browser.newPage({viewport:{width:1600,height:1000}});try{
+  await page.goto(base);await page.addScriptTag({url:base+'/client/account-ui.js'});
+  await page.evaluate(()=>{window.DiskUI={manageAccounts:()=>AccountUI.open({currentAccount:()=>'',load:async()=>({accounts:[],status:{}}),renderSignIn:target=>target.textContent='Isolated sign-in'})};const notifications=document.createElement('button');notifications.id='notificationCenterBtn';notifications.onclick=()=>NotificationCenter.open();document.body.append(notifications);for(let i=0;i<3;i++)NotificationCenter.add({id:'badge-'+i,title:'通知'});});
+  await page.locator('#open').click();const badge=page.locator('[data-control-tile="notifications"] [data-notification-count]');assert.equal(await badge.textContent(),'3');
+  assert.equal(await page.evaluate(()=>NotificationCenter.list().filter(item=>!item.read).length),3,'opening the center does not mark notices read');
+  for(const theme of ['classic','atelier','social','lumen','orbit','blamen','lusns']){await page.evaluate(theme=>document.body.dataset.theme=theme,theme);assert.equal(await badge.evaluate(node=>getComputedStyle(node).color),'rgb(255, 255, 255)');assert.equal(await badge.evaluate(node=>getComputedStyle(node).backgroundColor),'rgb(215, 54, 80)');}
+  await page.evaluate(()=>NotificationCenter.add({id:'badge-later',title:'新通知'}));assert.equal(await badge.textContent(),'4');
+  await page.locator('[data-control-tile="account"]').click();await page.locator('.account-panel').waitFor();assert.equal(await page.locator('.account-panel h2').textContent(),'登录 / 移除账号');await page.keyboard.press('Escape');
+  await page.locator('#open').click();await page.locator('[data-control-tile="notifications"]').click();await page.locator('#notificationCenter').waitFor();
+  await page.evaluate(()=>NotificationCenter.close());await page.locator('#open').click();assert.equal(await badge.isHidden(),true);
+ }finally{await page.close();}
 });

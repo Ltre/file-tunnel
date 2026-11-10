@@ -1,12 +1,13 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),{execFileSync}=require('node:child_process'),express=require('express');
 const {chromium}=require(path.join(os.homedir(),'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'));
-test('a real v132 service worker updates the old system-language runtime without clearing business state',{timeout:20000},async t=>{
+for(const [baseline,oldLanguage]of [['554ba28858a9524c6e62c3183d60ddc20dcea6be','zh-Hans'],['f7b91837bf799c80d420b81f5e291996b318b372','en']])test('a real old service worker updates to the on-demand language assets without clearing business state: '+baseline.slice(0,7),{timeout:20000},async t=>{
  const root=path.resolve(__dirname,'..'),read=file=>fs.readFileSync(path.join(root,file),'utf8');let modern=false,workerUpdated=false;
- const oldWorker=execFileSync('git',['show','554ba28858a9524c6e62c3183d60ddc20dcea6be:service-worker.js'],{cwd:root,encoding:'utf8'});
- const old=Object.fromEntries(['i18n-catalog','i18n'].map(name=>[name,execFileSync('git',['show','554ba28858a9524c6e62c3183d60ddc20dcea6be:client/'+name+'.js'],{cwd:root,encoding:'utf8',maxBuffer:8*1048576})]));
+ const oldWorker=execFileSync('git',['show',baseline+':service-worker.js'],{cwd:root,encoding:'utf8'});
+ const old=Object.fromEntries(['i18n-catalog','i18n'].map(name=>[name,execFileSync('git',['show',baseline+':client/'+name+'.js'],{cwd:root,encoding:'utf8',maxBuffer:8*1048576})]));
  const html=read('pages/index.html').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g,'').replace('</head>','<script defer src="/client/i18n-catalog.js"></script><script defer src="/client/i18n.js"></script></head>');
- const requests=[];const app=express();app.get(['/','/index.html','/tunnel-entry.html'],(_req,res)=>res.type('html').send(html));
+ const modernHtml=html.replace('/client/i18n-catalog.js','/client/i18n-bootstrap.js');
+ const requests=[];const app=express();app.get(['/','/index.html','/tunnel-entry.html'],(_req,res)=>res.type('html').send(modern?modernHtml:html));
  app.get('/service-worker.js',(_req,res)=>{requests.push({modern,workerUpdated});res.set('Cache-Control','no-store').type('js').send(workerUpdated?read('service-worker.js'):oldWorker);});
  for(const name of ['i18n-catalog','i18n'])app.get('/client/'+name+'.js',(_req,res)=>res.type('js').send(modern?read('client/'+name+'.js'):old[name]));
  app.use('/client',express.static(path.join(root,'client')));app.get('/manifest.webmanifest',(_req,res)=>res.type('json').send('{}'));app.get('/tunnel-icon.svg',(_req,res)=>res.type('svg').send('<svg xmlns="http://www.w3.org/2000/svg"/>'));
@@ -14,10 +15,10 @@ test('a real v132 service worker updates the old system-language runtime without
  const browser=await chromium.launch({channel:'chrome',headless:true});t.after(()=>browser.close());const context=await browser.newContext({locale:'en-US'});
  await context.addInitScript(()=>Object.defineProperty(navigator,'languages',{value:['zh-CN','en-US']}));const page=await context.newPage();await page.goto('http://127.0.0.1:'+server.address().port);
  await page.evaluate(async()=>{await navigator.serviceWorker.register('/service-worker.js',{updateViaCache:'none'});await navigator.serviceWorker.ready;});
- await page.waitForFunction(()=>navigator.serviceWorker.controller);await page.reload();assert.equal(await page.locator('html').getAttribute('lang'),'zh-Hans','the genuinely cached baseline demonstrates the old language precedence');
+ await page.waitForFunction(()=>navigator.serviceWorker.controller);await page.reload();assert.equal(await page.locator('html').getAttribute('lang'),oldLanguage,'the genuinely cached baseline remains active');
  await page.evaluate(async()=>{localStorage.setItem('business-marker','kept');const cache=await caches.open('fixture-business-cache');await cache.put('/fixture-business-record',new Response('kept'));});modern=true;
  const update=()=>page.evaluate(async()=>{const registration=await navigator.serviceWorker.getRegistration();const changed=new Promise(resolve=>{const done=()=>{clearTimeout(timer);navigator.serviceWorker.removeEventListener('controllerchange',done);resolve();};const timer=setTimeout(done,5000);navigator.serviceWorker.addEventListener('controllerchange',done);});await registration.update();await changed;});
- await update();await page.reload();assert.equal(await page.locator('html').getAttribute('lang'),'zh-Hans','updating the asset files alone leaves the existing v132 cache active');
+ await update();await page.reload();assert.equal(await page.locator('html').getAttribute('lang'),oldLanguage,'updating the asset files alone leaves the existing cache active');
  workerUpdated=true;await update();
  await page.reload();const updateState=await page.evaluate(async()=>({language:navigator.language,languages:navigator.languages,preference:localStorage.getItem('drop2tunnel.language'),current:TunnelI18n.currentLanguage(),caches:await caches.keys(),runtimes:await Promise.all((await caches.keys()).filter(key=>key.startsWith('instant-tunnel-')).map(async key=>({key,current:(await(await(await caches.open(key)).match('/client/i18n.js')).text()).includes('normalizeLanguage(navigator.language ||')})))}));
  assert.equal(await page.locator('html').getAttribute('lang'),'en',JSON.stringify({requests,...updateState}));assert.equal(await page.locator('#appLanguageSelect').inputValue(),'system');

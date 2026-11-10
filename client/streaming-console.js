@@ -253,7 +253,7 @@
         root.querySelector('[data-sc-minimize]').onclick = () => minimize();
         root.querySelector('[data-sc-account]').onclick = () => accountDialog();
         const nav = root.querySelector('.sc-nav');
-        for (const [view, label] of [['discover', '发现'], ['local', '我创建的'], ['bookmarks', '我订阅的'], ['invitation', '通过邀请进入']]) {
+        for (const [view, label] of [['discover', '发现'], ['local', '我创建的'], ['bookmarks', '我收藏的'], ['invitation', '通过邀请进入']]) {
             const b = button(label, () => navigate(view)); b.dataset.scView = view; nav.append(b);
         }
         nav.append(button('+ 创建', createStation, 'sc-primary'));

@@ -15,14 +15,16 @@ test('真实发布构建覆盖所有网盘入口与hash重写，保留服务端�
     await run(['tools/deploy/build.mjs', '--profile', 'txsl', '--out', relative, '--source-branch', 'fixture-261012', '--source-commit', '0123456789abcdef0123456789abcdef01234567']);
     const manifest = JSON.parse(fs.readFileSync(path.join(temporary, 'build-manifest.json')));
     const builtServer = fs.readFileSync(path.join(temporary, 'server.js'), 'utf8');
-    for (const source of ['client/i18n-catalog.js', 'client/i18n.js']) {
+    for (const source of ['client/i18n-bootstrap.js', 'client/i18n.js']) {
         assert.ok(builtServer.includes('src="' + manifest.scripts[source] + '"'), 'OIDC callback must load the published language asset: ' + source);
         assert.ok(fs.existsSync(path.join(temporary, manifest.scripts[source].slice(1))));
     }
     assert.ok(builtServer.includes("app.get('/client/simplewebauthn.js'"), 'server routes must not be rewritten as HTML asset references');
     assert.deepEqual(fs.readFileSync(path.join(temporary, 'client/icons/streaming.png')), fs.readFileSync(path.join(ROOT, 'prompts/resources/icons/streaming.png')));
     assert.ok(manifest.appShell.includes('/client/icons/streaming.png'));
-    const required = ['i18n-catalog', 'i18n', 'disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-upload-names', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save', 'disk-saved-location', 'account-ui', 'streaming-console', 'streaming-cache', 'streaming-player', 'streaming-peers', 'streaming-i18n', 'sns-post-i18n', 'sns-post-markdown'];
+    assert.ok(!manifest.scripts['client/i18n-catalog.js'], 'the full authored catalog is not a published startup asset');
+    for(const language of ['ja','fr','zh-Hant','my']) assert.ok(fs.existsSync(path.join(temporary,'client/i18n',language+'.json')),'on-demand language data is published');
+    const required = ['i18n-bootstrap', 'i18n', 'disk-error-messages', 'disk-copy-picker', 'disk-trash-ui', 'disk-import-picker', 'disk-file-editor', 'disk-upload-names', 'disk-folder-upload', 'disk-mount-ui', 'disk-operation-order', 'disk-pending-save', 'disk-saved-location', 'account-ui', 'streaming-console', 'streaming-cache', 'streaming-player', 'streaming-peers', 'streaming-i18n', 'sns-post-i18n', 'sns-post-markdown'];
     const sourcePages = ['index.html', 'device.html', 'web-zip-preview.html', 'disk-share.html', 'disk-collaboration.html', 'sns-dl.html', 'youtube-premium-dl.html'];
     const scanner=manifest.scripts['client/tunnel-code-scanner.js'];
     assert.ok(scanner && manifest.appShell.includes(scanner));

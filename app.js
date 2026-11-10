@@ -10786,7 +10786,7 @@ function showBlockingProgressPanel(title, detail = '') {
         <div class="send-mode-dialog" role="alertdialog" aria-modal="true" style="min-width:min(360px,88vw);text-align:center;">
             <div style="font-size:18px;font-weight:800;margin-bottom:10px;">${escapeHtml(title)}</div>
             <div class="blocking-progress-spinner" aria-hidden="true" style="width:38px;height:38px;border:4px solid rgba(102,126,234,.18);border-top-color:#667eea;border-radius:50%;margin:8px auto 12px;animation:blocking-progress-spin .85s linear infinite;"></div>
-            <div class="blocking-progress-detail" style="font-size:14px;color:#526079;line-height:1.55;">${escapeHtml(detail || '正在处理，请稍候...')}</div>
+            <div class="blocking-progress-detail" style="font-size:14px;line-height:1.55;">${escapeHtml(detail || '正在处理，请稍候...')}</div>
             <div style="height:7px;background:#edf1fa;border-radius:999px;overflow:hidden;margin-top:14px;">
                 <div class="blocking-progress-fill" style="height:100%;width:0%;background:#667eea;transition:width .16s ease;"></div>
             </div>
@@ -13250,8 +13250,7 @@ async function showFileDetailsForInfo(fileInfo, message = {}) {
         ['上传时间', formatDateTime(message.timestamp || fileInfo.timestamp || Date.now()), true],
         ['最初上传设备', message.senderName || fileInfo.senderName || '未知设备', Boolean(message.senderName || fileInfo.senderName)],
         ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知', Boolean(fileInfo.ownerDeviceId || message.sender)],
-        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')],
-        ['提示', isLikelyTouchDevice() ? '手指长按文件旁边的空白处，即可查看详情' : '在文件旁边的空白处点击右键即可查看详情']
+        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')]
     ];
     const list = document.getElementById('fileDetailsList');
     list.replaceChildren();
@@ -13298,8 +13297,7 @@ async function showFileDetails(messageId) {
         ['上传时间', formatDateTime(message.timestamp)],
         ['最初上传设备', message.senderName || '未知设备'],
         ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知'],
-        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')],
-        ['提示', isLikelyTouchDevice() ? '手指长按文件旁边的空白处，即可查看详情' : '在文件旁边的空白处点击右键即可查看详情']
+        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')]
     ];
     const list = document.getElementById('fileDetailsList');
     list.replaceChildren();
@@ -17987,7 +17985,7 @@ function initWorkspaceSwipeNavigation() {
 }
 
 function normalizeControlCenterOrder(saved) {
-    const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'workshop', 'notifications', 'disk', 'music', 'streaming', 'tunnels'];
+    const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'workshop', 'notifications', 'disk', 'music', 'streaming', 'account', 'tunnels'];
     return [...new Set([...(Array.isArray(saved) ? saved.filter(id => ids.includes(id)) : []), ...ids])];
 }
 function initControlCenterShortcuts() {
@@ -18125,7 +18123,8 @@ function initTunnelControlCenter(dialog) {
         ['notifications', '🔔', '通知中心', 'notificationCenterBtn'],
         ['disk', '▤', 'Telegram网盘', 'telegramDriveBtn'],
         ['music', '♪', '全屏音乐播放器', 'topbarMusicBtn'],
-        ['streaming', '', '串流控制台', 'streamingConsoleBtn']
+        ['streaming', '', '串流控制台', 'streamingConsoleBtn'],
+        ['account', '👤', '登录 / 移除账号', null]
     ];
     let saved; try { saved = JSON.parse(localStorage.getItem('tunnelControlCenterOrder')); } catch (_) {}
     let order = normalizeControlCenterOrder(saved), drag = null, suppressUntil = 0;
@@ -18140,6 +18139,10 @@ function initTunnelControlCenter(dialog) {
         if (id === 'leave') tile.innerHTML = '<span class="leave-tunnel-panel-icon" aria-hidden="true"><span></span></span>';
         else if (id === 'streaming') { const image = document.createElement('img'); image.src = '/client/icons/streaming.png'; image.alt = ''; image.style.cssText = 'width:32px;height:32px;object-fit:contain'; tile.append(image); }
         else tile.textContent = icon;
+        if (id === 'notifications') {
+            const badge = document.createElement('span'); badge.className = 'control-center-unread-badge';
+            badge.dataset.notificationCount = ''; badge.hidden = true; tile.append(badge);
+        }
         tile.onclick = event => {
             if (Date.now() < suppressUntil) { event.preventDefault(); return; }
             if (id === 'theme') {
@@ -18147,6 +18150,7 @@ function initTunnelControlCenter(dialog) {
                 return;
             }
             dialog.remove();
+            if (id === 'account') { window.DiskUI?.manageAccounts(); return; }
             document.getElementById(target)?.click();
         };
         tiles.set(id, tile);
@@ -19096,6 +19100,7 @@ function initTunnelSettings() {
         updateLanP2pPermissionUi();
         refreshCallRingtoneSettingsUi();
         layer.hidden = false;
+        requestAnimationFrame(() => window.TunnelI18n?.offerSystemLanguage?.());
     };
     const close = () => { layer.hidden = true; };
     settingsToolGrid?.addEventListener('click', event => {

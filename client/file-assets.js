@@ -529,7 +529,7 @@
         }
 
         async handleTransferStatus(data) {
-            const { assetId, from, status, transferId, requestId } = data || {};
+            const { assetId, from, status, transferId, requestId, abandonedAttemptId } = data || {};
             if (!assetId || !this.desiredAssets.has(assetId)) return;
             const currentRequestId = this.requestIds.get(assetId);
             if (!transferId && requestId && currentRequestId && requestId !== currentRequestId) {
@@ -552,6 +552,15 @@
             this.providerTransfers.delete(assetId);
             if (status === 'failed') {
                 this.log('provider-transfer-failed', { assetId, peerDeviceId: from, transferId, requestId });
+                const active = transferId ? this.multiSourceTransfers.get(assetId)?.ranges.get(transferId) : this.transfers.get(assetId);
+                if (abandonedAttemptId && active?.transport === 'p2p' && active.from === from &&
+                    active.attemptId === abandonedAttemptId && !active.completed) {
+                    // An explicit, matching abandonment stops this attempt. A
+                    // generic failure must still not interrupt an active path.
+                    if (transferId) this.retryMultiSourceRange(assetId, transferId, from, 'provider-p2p-abandoned');
+                    else this.retryDownload(assetId, from, 'provider-p2p-abandoned');
+                    return;
+                }
                 if (transferId && this.multiSourceTransfers.has(assetId)) {
                     const range = this.multiSourceTransfers.get(assetId)?.ranges.get(transferId);
                     if (range?.completed || range?.from) {
@@ -1391,7 +1400,16 @@
                 const routeId = transfer?.transferId ? `${from}:${transfer.transferId}` : from;
                 const abandonedTransport = transfer ? `sending-multi-source:${routeId}` : `sending:${routeId}`;
                 this.deps.onProgress(asset.id, asset.name, 100, abandonedTransport);
-                if (/send queue is full|backpressure/i.test(err.message || '')) {
+                if (/send queue is full|backpressure/i.test(err.message || '') || err.message === 'File asset channel drain timeout') {
+                    let abandonedAttemptId;
+                    if (/^File asset channel backpressure (?:stalled|timeout)(?::|$)/.test(err.message || '') || err.message === 'File asset channel drain timeout') {
+                        // The existing bounded buffer wait has already failed.
+                        // Stop this file channel before retrying; retain the
+                        // shared peer and the existing five-second cooldown.
+                        this.p2pUnavailablePeers.set(from, Date.now() + 5000);
+                        abandonedAttemptId = this.transferAttemptId(requestId, 'p2p', transfer);
+                        channel?.close();
+                    }
                     this.routeLog('p2p-backpressure-failed-without-relay', {
                         assetId: asset.id,
                         peerDeviceId: from,
@@ -1402,7 +1420,7 @@
                         bufferedAmount: channel?.bufferedAmount || 0,
                         peer: this.peerSnapshot(this.deps.getPeer(from))
                     });
-                    this.emitTransferStatus(asset.id, from, 'failed', transfer?.transferId, requestId);
+                    this.emitTransferStatus(asset.id, from, 'failed', transfer?.transferId, requestId, abandonedAttemptId);
                     return false;
                 }
                 if (/\b(failed|closed|timed out)\b/i.test(err.message || '')) {
@@ -1447,11 +1465,12 @@
             }
         }
 
-        emitTransferStatus(assetId, to, status, transferId, requestId = '') {
+        emitTransferStatus(assetId, to, status, transferId, requestId = '', abandonedAttemptId) {
             const socket = this.socket();
             if (!socket?.connected) return;
             socket.emit('file-asset-transfer-status', {
-                sessionId: this.deps.getSessionId(), assetId, to, status, transferId, requestId
+                sessionId: this.deps.getSessionId(), assetId, to, status, transferId, requestId,
+                ...(abandonedAttemptId ? { abandonedAttemptId } : {})
             });
         }
 

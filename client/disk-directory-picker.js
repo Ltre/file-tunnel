@@ -46,7 +46,7 @@
         function editChild(folder, container) {
             root.querySelector('.disk-folder-editor')?.remove();
             const row = document.createElement('div'); row.className = 'disk-folder-editor';
-            const input = document.createElement('input'); input.value = '新建文件夹'; input.maxLength = 2048; input.setAttribute('aria-label', '子目录名称或多级路径');
+            const input = document.createElement('input'); input.value = window.TunnelI18n?.t('新建文件夹') || '新建文件夹'; input.maxLength = 2048; input.setAttribute('aria-label', '子目录名称或多级路径');
             const save = document.createElement('button'); save.type = 'button'; save.className = 'btn'; save.textContent = '创建';
             const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'btn'; cancel.textContent = '取消'; cancel.onclick = () => row.remove();
             save.onclick = async () => {

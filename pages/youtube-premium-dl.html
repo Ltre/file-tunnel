@@ -830,6 +830,7 @@
             notice.title = error.code || '';
         } finally {
             draft.submitting = false;
+            downloadForms.update(draft);
             if (draft === downloadForms.active) startBtn.disabled = false;
         }
     }
@@ -2132,6 +2133,7 @@
     }
 
     const downloadForms = DownloadFormTabs.create({
+        serverForms: 'youtube-premium-dl',
         key: 'youtubePremiumDownloadForms', tabs: document.getElementById('downloadFormTabs'),
         copy: document.getElementById('copyDownloadForm'), remove: document.getElementById('deleteDownloadForm'), formatList,
         fields: { url: urlInput, asMusic: asMusicInput, cacheFiles: cacheFilesInput, downloadSections: downloadSectionsInput,

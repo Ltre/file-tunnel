@@ -25,7 +25,7 @@
             global.TunnelAccessEditor.reset(container);
             container.replaceChildren();
         }
-        function setSaving(value){saving=value;for(const control of document.querySelectorAll('.tunnel-access-picker input,.tunnel-access-picker select,.tunnel-access-devices textarea,.tunnel-access-device'))control.disabled=value;}
+        function setSaving(value){saving=value;for(const control of document.querySelectorAll('.tunnel-access-picker input,.tunnel-access-picker select,.tunnel-access-devices textarea,.tunnel-access-device'))control.disabled=value;select.disabled=value||input.classList.contains('is-selected');}
         function renderDevices(payload){
             const roles=new Map((payload.adminDevices||[]).map(record=>[record.deviceId,'designated-administrator']));
             for(const record of payload.managementDevices||[])roles.set(record.deviceId,'administrator');roles.set(payload.ownerDeviceId,'owner');
@@ -88,7 +88,11 @@
         }
         async function loadTunnel(target,isManual){
             if(saving)return;
-            target=String(target||'').trim();selection(input,isManual);
+            target=String(target||'').trim();
+            const listed=[...select.options].some(option=>option.value===target);
+            isManual=Boolean(target&&isManual&&!listed);
+            if(listed){select.value=target;input.value='';}
+            selection(input,isManual);select.disabled=isManual;
             sessionId=target;deviceId='';++deviceRequest;deviceAbort?.abort();tunnelAbort?.abort();tunnelAbort=new AbortController();
             const version=++tunnelRequest;clearEditor();list.replaceChildren();manual.value='';selection(manual,false);picker.hidden=true;missing.hidden=true;deviceStatus.textContent='';
             status.textContent=target?t('正在读取隧道权限...'):t('请选择隧道或输入隧道 ID');
