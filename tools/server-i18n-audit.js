@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { translateTelegramText } = require('../server/i18n');
 
-const languages = ['zh-Hant', 'en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th', 'fa', 'km', 'my'];
+const languages = ['zh-Hant', 'en', 'ja', 'fr', 'ru', 'es', 'it', 'ko', 'ms', 'id', 'vi', 'th', 'km', 'my', 'de'];
 const files = ['server.js', ...fs.readdirSync('server').filter(name => name.endsWith('.js')).map(name => path.join('server', name))];
 const outboundMarkers = /socket\.emit|emitSocketError|telegramSendMessage|answerCallbackQuery|message\s*:|res\.(?:json|send|status)|input_field_placeholder/;
 const quotedChinese = /(['"`])([^'"`\r\n]*[\u3400-\u9fff][^'"`\r\n]*)\1/g;

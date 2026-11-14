@@ -40,6 +40,8 @@
             this.desiredAssets = new Map();
             this.transfers = new Map();
             this.p2pUnavailablePeers = new Map();
+            this.peerRouteSamples = new Map();
+            this.peerRouteConnections = new WeakMap();
             this.downloadQueue = [];
             this.priorityDownloads = new Set();
             this.activeDownloads = new Set();
@@ -78,6 +80,57 @@
                 signalingState: peer.signalingState,
                 iceGatheringState: peer.iceGatheringState
             };
+        }
+
+        capturePeerRoute(peerDeviceId, context = {}) {
+            let peer;
+            try { peer = this.deps.getPeer?.(peerDeviceId); } catch (_) { return; }
+            if (typeof peer?.getStats !== 'function') return;
+            const now = Date.now();
+            let sample = this.peerRouteSamples.get(peerDeviceId);
+            if (sample && (sample.pending || now - sample.at < 5000)) return;
+            if (!sample) {
+                if (this.peerRouteSamples.size >= 32) {
+                    const idle = [...this.peerRouteSamples].find(([, value]) => !value.pending);
+                    if (!idle) return;
+                    this.peerRouteSamples.delete(idle[0]);
+                }
+                sample = {};
+                this.peerRouteSamples.set(peerDeviceId, sample);
+            }
+            if (!this.peerRouteConnections.has(peer)) this.peerRouteConnections.set(peer, Symbol());
+            const connectionToken = this.peerRouteConnections.get(peer);
+            if (sample.connectionToken !== connectionToken) sample.previous = null;
+            sample.connectionToken = connectionToken;
+            sample.at = now; sample.pending = true;
+            // Diagnostic only: never await this promise in a transfer path.
+            Promise.resolve().then(() => peer.getStats()).then(stats => {
+                if (this.deps.getPeer?.(peerDeviceId) !== peer || this.peerRouteSamples.get(peerDeviceId) !== sample) return;
+                const reports = [...stats.values()];
+                const selected = reports.find(item => item.type === 'transport' && item.selectedCandidatePairId);
+                const pair = stats.get(selected?.selectedCandidatePairId) || reports.find(item => item.type === 'candidate-pair' && item.nominated && item.state === 'succeeded');
+                const candidate = id => {
+                    const item = stats.get(id);
+                    if (!item) return null;
+                    return Object.fromEntries(['candidateType', 'address', 'port', 'protocol', 'tcpType', 'relayProtocol'].filter(key => item[key] != null).map(key => [key, item[key]]));
+                };
+                const previous = sample.previous, elapsed = previous ? Number(pair?.timestamp) - previous.timestamp : 0;
+                const rate = field => previous?.id === pair?.id && elapsed > 0 && Number.isFinite(pair?.[field]) && Number.isFinite(previous[field]) && pair[field] >= previous[field]
+                    ? (pair[field] - previous[field]) * 1000 / elapsed : null;
+                this.log('route-connection-stats', {
+                    ...context, peerDeviceId, at: new Date().toISOString(), origin: global.location?.origin || '',
+                    scope: 'peer-connection', selected: Boolean(pair), peer: this.peerSnapshot(peer),
+                    local: candidate(pair?.localCandidateId), remote: candidate(pair?.remoteCandidateId),
+                    rttMs: Number.isFinite(pair?.currentRoundTripTime) ? pair.currentRoundTripTime * 1000 : null,
+                    connectionBytesSent: pair?.bytesSent ?? null, connectionBytesReceived: pair?.bytesReceived ?? null,
+                    sampleIntervalMs: elapsed > 0 ? elapsed : null,
+                    connectionSendBytesPerSecond: rate('bytesSent'), connectionReceiveBytesPerSecond: rate('bytesReceived')
+                });
+                sample.previous = pair ? { id: pair.id, timestamp: pair.timestamp, bytesSent: pair.bytesSent, bytesReceived: pair.bytesReceived } : null;
+            }).catch(error => {
+                // Unsupported or failed stats must never fail a file transfer.
+                try { this.log('route-stats-unavailable', { peerDeviceId, error: String(error?.message || error).slice(0, 160) }); } catch (_) {}
+            }).finally(() => { sample.pending = false; });
         }
 
         routeLog(phase, details = {}) {
@@ -1668,6 +1721,7 @@
         }
 
         async sendViaDataChannel(channel, asset, transfer = null, peerDeviceId = '', attemptId = '') {
+            this.capturePeerRoute(peerDeviceId, { assetId: asset.id, attemptId, transferId: transfer?.transferId || '', phase: 'sending-open', fileTransport: 'p2p' });
             const metadata = this.metadata(asset);
             const rangeStart = transfer ? transfer.rangeStart : 0;
             const rangeEnd = transfer ? transfer.rangeEnd : this.dataSize(asset.data);
@@ -1691,6 +1745,7 @@
                 );
                 const sent = Math.min(rangeEnd, offset + chunkSize) - rangeStart;
                 this.deps.onProgress(asset.id, asset.name, Math.min(99, Math.floor(sent * 100 / (rangeEnd - rangeStart))), transport);
+                this.capturePeerRoute(peerDeviceId, { assetId: asset.id, attemptId, transferId: transfer?.transferId || '', phase: 'sending-progress', fileTransport: 'p2p', bufferedAmount: channel.bufferedAmount });
             }
             if (channel._fileAssetRejected) throw new Error(`File asset receiver rejected: ${channel._fileAssetRejected}`);
             const receiverAck = this.waitForTransferAck(channel, asset.id, transfer?.transferId || '', attemptId);
@@ -1730,6 +1785,7 @@
         }
 
         async sendViaSocketRelay(deviceId, asset, transfer = null, attemptId = '', requestId = '') {
+            this.capturePeerRoute(deviceId, { assetId: asset.id, attemptId, requestId, transferId: transfer?.transferId || '', phase: 'relay-start', fileTransport: 'socket.io-relay' });
             const socket = this.socket();
             if (!socket || !socket.connected) throw new Error('Socket is not connected');
             const metadata = this.metadata(asset);
@@ -2008,6 +2064,7 @@
 
         async handleChannelMessage(deviceId, assetId, data, channel, transferId = null) {
             if (typeof data !== 'string') {
+                this.capturePeerRoute(deviceId, { assetId, transferId: transferId || '', attemptId: channel._fileAssetAttemptId || '', phase: 'receiving-progress', fileTransport: 'p2p' });
                 if (transferId && this.multiSourceTransfers.has(assetId)) {
                     return this.queueMultiSourceChunk(assetId, transferId, deviceId, data, channel._fileAssetAttemptId || '');
                 }

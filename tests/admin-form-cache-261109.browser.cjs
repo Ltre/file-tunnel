@@ -20,11 +20,11 @@ for (const [pagePath, apiPath, storageKey] of [['sns-dl', 'sns-dl', 'snsDownload
     await first.locator('input[name="mode"][value="custom"]').evaluate(node => node.click());
     await first.locator('#formatList input[value="18"]').waitFor();
     await first.locator('#preDownloadRemarkInput').fill('原始备注'); await first.locator('#saveDownloadForm').click();
-    await first.waitForFunction(() => document.querySelector('[data-draft-id][aria-pressed="true"]').textContent === '☁|原始备注');
+    await first.waitForFunction(() => document.querySelector('[data-draft-id][aria-pressed="true"]').textContent === '☁·原始备注');
     let saved = await store.list(pagePath); assert.equal(saved.length, 1); assert.equal(saved[0].analysis.formats.length, 3); assert.equal(saved[0].form.remark, '原始备注');
     assert.ok(fs.existsSync(path.join(fixture.dataDir, 'admin-forms', pagePath, saved[0].id + '.json')));
     const two = await context(), second = await two.newPage(); await second.goto(fixture.base + '/' + pagePath);
-    await second.waitForFunction(() => document.querySelector('[data-draft-id][aria-pressed="true"]')?.textContent === '☁|原始备注');
+    await second.waitForFunction(() => document.querySelector('[data-draft-id][aria-pressed="true"]')?.textContent === '☁·原始备注');
     assert.equal(await second.locator('#urlInput').inputValue(), 'https://www.youtube.com/watch?v=cloud'); assert.equal(await second.locator('#formatList input').count(), 3);
     assert.equal(await second.locator('#preDownloadRemarkInput').inputValue(), '原始备注');
     await second.locator('#copyDownloadForm').click(); assert.equal(await second.locator('[data-draft-id][aria-pressed="true"]').textContent(), '原始备注'); assert.equal((await store.list(pagePath)).length, 1);
@@ -34,8 +34,8 @@ for (const [pagePath, apiPath, storageKey] of [['sns-dl', 'sns-dl', 'snsDownload
     assert.equal((await store.list(pagePath)).length, 0);
     await first.reload(); await first.locator('#saveDownloadForm:enabled').waitFor(); assert.equal(await first.locator('[data-draft-id][aria-pressed="true"]').textContent(), '原始备注');
     await first.locator('#formatList input[value="18"]').waitFor(); await first.locator('#saveDownloadForm').click();
-    await first.waitForFunction(() => document.querySelector('[data-draft-id][aria-pressed="true"]').textContent.startsWith('☁|'));
-    saved = await store.list(pagePath); assert.ok(saved[0].id > 1, 'a deleted form number is not recycled');
+    await first.waitForFunction(() => document.querySelector('[data-draft-id][aria-pressed="true"]').textContent.startsWith('☁·'));
+    saved = await store.list(pagePath); assert.equal(saved[0].id, 1, 'a deleted form number is recycled');
     let failedDelete = false;
     await first.route('**/api/admin-forms/' + pagePath + '/*', route => {
         if (route.request().method() === 'DELETE' && !failedDelete) { failedDelete = true; return route.abort('failed'); }
@@ -48,6 +48,32 @@ for (const [pagePath, apiPath, storageKey] of [['sns-dl', 'sns-dl', 'snsDownload
     await first.getByRole('button', { name: '重试清理服务器表单', exact: true }).click();
     await first.waitForFunction(key => JSON.parse(localStorage.getItem(key)).cleanup.length === 0, storageKey);
     assert.equal((await store.list(pagePath)).length, 0); assert.equal(submissions, 1);
+});
+
+test('a tab collision changes the real browser draft id to the smallest shared hole', { timeout:20000 }, async t=>{
+ const fixture=await createFixture();t.after(()=>fixture.close());fixture.app.use('/api/admin-forms',createAdminFormRouter({dataDir:fixture.dataDir}));
+ const store=createAdminFormStore(fixture.dataDir),browser=await chromium.launch({channel:'chrome',headless:true});t.after(()=>browser.close());const page=await browser.newPage();
+ await page.addInitScript(()=>localStorage.setItem('snsDownloadForms',JSON.stringify({active:5,drafts:[1,2,3,5,8,10,11,13].map(id=>({id,mode:'default',url:'https://example.invalid/'+id,remark:''}))})));
+ await page.goto(fixture.base+'/sns-dl');await page.locator('#saveDownloadForm:enabled').waitFor();
+ for(const id of [4,5,6,8,14])await store.save('sns-dl',null,{preferredId:id,clientKey:require('crypto').randomUUID(),form:{url:'https://example.invalid/server/'+id}});
+ await page.locator('#saveDownloadForm').click();await page.waitForFunction(()=>document.querySelector('[data-draft-id][aria-pressed="true"]').textContent==='☁·7');
+ const current=await page.evaluate(()=>{const saved=JSON.parse(localStorage.getItem('snsDownloadForms'));return saved.drafts.find(d=>d.id===saved.active);});
+ assert.equal(current.id,7);assert.equal(current.cloudId,7);assert.equal(current.url,'https://example.invalid/5');
+ assert.equal((await store.get('sns-dl',5)).form.url,'https://example.invalid/server/5');
+});
+
+test('cloud toggle refuses blank forms, preserves local content after successful removal and retains its marker on failure', { timeout: 25000 }, async t => {
+ const fixture=await createFixture();t.after(()=>fixture.close());fixture.app.use('/api/admin-forms',createAdminFormRouter({dataDir:fixture.dataDir}));
+ const store=createAdminFormStore(fixture.dataDir),browser=await chromium.launch({channel:'chrome',headless:true});t.after(()=>browser.close());
+ const page=await browser.newPage();await page.goto(fixture.base+'/sns-dl');const cloud=page.locator('#saveDownloadForm');await page.locator('#saveDownloadForm:enabled').waitFor();
+ await cloud.click();assert.equal((await store.list('sns-dl')).length,0);assert.match(await page.locator('.download-form-cloud-status').textContent(),/请先填写/);
+ await page.locator('#urlInput').fill('https://example.invalid/preserve');await cloud.click();await page.waitForFunction(()=>document.querySelector('#saveDownloadForm').classList.contains('is-cloud-saved'));
+ const before=await page.locator('#urlInput').inputValue();
+ await page.route('**/api/admin-forms/sns-dl/*',route=>route.request().method()==='DELETE'?route.fulfill({status:503,json:{error:'fixture-failure'}}):route.continue());
+ await cloud.click();await page.locator('#saveDownloadForm:enabled').waitFor();assert.equal((await store.list('sns-dl')).length,1);assert.equal(await cloud.getAttribute('aria-pressed'),'true');
+ await page.unroute('**/api/admin-forms/sns-dl/*');await cloud.click();await page.waitForFunction(()=>document.querySelector('#saveDownloadForm').getAttribute('aria-pressed')==='false');
+ assert.equal((await store.list('sns-dl')).length,0);assert.equal(await page.locator('#urlInput').inputValue(),before);
+ assert.equal(await page.locator('[data-draft-id][aria-pressed="true"]').textContent(),'1');
 });
 
 test('a cloud save response arriving after successful submission is cleaned instead of marking the blank replacement form', { timeout: 20000 }, async t => {
@@ -66,5 +92,5 @@ test('a cloud save response arriving after successful submission is cleaned inst
     await page.locator('#startBtn').click(); await page.waitForFunction(() => !document.getElementById('urlInput').value);
     release(); await page.waitForFunction(() => { const saved = JSON.parse(localStorage.getItem('snsDownloadForms')); return !saved.drafts.some(item => item.cloudId) && !saved.cleanup.length && !document.getElementById('saveDownloadForm').disabled; });
     assert.equal((await store.list('sns-dl')).length, 0); assert.equal(submissions, 1);
-    assert.equal((await page.locator('[data-draft-id][aria-pressed="true"]').textContent()).includes('☁|'), false);
+    assert.equal((await page.locator('[data-draft-id][aria-pressed="true"]').textContent()).includes('☁·'), false);
 });

@@ -71,7 +71,20 @@ test('seven themes have equal wide columns, live scrollable progress and unread 
  await page.locator('#open').click();await page.locator('[data-control-unread-list] [data-notification-action="approve"]').click();
  await page.waitForFunction(()=>NotificationCenter.list()[0].read);assert.deepEqual(await page.evaluate(()=>acted),[['request','approve']]);
  await page.evaluate(()=>NotificationCenter.add({id:'later',title:'新通知'}));await page.getByRole('button',{name:'打开通知中心 ›'}).click();
- assert.equal(await page.locator('#notificationCenter').isVisible(),true);assert.equal(await page.evaluate(()=>NotificationCenter.list().every(x=>x.read)),true);
+ await page.locator('#notificationCenter').waitFor({state:'visible'});assert.equal(await page.evaluate(()=>NotificationCenter.list().every(x=>x.read)),true);
+ }finally{await page.close();}
+});
+
+test('browser Back closes only the center; explicit close consumes its history entry before opening another panel',async()=>{
+ const page=await browser.newPage();try{
+  await page.goto(base);const original=await page.evaluate(()=>history.length);
+  await page.locator('#open').click();await page.locator('.control-center').waitFor();
+  assert.equal(await page.evaluate(()=>history.length),original+1);
+  await page.evaluate(()=>history.back());await page.locator('.control-center').waitFor({state:'detached'});
+  assert.equal(await page.locator('#open').isVisible(),true);
+  for(let i=0;i<3;i++){await page.locator('#open').click();await page.locator('#closeSessionSwitcher').click();await page.waitForFunction(()=>!history.state?.controlCenter);}
+  await page.locator('#open').click();await page.keyboard.press('Escape');await page.waitForFunction(()=>!history.state?.controlCenter);
+  assert.equal(await page.locator('#open').isVisible(),true);
  }finally{await page.close();}
 });
 

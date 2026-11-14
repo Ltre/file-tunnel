@@ -20,3 +20,5 @@
 .created-highlight{outline:2px solid #6388dc;outline-offset:2px}
 .download-form-cloud-status{margin:5px 0 10px;color:var(--muted,#64748b);font-size:12px;overflow-wrap:anywhere}
 .download-form-cloud-status.error{color:var(--danger,#c73550)}
+#saveDownloadForm.is-cloud-saved{position:relative}
+#saveDownloadForm.is-cloud-saved:after{content:'';position:absolute;left:27%;right:27%;top:50%;height:2px;background:currentColor;transform:rotate(-48deg);pointer-events:none}

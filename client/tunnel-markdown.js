@@ -257,6 +257,7 @@
         }
     }
     function render(target, body, mapping = new Map(), { onInvitation, images = [], pending = false } = {}) {
+        target.classList.add('tunnel-markdown-document');
         target.classList?.toggle('sc-markdown-plain', !global.marked || !global.DOMPurify);
         if (!global.marked || !global.DOMPurify) { target.textContent = body; return; }
         let source = String(body); const placeholders = new Map();

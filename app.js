@@ -997,13 +997,14 @@ function createRequiredStores(db) {
     }
 }
 
-async function saveToStore(storeName, data) {
+async function saveToStore(storeName, data, options = {}) {
     if (storeName === 'sessions' && state.isExitingTunnel && data?.sessionId === state.sessionId) return;
     if (storeName === 'sessions' && data?.sessionId) updateSessionDirectoryCache(data);
-    if (storeName === 'files' && data?.id && !Object.hasOwn(data, 'data') && data.cacheCleared !== true) {
-        const existing = await getFromStore('files', data.id);
+    const protectFileBody = storeName === 'files' && data?.id && !options.clearFileCache && !hasCompleteFileCache(data);
+    const mergeFileMetadata = existing => {
         if (hasCompleteFileCache(existing, data)) {
-            data = {
+            return {
+                ...existing,
                 ...data,
                 data: existing.data,
                 cacheStoreRef: existing.cacheStoreRef,
@@ -1014,10 +1015,17 @@ async function saveToStore(storeName, data) {
                 isPartial: false
             };
         }
-    }
+        return existing ? { ...existing, ...data } : data;
+    };
 
     // 如果使用内存存储
     if (state.db._isMemory) {
+        if (protectFileBody) {
+            // Preserve read failures, and merge with the latest row after the
+            // await rather than an earlier snapshot of the memory fallback.
+            await getFromStore('files', data.id);
+            data = mergeFileMetadata(memoryStorage.get('files')?.get(data.id));
+        }
         if (!memoryStorage.has(storeName)) {
             memoryStorage.set(storeName, new Map());
         }
@@ -1030,10 +1038,16 @@ async function saveToStore(storeName, data) {
         try {
             const transaction = state.db.transaction([storeName], 'readwrite');
             const store = transaction.objectStore(storeName);
-            store.put(data);
+            let writeError;
+            if (protectFileBody) {
+                // Read and put in the same write transaction: a completed
+                // receive cannot be overtaken by stale restore metadata.
+                const current = store.get(data.id);
+                current.onsuccess = () => { try { store.put(mergeFileMetadata(current.result)); } catch (error) { writeError = error; transaction.abort(); } };
+            } else store.put(data);
             transaction.oncomplete = () => resolve();
             transaction.onerror = () => reject(transaction.error);
-            transaction.onabort = () => reject(transaction.error || new Error(`IndexedDB ${storeName} write aborted`));
+            transaction.onabort = () => reject(writeError || transaction.error || new Error(`IndexedDB ${storeName} write aborted`));
         } catch (err) {
             console.error('saveToStore error:', err);
             reject(err);
@@ -1517,7 +1531,7 @@ function discoverLocalNetworkIp(timeout = 1200) {
         connection.createDataChannel('network-probe');
         connection.onicecandidate = event => {
             const candidate = event.candidate?.candidate || '';
-            const match = /candidate:\S+\s+\d+\s+\S+\s+([0-9a-f:.]+)\s+\d+\s+typ\s+host/i.exec(candidate);
+            const match = /candidate:\S+\s+\d+\s+\S+\s+\d+\s+([0-9a-f:.]+)\s+\d+\s+typ\s+host/i.exec(candidate);
             if (match && isPrivateNetworkIp(match[1])) finish(match[1]);
             if (!event.candidate) finish(null);
         };
@@ -10550,7 +10564,7 @@ async function clearFileCacheByInfo(fileInfo, ownerDeviceId, messageId = '', opt
         serverAssetUrl: fileInfo.serverAssetUrl || '',
         cacheCleared: true,
         restoreRequested: false
-    });
+    }, { clearFileCache: true });
     releaseStoredFileUrl(fileInfo.id);
     showFileMessagePlaceholder(fileInfo.id, '本地缓存已清理', true, false);
     await refreshCollectionMessagesForFile(fileInfo.id);
@@ -13933,7 +13947,7 @@ async function clearFileCache(messageId) {
         serverAssetUrl: fileInfo.serverAssetUrl || '',
         cacheCleared: true,
         restoreRequested: false
-    });
+    }, { clearFileCache: true });
 
     if (Object.hasOwn(fileInfo, 'data')) {
         delete fileInfo.data;
@@ -14622,7 +14636,9 @@ function getResourceReferenceKey(reference) {
 function getResourceReferenceLabel(reference) {
     const time = reference.timestamp ? ` ${formatTime(reference.timestamp)}` : '';
     if (reference.kind === 'chat-file') return `聊天文件${time}`;
-    if (reference.kind === 'collection-file') return `合辑文件${time}`;
+    if (reference.kind === 'collection-file') return time
+        ? (window.TunnelI18n?.format('合辑文件 {0}', time.trim()) || `合辑文件${time}`)
+        : (window.TunnelI18n?.t('合辑文件') || '合辑文件');
     if (reference.kind === 'rich-message') return `富文本${time}`;
     return '协同编辑器';
 }
@@ -15056,7 +15072,7 @@ async function clearResourceCache(resource) {
         restoreRequested: false,
         isPartial: false,
         transferInterrupted: false
-    });
+    }, { clearFileCache: true });
 
     releaseStoredFileUrl(resource.id);
     const editorUrl = editorAssetUrls.get(resource.id);
@@ -17988,6 +18004,27 @@ function normalizeControlCenterOrder(saved) {
     const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'workshop', 'notifications', 'disk', 'music', 'streaming', 'account', 'tunnels'];
     return [...new Set([...(Array.isArray(saved) ? saved.filter(id => ids.includes(id)) : []), ...ids])];
 }
+function bindControlCenterHistory(dialog) {
+    const token = 'control-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    let closing = false, afterClose;
+    history.pushState({ ...history.state, controlCenter: token }, '');
+    const cleanup = () => { window.removeEventListener('popstate', back, true); observer.disconnect(); };
+    const back = event => {
+        if (event.state?.controlCenter === token) return;
+        event.stopImmediatePropagation();
+        dialog.remove(); cleanup(); afterClose?.();
+    };
+    dialog.dismissControlCenter = action => {
+        if (closing) return;
+        closing = true; afterClose = action;
+        dialog.remove();
+        if (history.state?.controlCenter === token) history.back();
+        else { cleanup(); afterClose?.(); }
+    };
+    const observer = new MutationObserver(() => { if (!dialog.isConnected && !closing) dialog.dismissControlCenter(); });
+    observer.observe(document.body, { childList: true });
+    window.addEventListener('popstate', back, true);
+}
 function initControlCenterShortcuts() {
     let lastTap = 0, ctrlOnly = false;
     const open = () => {
@@ -18075,7 +18112,7 @@ function initControlCenterLivePanels(dialog) {
             if (!row) {
                 row = document.createElement('button'); row.type='button'; row.className='progress-item';
                 row.dataset.progressKey=key;
-                row.onclick = () => { dialog.remove(); locateProgressFile(key); };
+                row.onclick = () => dialog.dismissControlCenter(() => locateProgressFile(key));
             }
             if (row.controlProgressMarkup !== item.innerHTML) {
                 row.controlProgressMarkup = item.innerHTML;
@@ -18093,10 +18130,10 @@ function initControlCenterLivePanels(dialog) {
     const progressObserver = new MutationObserver(schedule);
     if (source) progressObserver.observe(source, { childList:true, subtree:true, attributes:true, characterData:true });
     const unmount = window.NotificationCenter?.mountUnread?.(dialog.querySelector('[data-control-unread-list]'));
-    dialog.querySelector('[data-control-notifications-open]').onclick = () => { dialog.remove(); window.NotificationCenter?.open(); };
+    dialog.querySelector('[data-control-notifications-open]').onclick = () => dialog.dismissControlCenter(() => window.NotificationCenter?.open());
     const escape = event => {
         if (event.key !== 'Escape') return;
-        event.preventDefault(); event.stopImmediatePropagation(); dialog.remove();
+        event.preventDefault(); event.stopImmediatePropagation(); dialog.dismissControlCenter();
     };
     document.addEventListener('keydown', escape, true);
     wide.addEventListener('change', schedule);
@@ -18149,9 +18186,10 @@ function initTunnelControlCenter(dialog) {
                 cycleTheme('control-center');
                 return;
             }
-            dialog.remove();
-            if (id === 'account') { window.DiskUI?.manageAccounts(); return; }
-            document.getElementById(target)?.click();
+            dialog.dismissControlCenter(() => {
+                if (id === 'account') { window.DiskUI?.manageAccounts(); return; }
+                document.getElementById(target)?.click();
+            });
         };
         tiles.set(id, tile);
     }
@@ -18268,7 +18306,7 @@ function initTunnelControlCenter(dialog) {
         });
         observer.observe(document.body, { childList: true });
     }
-    dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { reset(); dialog.remove(); } });
+    dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { reset(); dialog.dismissControlCenter(); } });
     const reflow = () => { reset(); render(); };
     wide.addEventListener('change', reflow);
     const cleanup = new MutationObserver(() => {
@@ -18320,12 +18358,13 @@ async function showJoinedSessionSwitcher() {
         </div>
     `;
     document.body.appendChild(dialog);
+    bindControlCenterHistory(dialog);
     initTunnelControlCenter(dialog);
     initControlCenterLivePanels(dialog);
     dialog.addEventListener('click', event => {
-        if (event.target === dialog && !event.defaultPrevented) dialog.remove();
+        if (event.target === dialog && !event.defaultPrevented) dialog.dismissControlCenter();
     });
-    dialog.querySelector('#closeSessionSwitcher').addEventListener('click', () => dialog.remove());
+    dialog.querySelector('#closeSessionSwitcher').addEventListener('click', () => dialog.dismissControlCenter());
     dialog.querySelector('#closeSessionSwitcher').focus({ preventScroll:true });
     const scroller = dialog.querySelector('#sessionSwitcherList');
     const updateScrollButtons = () => {
@@ -18366,7 +18405,7 @@ async function showJoinedSessionSwitcher() {
                 window.location.href = `${window.location.origin}/#${sessionId}`;
                 setTimeout(() => window.location.reload(), 80);
             } else {
-                dialog.remove();
+                dialog.dismissControlCenter();
             }
         });
     });

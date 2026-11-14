@@ -1,0 +1,230 @@
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+0.0s] 任务已创建并进入队列 {
+0|tun-miku-by-proxy  |   sourceUrl: 'https://youtube.com/shorts/1244Qr_amDY?is=xSc_8LjIaTiABlan',
+0|tun-miku-by-proxy  |   mode: 'custom',
+0|tun-miku-by-proxy  |   asMusic: true,
+0|tun-miku-by-proxy  |   selectedFormatIds: [ '251' ],
+0|tun-miku-by-proxy  |   downloadSections: '完整媒体',
+0|tun-miku-by-proxy  |   queuePosition: 1
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+0.0s] 任务开始执行 {
+0|tun-miku-by-proxy  |   mode: 'custom',
+0|tun-miku-by-proxy  |   asMusic: true,
+0|tun-miku-by-proxy  |   selectedFormatIds: [ '251' ],
+0|tun-miku-by-proxy  |   downloadSections: '完整媒体',
+0|tun-miku-by-proxy  |   queueRemaining: 0,
+0|tun-miku-by-proxy  |   active: 1,
+0|tun-miku-by-proxy  |   concurrency: 1
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+0.0s] 开始解析 YouTube 页面与媒体格式 {
+0|tun-miku-by-proxy  |   sourceUrl: 'https://youtube.com/shorts/1244Qr_amDY?is=xSc_8LjIaTiABlan'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+0.0s] 已规范化 YouTube 地址 {
+0|tun-miku-by-proxy  |   sourceUrl: 'https://youtube.com/shorts/1244Qr_amDY?is=xSc_8LjIaTiABlan',
+0|tun-miku-by-proxy  |   platform: 'youtube'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+0.0s] 已确认私人 YouTube Premium cookies 可用，准备获取基础元信息 { cookieConfigured: true, includeFormats: true, forceMusic: true }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] 基础元信息与格式库存获取完成 {
+0|tun-miku-by-proxy  |   youtubeVideoId: '1244Qr_amDY',
+0|tun-miku-by-proxy  |   title: '假如人人都说真心话 | Facebook : zzrj0662',
+0|tun-miku-by-proxy  |   extractor: 'Youtube',
+0|tun-miku-by-proxy  |   durationSeconds: 118,
+0|tun-miku-by-proxy  |   rawFormatCount: 28,
+0|tun-miku-by-proxy  |   hasThumbnail: true
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] 媒体类型识别与默认格式策略已确定 {
+0|tun-miku-by-proxy  |   detectedMediaType: 'song',
+0|tun-miku-by-proxy  |   defaultSelector: 'bestaudio[acodec^=mp4a][abr>=245][abr<=265]/bestaudio[ext=m4a][abr>=245][abr<=265]/bestaudio[abr>=245][abr<=265]/bestaudio[acodec^=mp4a][abr>=120][abr<=136]/bestaudio[ext=m4a][abr>=120][abr<=136]/bestaudio[abr>=120][abr<=136]/bestaudio[acodec^=mp4a][abr>=192][abr<=320]/bestaudio[ext=m4a][abr>=192][abr<=320]/bestaudio[abr>=192][abr<=320]/bestaudio[acodec^=mp4a][abr>=96][abr<192]/bestaudio[ext=m4a][abr>=96][abr<192]/bestaudio[abr>=96][abr<192]/bestaudio[acodec^=mp4a]/bestaudio[ext=m4a]/bestaudio'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] 格式库存已标准化 {
+0|tun-miku-by-proxy  |   normalizedFormatCount: 28,
+0|tun-miku-by-proxy  |   audioFormats: 8,
+0|tun-miku-by-proxy  |   videoFormats: 16,
+0|tun-miku-by-proxy  |   combinedFormats: 0,
+0|tun-miku-by-proxy  |   preferredMusicFormatId: '251'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] 最终格式选择已通过校验 {
+0|tun-miku-by-proxy  |   requestedIds: [ '251' ],
+0|tun-miku-by-proxy  |   selectedIds: [ '251' ],
+0|tun-miku-by-proxy  |   mediaType: 'song',
+0|tun-miku-by-proxy  |   formatSelector: '251',
+0|tun-miku-by-proxy  |   outputContainer: 'm4a',
+0|tun-miku-by-proxy  |   summary: {
+0|tun-miku-by-proxy  |     finalFormat: '251',
+0|tun-miku-by-proxy  |     video: '',
+0|tun-miku-by-proxy  |     audio: 'opus / 102kbps',
+0|tun-miku-by-proxy  |     output: 'M4A'
+0|tun-miku-by-proxy  |   }
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] 正在补充 YouTube Music 专辑曲序与唱片编号
+0|tun-miku-by-proxy  | [external-dependency][youtube-yt-dlp][youtube-music-track-number-unresolved] {
+0|tun-miku-by-proxy  |   dependency: 'youtube-yt-dlp',
+0|tun-miku-by-proxy  |   operation: 'youtube-music-track-number-unresolved',
+0|tun-miku-by-proxy  |   level: 'warn',
+0|tun-miku-by-proxy  |   endpoint: 'https://youtube.com/shorts/1244Qr_amDY',
+0|tun-miku-by-proxy  |   upstreamStatus: undefined,
+0|tun-miku-by-proxy  |   errorCode: '',
+0|tun-miku-by-proxy  |   error: 'No native or album-verified Track number was available; Track remains empty.',
+0|tun-miku-by-proxy  |   hint: '',
+0|tun-miku-by-proxy  |   videoId: '1244Qr_amDY',
+0|tun-miku-by-proxy  |   album: ''
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] 歌曲专辑序号补充完成 { track: '', disc: '' }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] YouTube Premium 解析结果已组装 {
+0|tun-miku-by-proxy  |   title: '假如人人都说真心话 | Facebook : zzrj0662',
+0|tun-miku-by-proxy  |   youtubeVideoId: '1244Qr_amDY',
+0|tun-miku-by-proxy  |   mediaType: 'song',
+0|tun-miku-by-proxy  |   selectedFormatIds: [ '251' ],
+0|tun-miku-by-proxy  |   artist: '真子日记',
+0|tun-miku-by-proxy  |   album: '真子日记 ',
+0|tun-miku-by-proxy  |   albumArtist: '',
+0|tun-miku-by-proxy  |   date: '2026',
+0|tun-miku-by-proxy  |   track: '',
+0|tun-miku-by-proxy  |   disc: ''
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] YouTube 信息解析完成 {
+0|tun-miku-by-proxy  |   title: '假如人人都说真心话 | Facebook : zzrj0662',
+0|tun-miku-by-proxy  |   youtubeVideoId: '1244Qr_amDY',
+0|tun-miku-by-proxy  |   mediaType: 'song',
+0|tun-miku-by-proxy  |   durationSeconds: 118,
+0|tun-miku-by-proxy  |   selectedFormatIds: [ '251' ],
+0|tun-miku-by-proxy  |   formatSelector: '251',
+0|tun-miku-by-proxy  |   outputContainer: 'm4a',
+0|tun-miku-by-proxy  |   selectedFormats: {
+0|tun-miku-by-proxy  |     finalFormat: '251',
+0|tun-miku-by-proxy  |     video: '',
+0|tun-miku-by-proxy  |     audio: 'opus / 102kbps',
+0|tun-miku-by-proxy  |     output: 'M4A'
+0|tun-miku-by-proxy  |   },
+0|tun-miku-by-proxy  |   listedFormats: 28,
+0|tun-miku-by-proxy  |   hasCover: true,
+0|tun-miku-by-proxy  |   hasSongMetadata: true
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] 开始下载并处理媒体 {
+0|tun-miku-by-proxy  |   taskDir: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\youtube-premium-downloads\\d7ba2fe7-6384-48bc-8e7c-a60dba93464e',
+0|tun-miku-by-proxy  |   mediaType: 'song',
+0|tun-miku-by-proxy  |   selectedFormatIds: [ '251' ],
+0|tun-miku-by-proxy  |   formatSelector: '251',
+0|tun-miku-by-proxy  |   outputContainer: 'm4a',
+0|tun-miku-by-proxy  |   downloadSections: '完整媒体'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] 已进入 Premium 成品处理器 {
+0|tun-miku-by-proxy  |   mediaType: 'song',
+0|tun-miku-by-proxy  |   mode: 'custom',
+0|tun-miku-by-proxy  |   asMusic: true,
+0|tun-miku-by-proxy  |   singleTrack: 'audio',
+0|tun-miku-by-proxy  |   customSelector: '251',
+0|tun-miku-by-proxy  |   taskDir: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\youtube-premium-downloads\\d7ba2fe7-6384-48bc-8e7c-a60dba93464e'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] 采用歌曲工作流：下载音频与封面、裁切封面、写入元信息 { formatSelector: '251' }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+8.9s] 启动 yt-dlp 歌曲与封面下载 {
+0|tun-miku-by-proxy  |   attempt: 1,
+0|tun-miku-by-proxy  |   attempts: 1,
+0|tun-miku-by-proxy  |   formatSelector: '251',
+0|tun-miku-by-proxy  |   strictFormatSelection: true,
+0|tun-miku-by-proxy  |   downloadSections: '完整媒体'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+19.0s] 下载进度 {
+0|tun-miku-by-proxy  |   percent: 0.1,
+0|tun-miku-by-proxy  |   downloaded: '0.0MiB',
+0|tun-miku-by-proxy  |   total: '1.44MiB',
+0|tun-miku-by-proxy  |   speed: '22.80KiB/s',
+0|tun-miku-by-proxy  |   eta: '01:04'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+19.5s] 下载进度 {
+0|tun-miku-by-proxy  |   percent: 100,
+0|tun-miku-by-proxy  |   downloaded: '1.4MiB',
+0|tun-miku-by-proxy  |   total: '1.44MiB',
+0|tun-miku-by-proxy  |   speed: '2.49MiB/s',
+0|tun-miku-by-proxy  |   eta: '00:00'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+19.6s] 下载进度 {
+0|tun-miku-by-proxy  |   percent: 100,
+0|tun-miku-by-proxy  |   downloaded: '1.4MiB',
+0|tun-miku-by-proxy  |   total: '1.44MiB',
+0|tun-miku-by-proxy  |   speed: '1.52MiB/s',
+0|tun-miku-by-proxy  |   eta: ''
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+19.8s] yt-dlp 歌曲与封面下载命令执行成功 { attempt: 1, formatSelector: '251' }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+19.8s] 已取得歌曲源文件与 YouTube 封面 {
+0|tun-miku-by-proxy  |   sourceAudio: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\sns-media-work\\premium-d7ba2fe7-6384-48bc-8e7c-a60dba93464e.source.webm',
+0|tun-miku-by-proxy  |   sourceAudioSize: 1506066,
+0|tun-miku-by-proxy  |   sourceCover: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\sns-media-work\\premium-d7ba2fe7-6384-48bc-8e7c-a60dba93464e.source.jpg',
+0|tun-miku-by-proxy  |   sourceCoverSize: 79373
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+19.9s] 处理阶段变化 { status: 'metadata', label: '处理封面与写入歌曲元信息' }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+19.9s] 开始裁切并验证方形歌曲封面 {
+0|tun-miku-by-proxy  |   sourceCover: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\sns-media-work\\premium-d7ba2fe7-6384-48bc-8e7c-a60dba93464e.source.jpg',
+0|tun-miku-by-proxy  |   squareCover: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\sns-media-work\\premium-d7ba2fe7-6384-48bc-8e7c-a60dba93464e.cover.jpg'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+20.7s] 方形歌曲封面处理完成 {
+0|tun-miku-by-proxy  |   squareCover: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\sns-media-work\\premium-d7ba2fe7-6384-48bc-8e7c-a60dba93464e.cover.jpg',
+0|tun-miku-by-proxy  |   size: 85394
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+20.8s] 源音频探测完成 {
+0|tun-miku-by-proxy  |   codecName: 'opus',
+0|tun-miku-by-proxy  |   formatLabel: 'OPUS',
+0|tun-miku-by-proxy  |   bitRate: 102296,
+0|tun-miku-by-proxy  |   bitRateLabel: '102kbps',
+0|tun-miku-by-proxy  |   duration: 117.781,
+0|tun-miku-by-proxy  |   durationLabel: '01:58'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+20.8s] 开始写入歌曲元信息并嵌入封面 {
+0|tun-miku-by-proxy  |   output: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\sns-media-work\\premium-d7ba2fe7-6384-48bc-8e7c-a60dba93464e.final.m4a',
+0|tun-miku-by-proxy  |   audioMode: '转码 102k',
+0|tun-miku-by-proxy  |   metadata: {
+0|tun-miku-by-proxy  |     title: '假如人人都说真心话 | Facebook : zzrj0662',
+0|tun-miku-by-proxy  |     artist: '真子日记',
+0|tun-miku-by-proxy  |     album: '真子日记 ',
+0|tun-miku-by-proxy  |     albumArtist: '',
+0|tun-miku-by-proxy  |     composer: '',
+0|tun-miku-by-proxy  |     genre: '',
+0|tun-miku-by-proxy  |     track: '',
+0|tun-miku-by-proxy  |     disc: '',
+0|tun-miku-by-proxy  |     date: '2026',
+0|tun-miku-by-proxy  |     hasComment: true,
+0|tun-miku-by-proxy  |     hasLyrics: false
+0|tun-miku-by-proxy  |   }
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+26.5s] 歌曲成品校验完成 {
+0|tun-miku-by-proxy  |   finalAudio: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\sns-media-work\\premium-d7ba2fe7-6384-48bc-8e7c-a60dba93464e.final.m4a',
+0|tun-miku-by-proxy  |   fileSize: 1172175,
+0|tun-miku-by-proxy  |   embeddedCover: true,
+0|tun-miku-by-proxy  |   codecName: 'aac',
+0|tun-miku-by-proxy  |   formatLabel: 'AAC LC',
+0|tun-miku-by-proxy  |   bitRate: 73751,
+0|tun-miku-by-proxy  |   bitRateLabel: '74kbps',
+0|tun-miku-by-proxy  |   duration: 117.771625,
+0|tun-miku-by-proxy  |   durationLabel: '01:58'
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+26.5s] 歌曲与封面已移入任务成品目录 {
+0|tun-miku-by-proxy  |   outputPath: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\youtube-premium-downloads\\d7ba2fe7-6384-48bc-8e7c-a60dba93464e\\真子日记 - 假如人人都说真心话 ｜ Facebook ： zzrj0662.m4a',
+0|tun-miku-by-proxy  |   coverPath: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\youtube-premium-downloads\\d7ba2fe7-6384-48bc-8e7c-a60dba93464e\\cover.jpg',
+0|tun-miku-by-proxy  |   outputFileName: '真子日记 - 假如人人都说真心话 ｜ Facebook ： zzrj0662.m4a',
+0|tun-miku-by-proxy  |   outputFileSize: 1172175
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+26.5s] 下载处理流程已返回成品 {
+0|tun-miku-by-proxy  |   outputPath: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\youtube-premium-downloads\\d7ba2fe7-6384-48bc-8e7c-a60dba93464e\\真子日记 - 假如人人都说真心话 ｜ Facebook ： zzrj0662.m4a',
+0|tun-miku-by-proxy  |   coverPath: 'C:\\Users\\Administrator\\.openclaw\\workspace\\tunnel\\.tunnel-data\\youtube-premium-downloads\\d7ba2fe7-6384-48bc-8e7c-a60dba93464e\\cover.jpg',
+0|tun-miku-by-proxy  |   outputFileName: '真子日记 - 假如人人都说真心话 ｜ Facebook ： zzrj0662.m4a',
+0|tun-miku-by-proxy  |   outputFileSize: 1172175,
+0|tun-miku-by-proxy  |   title: '假如人人都说真心话 | Facebook : zzrj0662',
+0|tun-miku-by-proxy  |   hasSongMetadata: true
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+26.5s] 任务完成 {
+0|tun-miku-by-proxy  |   outputFileName: '真子日记 - 假如人人都说真心话 ｜ Facebook ： zzrj0662.m4a',
+0|tun-miku-by-proxy  |   outputFileSize: 1172175,
+0|tun-miku-by-proxy  |   elapsedSeconds: 26.5
+0|tun-miku-by-proxy  | }
+0|tun-miku-by-proxy  | [YouTube Premium抓取][task:d7ba2fe7][+26.5s] 任务执行槽已释放 { status: 'completed', activeBeforeRelease: 1 }
+0|tun-miku-by-proxy  | [external-dependency][youtube-yt-dlp][metadata-json] {
+0|tun-miku-by-proxy  |   dependency: 'youtube-yt-dlp',
+0|tun-miku-by-proxy  |   operation: 'metadata-json',
+0|tun-miku-by-proxy  |   level: 'error',
+0|tun-miku-by-proxy  |   endpoint: 'https://youtube.com/shorts/1244Qr_amDY',
+0|tun-miku-by-proxy  |   upstreamStatus: undefined,
+0|tun-miku-by-proxy  |   errorCode: '',
+0|tun-miku-by-proxy  |   error: '[youtube] 1244Qr_amDY: Unsupported language code: zh. Supported language codes (case-sensitive): af, az, id, ms, bs, ca, cs, da, de, et, en-IN, en-GB, en, es, es-419, es-US, eu, fil, fr, fr-CA, gl, hr, zu, is, it, sw, lv, lt, hu, nl, no, uz, pl, pt-PT, pt, ro, sq, sk, sl, sr-Latn, fi, sv, vi, tr, be, bg, ky, kk, mk, mn, ru, sr, uk, el, hy, iw, ur, ar, fa, ne, mr, hi, as, bn, pa, gu, or, ta, te, kn, ml, si, th, lo, my, ka, am, km, zh-CN, zh-TW, zh-HK, ja, ko.',
+0|tun-miku-by-proxy  |   hint: 'External site/extractor/authentication behavior may have changed; inspect this log before treating it as an internal bug.',
+0|tun-miku-by-proxy  |   exitCode: 1,
+0|tun-miku-by-proxy  |   platform: 'youtube'
+0|tun-miku-by-proxy  | }

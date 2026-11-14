@@ -37,7 +37,7 @@
         if(item&&item.size>MAX)throw new Error('编辑器最多打开 20MB 文件；大文件仍可下载');
         const blob=item?await client.read(item):new Blob([]);if(blob.size>MAX)throw new Error('编辑器最多打开 20MB 文件');
         const doc=new Document(blob),body=document.createElement('div');body.className='disk-file-editor';
-        const name=document.createElement('input');name.value=item?.name||'新建文件.txt';name.disabled=Boolean(item);name.setAttribute('aria-label','文件名称');
+        const name=document.createElement('input');name.value=item?.name||(global.TunnelI18n?.t('新建文件.txt')||'新建文件.txt');name.disabled=Boolean(item);name.setAttribute('aria-label','文件名称');
         const mode=document.createElement('select');mode.setAttribute('aria-label','编辑类型');for(const [value,title] of [['text','纯文本'],['markdown','Markdown'],['hex','十六进制']])mode.add(new Option(title,value));
         mode.value=/\.md$/i.test(item?.name||'')?'markdown':'text';try{await validUtf8(blob);}catch(_){mode.value='hex';}
         const panes=document.createElement('div');panes.className='disk-editor-panes';const edit=document.createElement('textarea'),preview=document.createElement('div');edit.spellcheck=false;edit.setAttribute('aria-label','文件正文');preview.className='disk-editor-preview';panes.append(edit,preview);

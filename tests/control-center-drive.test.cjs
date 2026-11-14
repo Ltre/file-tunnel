@@ -8,7 +8,7 @@ test('控制中心排序兼容新增磁贴、重复和失效项目，保留切�
     const normalize = vm.runInNewContext(app.slice(app.indexOf('function normalizeControlCenterOrder('), app.indexOf('function initTunnelControlCenter(')) + ';normalizeControlCenterOrder');
     const result = [...normalize(['theme', 'tunnels', 'disk', 'disk', 'unknown'])];
     assert.equal(result[0], 'theme'); assert.equal(result[1], 'tunnels'); assert.equal(result[2], 'disk');
-    assert.equal(result.length, 14); assert.equal(new Set(result).size, 14); assert.ok(result.includes('workshop')); assert.ok(result.includes('music')); assert.ok(result.includes('streaming'));
+    assert.equal(result.length, 15); assert.equal(new Set(result).size, 15); assert.ok(result.includes('workshop')); assert.ok(result.includes('music')); assert.ok(result.includes('streaming')); assert.ok(result.includes('account'));
 });
 
 test('预览按钮滚动引导只在浮层重新打开时执行，收藏重绘保留滚动位置', () => {
@@ -105,7 +105,7 @@ test('拖放移动先显示目标确认，服务端接受首个任务后立即�
     assert.equal(calls.filter(call=>call[0]==='preflight').length,1);
 });
 
-test('顶栏主题按钮轮换并展开竖向菜单，设置页选择和空白关闭互不挤占首页', () => {
+test('顶栏主题按钮展开竖向菜单，明确选择主题及空白关闭互不挤占首页', () => {
     const handlers = {}, logged = [], classes = () => ({ toggle() {} });
     const switcher = { addEventListener: (name, fn) => { handlers.switcher = fn; } };
     const quick = { hidden: true, style: {}, offsetWidth: 132, contains: () => false, addEventListener: (name, fn) => { handlers.quick = fn; } };
@@ -121,7 +121,7 @@ test('顶栏主题按钮轮换并展开竖向菜单，设置页选择和空白�
     vm.runInContext(app.slice(app.indexOf('function applyTheme('), app.indexOf('function isTunnelOwner(')) + ';this.init=initThemeSwitcher;', context);
     context.init(); assert.equal(context.document.body.dataset.theme, 'classic');
     handlers.cycle({ stopPropagation() {} });
-    assert.equal(context.document.body.dataset.theme, 'atelier'); assert.equal(quick.hidden, false); assert.equal(quick.style.top, '50px');
+    assert.equal(context.document.body.dataset.theme, 'classic'); assert.equal(quick.hidden, false); assert.equal(quick.style.top, '50px');
     handlers.switcher({ target: { closest: () => ({ dataset: { theme: 'atelier' } }) } }); assert.equal(context.document.body.dataset.theme, 'atelier');
     handlers['document-click']({ target: {} }); assert.equal(quick.hidden, true);
     assert.match(source('pages/index.html'), /tunnel-settings-section theme-settings[\s\S]*id="themeSwitcher"/);

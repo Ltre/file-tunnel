@@ -59,6 +59,11 @@ async function runPeerScenario(t, bulk = false, abandoned = false) {
     }
     assert.equal(events.filter(item=>item.event==='file-asset-relay-started').length,abandoned?1:0,'only the explicitly abandoned attempt may use a relay retry');
     await a.waitForFunction(expected=>fixture.events.filter(item=>item.event==='file-asset-route-p2p-send-completed').length===expected,abandoned?1:2);
+    await a.waitForFunction(()=>fixture.events.some(item=>item.event==='file-asset-route-connection-stats'&&item.details.selected&&item.details.local?.protocol&&item.details.remote?.protocol));
+    const samples=await a.evaluate(()=>fixture.events.filter(item=>item.event==='file-asset-route-connection-stats'));
+    assert.ok(samples.every(item=>item.details.scope==='peer-connection'));
+    assert.ok(samples.some(item=>item.details.local?.candidateType==='host'&&item.details.remote?.candidateType==='host'));
+    assert.ok(samples.some(item=>item.details.fileTransport===(abandoned?'socket.io-relay':'p2p')), 'sampling context reflects the real attempt; a short subsequent P2P file may fall within the sampling throttle');
     const routes=await a.evaluate(()=>fixture.events.filter(item=>item.event==='file-asset-route-p2p-send-completed'));
     assert.equal(routes.length,abandoned?1:2,JSON.stringify(await a.evaluate(()=>fixture.events.slice(-25))));assert.equal(events.filter(item=>item.event==='file-asset-relay-started').length,abandoned?1:0);
     const selected=await a.evaluate(async()=>{const pc=[...fixture.state.peers.values()][0],stats=await pc.getStats();return [...stats.values()].filter(item=>item.type==='candidate-pair'&&item.state==='succeeded').map(item=>({state:item.state,nominated:item.nominated,bytesSent:item.bytesSent}));});assert.ok(selected.some(item=>item.bytesSent>0));

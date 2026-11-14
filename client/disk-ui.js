@@ -973,10 +973,11 @@ function getTelegramDriveItemMeta(item) {
     if (item.origin === 'collaboration') return `受邀协同 · ${item.mountName || '协同项目'} · ${item.relativePath || item.name} · ${item.kind === 'mounted_directory' ? '目录' : telegramDriveFileType(item) + ' · ' + formatFileSize(item.size || 0)}`;
     const global = document.getElementById('telegramDriveSearchAll')?.checked && String(document.getElementById('telegramDriveSearch')?.value || '').trim();
     const location = global ? `位置：${telegramDriveDisplayPath(item.kind === 'directory' || item.kind === 'collaboration_mount' ? item.parentPath : item.folderPath)} · ` : '';
+    const counts = window.TunnelI18n?.format('{0} 个子目录 · {1} 个文件', item.folderCount || 0, item.fileCount || 0) || `${item.folderCount || 0} 个子目录 · ${item.fileCount || 0} 个文件`;
     if (item.kind === 'collaboration_mount') { const sourceName = item.sourceName ?? item.lastKnownTitle; return `${location}协同挂载 · ${item.status === 'active' ? '受邀项目，内容仍归原所有者' : '访问已失效，可移除此挂载'}${sourceName ? ' · 来源：' + sourceName : ''}`; }
     if (item.kind === 'directory' && item.reviewStatus === 'deleted') return `${location}已被管理员删除目录内容 · 仅保留节点 · ${telegramDriveFormatDate(item.reviewUpdatedAt)}`;
-    if (item.kind === 'directory' && item.reviewStatus === 'blocked') return `${location}已被管理员屏蔽 · 仅自己可见且不可分享 · ${item.folderCount || 0} 个子目录 · ${item.fileCount || 0} 个文件`;
-    if (item.kind === 'directory') return `${location}${item.folderCount || 0} 个子目录 · ${item.fileCount || 0} 个文件 · ${formatFileSize(item.size || 0)}`;
+    if (item.kind === 'directory' && item.reviewStatus === 'blocked') return `${location}已被管理员屏蔽 · 仅自己可见且不可分享 · ${counts}`;
+    if (item.kind === 'directory') return `${location}${counts} · ${formatFileSize(item.size || 0)}`;
     if (item.reviewStatus === 'deleted') return `${location}已被管理员删除文件实体 · 仅保留节点 · ${telegramDriveFormatDate(item.reviewUpdatedAt)}`;
     if (item.reviewStatus === 'blocked') return `${location}已被管理员屏蔽 · 仅自己可见且不可分享 · ${telegramDriveFileType(item)} · ${formatFileSize(item.size || 0)}`;
     return `${location}${telegramDriveFileType(item)} · ${formatFileSize(item.size || 0)} · ${telegramDriveFormatDate(item.updatedAt || item.createdAt)}`;
@@ -1004,7 +1005,7 @@ async function showTelegramDriveProperties(item) {
         ? await telegramDriveRequest(`/api/telegram/drive/directories/properties?path=${encodeURIComponent(item.path)}`)
         : await telegramDriveRequest(`/api/telegram/drive/files/${encodeURIComponent(item.id)}`);
     const entries = item.kind === 'directory'
-        ? [['名称', data.name], ['位置', telegramDriveDisplayPath(data.parentPath)], ['类型', '文件夹'], ['审核状态', data.reviewStatus === 'deleted' ? '目录内容已删除，仅保留节点' : data.reviewStatus === 'blocked' ? '已屏蔽，仅自己可见且不可分享' : '正常'], ['内容', `${data.folderCount} 个子目录，${data.fileCount} 个文件`], ['占用空间', formatFileSize(data.size || 0)], ['创建时间', telegramDriveFormatDate(data.createdAt)], ['最后修改', telegramDriveFormatDate(data.updatedAt)]]
+        ? [['名称', data.name], ['位置', telegramDriveDisplayPath(data.parentPath)], ['类型', '文件夹'], ['审核状态', data.reviewStatus === 'deleted' ? '目录内容已删除，仅保留节点' : data.reviewStatus === 'blocked' ? '已屏蔽，仅自己可见且不可分享' : '正常'], ['内容', (window.TunnelI18n?.format('{0} 个子目录 · {1} 个文件', data.folderCount, data.fileCount) || `${data.folderCount} 个子目录，${data.fileCount} 个文件`)], ['占用空间', formatFileSize(data.size || 0)], ['创建时间', telegramDriveFormatDate(data.createdAt)], ['最后修改', telegramDriveFormatDate(data.updatedAt)]]
         : [['名称', data.name], ['位置', telegramDriveDisplayPath(data.folderPath)], ['类型', telegramDriveFileType(data)], ['审核状态', data.reviewStatus === 'deleted' ? '文件实体已删除，仅保留节点' : data.reviewStatus === 'blocked' ? '已屏蔽，仅自己可见且不可分享' : '正常'], ['大小', `${formatFileSize(data.size || 0)}（${Number(data.size || 0).toLocaleString('zh-CN')} 字节）`], ['创建时间', telegramDriveFormatDate(data.createdAt)], ['最后修改', telegramDriveFormatDate(data.updatedAt)], ['防失联检测', data.lastCheckedAt ? telegramDriveFormatDate(data.lastCheckedAt) : '尚未检测']];
     const dl = document.createElement('dl'); dl.className = 'telegram-drive-property-grid';
     entries.forEach(([name, value]) => { const dt = document.createElement('dt'); dt.textContent = name; const dd = document.createElement('dd'); dd.textContent = value; if (name === '名称' || name === '位置') dd.dataset.i18nRaw = 'true'; dl.append(dt, dd); });

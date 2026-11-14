@@ -5,6 +5,14 @@
         let drafts = [], active, next = 1;
         let selecting = false, press, heldPointer, suppressedDraft, suppressClick = 0;
         const selected = new Set();
+        const cloudIds = new Set();
+        const localId = () => { const used = new Set([...drafts.map(item => item.id), ...cloudIds]); let id = 1; while (used.has(id)) id++; return id; };
+        function acceptCloudId(draft, id) {
+            cloudIds.add(id);
+            const collision = drafts.find(item => item !== draft && item.id === id);
+            if (collision) collision.id = localId();
+            draft.id = id;
+        }
         let pendingDeletes = [], cloudLoading = Boolean(serverForms), flushing = null, cloudButton;
         const cloudFlights = new Set();
         let cloudFeedback = 0;
@@ -24,7 +32,7 @@
         if (!drafts.length) drafts.push({ id: next++, ...blank() });
         active ||= drafts[0];
         for (const draft of drafts) draft.clientKey ||= identity();
-        const title = draft => (draft.cloudId ? '☁|' : '') + (draft.remark?.trim() || String(draft.cloudId || draft.id));
+        const title = draft => (draft.cloudId ? '☁·' : '') + (draft.remark?.trim() || String(draft.cloudId || draft.id));
         const cloudStatus = document.createElement('div'); cloudStatus.className = 'download-form-cloud-status'; cloudStatus.setAttribute('role', 'status'); cloudStatus.hidden = true;
         const retryCleanup = document.createElement('button'); retryCleanup.type = 'button'; retryCleanup.textContent = '重试清理服务器表单'; retryCleanup.hidden = true;
         if (serverForms) tabs.closest('.download-form-heading')?.after(cloudStatus, retryCleanup);
@@ -101,7 +109,13 @@
             tabs.classList.toggle('is-selecting', selecting);
             copy.hidden = selecting; cancelSelection.hidden = selectAll.hidden = !selecting;
             remove.disabled = selecting && !selected.size;
-            if (cloudButton) { cloudButton.hidden = selecting; cloudButton.disabled = cloudLoading || cloudFlights.has(active) || Boolean(active.submitting); }
+            if (cloudButton) {
+                cloudButton.hidden = selecting; cloudButton.disabled = cloudLoading || cloudFlights.has(active) || Boolean(active.submitting);
+                cloudButton.classList.toggle('is-cloud-saved', Boolean(active.cloudId));
+                cloudButton.title = active.cloudId ? '取消当前表单的云端保存' : '保存当前表单到服务器';
+                cloudButton.setAttribute('aria-label', cloudButton.title);
+                cloudButton.setAttribute('aria-pressed', String(Boolean(active.cloudId)));
+            }
         }
         const cancelSelection = makeButton('取消', () => { selecting = false; selected.clear(); renderTabs(); }, '取消表单多选');
         const selectAll = makeButton('☑', () => { drafts.forEach(draft => selected.add(draft)); renderTabs(); }, '全选表单');
@@ -112,22 +126,31 @@
         }
         async function saveCloud() {
             const draft = capture(); if (cloudLoading || draft.submitting || cloudFlights.has(draft)) return;
+            const removing = Boolean(draft.cloudId);
+            if (!draft.cloudId && !['url', 'remark', 'downloadSections', 'manualFormat'].some(name => String(draft[name] || '').trim())) { report('请先填写表单内容。'); return; }
             const feedback = ++cloudFeedback;
             const savedReport = (text, error) => { if (feedback === cloudFeedback) report(text, error); };
-            cloudFlights.add(draft); renderTabs(); report('正在保存服务器表单…');
-            const data = { clientKey: draft.clientKey, revision: draft.cloudRevision, form: { mode: draft.mode, ...Object.fromEntries(Object.keys(fields).map(name => [name, draft[name]])) }, analysis: draft.analysis, ids: draft.ids };
+            cloudFlights.add(draft); renderTabs(); report(draft.cloudId ? '正在移除服务器表单…' : '正在保存服务器表单…');
+            const data = { preferredId: draft.id, localIds: drafts.filter(item => item !== draft).map(item => item.id), clientKey: draft.clientKey, revision: draft.cloudRevision, form: { mode: draft.mode, ...Object.fromEntries(Object.keys(fields).map(name => [name, draft[name]])) }, analysis: draft.analysis, ids: draft.ids };
             try {
-                const { form } = await cloudRequest(draft.cloudId ? '/' + draft.cloudId : '', draft.cloudId ? 'PUT' : 'POST', data);
+                if (draft.cloudId) {
+                    const id = draft.cloudId;
+                    await cloudRequest('/' + id, 'DELETE', { revision: draft.cloudRevision });
+                    cloudIds.delete(id);
+                    if (draft.clientKey === data.clientKey) { draft.cloudId = undefined; draft.cloudRevision = undefined; draft.clientKey = identity(); }
+                    persist(); renderTabs(); savedReport('已取消云端保存，本地表单内容已保留。'); return;
+                }
+                const { form } = await cloudRequest('', 'POST', data);
                 if (draft.clientKey !== data.clientKey) {
                     const cleanup = { id: form.id, revision: form.revision };
                     pendingDeletes.push(cleanup); persist(); savedReport('任务已提交，正在清理服务器表单…');
                     await flushDeletes(); if (!pendingDeletes.includes(cleanup) && !cleanup.preserved) savedReport('已清理提交任务的服务器表单。'); return;
                 }
-                if (drafts.includes(draft)) { draft.cloudId = form.id; draft.cloudRevision = form.revision; persist(); renderTabs(); }
-                savedReport('表单已保存到服务器。再次点击云按钮可保存当前修改。');
+                if (drafts.includes(draft)) { acceptCloudId(draft, form.id); draft.cloudId = form.id; draft.cloudRevision = form.revision; persist(); renderTabs(); }
+                savedReport('表单已保存到服务器。再次点击云按钮可取消云端保存。');
             } catch (error) {
                 if (error.status === 404 && draft.clientKey === data.clientKey) { draft.cloudId = undefined; draft.cloudRevision = undefined; persist(); }
-                savedReport('服务器表单保存失败，本地内容已保留：' + error.message, true);
+                savedReport((removing ? '服务器表单删除失败，本地内容已保留：' : '服务器表单保存失败，本地内容已保留：') + error.message, true);
             }
             finally { cloudFlights.delete(draft); renderTabs(); }
         }
@@ -144,6 +167,7 @@
                         if (error.status === 409) { entry.preserved = true; report('服务器表单已有新版本，旧任务不会删除该新版本。', true); }
                         else { report('任务已提交，但服务器表单清理未完成，请重试清理：' + error.message, true); retryCleanup.hidden = false; continue; }
                     }
+                    if (!entry.preserved) cloudIds.delete(entry.id);
                     pendingDeletes = pendingDeletes.filter(item => item !== entry); persist();
                 }
                 retryCleanup.hidden = !pendingDeletes.length;
@@ -156,6 +180,7 @@
             try {
                 const { forms } = await cloudRequest(); capture();
                 const present = new Set(forms.map(record => record.id));
+                cloudIds.clear(); for (const id of present) cloudIds.add(id);
                 for (const draft of drafts) if (draft.cloudId && !present.has(draft.cloudId)) { draft.cloudId = undefined; draft.cloudRevision = undefined; }
                 for (const record of forms) {
                     if (pendingDeletes.some(entry => entry.id === record.id && entry.revision === record.revision)) continue;
@@ -165,17 +190,18 @@
                         if (draft.cloudId && draft.cloudRevision !== record.revision) {
                             // Keep a separate local copy of edits before accepting
                             // a newer server version; never discard browser data.
-                            drafts.push({ ...draft, id: next++, clientKey: identity(), cloudId: undefined, cloudRevision: undefined, timer: undefined, request: null, pending: false, submitting: false });
+                            drafts.push({ ...draft, id: localId(), clientKey: identity(), cloudId: undefined, cloudRevision: undefined, timer: undefined, request: null, pending: false, submitting: false });
                             clearTimeout(draft.timer);
                             Object.assign(draft, blank(), record.form, { timer: undefined, request: null, pending: false });
                         }
                     } else {
-                        draft = drafts.length === 1 && !active.cloudId && !active.submitting && active.mode === defaults.mode && Object.keys(fields).every(name => active[name] === defaults[name]) ? active : { id: next++, ...blank() };
+                        draft = drafts.length === 1 && !active.cloudId && !active.submitting && active.mode === defaults.mode && Object.keys(fields).every(name => active[name] === defaults[name]) ? active : { id: localId(), ...blank() };
                         if (!drafts.includes(draft)) drafts.push(draft);
                         Object.assign(draft, record.form);
                     }
                     const sameUrl = draft.url?.trim() === record.form.url?.trim();
                     Object.assign(draft, { clientKey: record.clientKey, cloudId: record.id, cloudRevision: record.revision });
+                    acceptCloudId(draft, record.id);
                     if (sameUrl && !draft.pending) { draft.analysis = record.analysis; draft.ids ||= record.ids; }
                 }
                 display(); persist(); renderTabs(); schedule(active);
@@ -222,7 +248,7 @@
         }
         function insert(values = {}) {
             capture();
-            const draft = { id: next++, clientKey: identity(), ...blank(), ...values };
+            const draft = { id: localId(), clientKey: identity(), ...blank(), ...values };
             drafts.splice(drafts.indexOf(active), 0, draft);
             select(draft);
             return draft;
@@ -312,7 +338,7 @@
             for (const draft of targets) {
                 cloudFlights.add(draft); renderTabs();
                 try {
-                    if (draft.cloudId) await cloudRequest('/' + draft.cloudId, 'DELETE', { revision: draft.cloudRevision });
+                    if (draft.cloudId) { await cloudRequest('/' + draft.cloudId, 'DELETE', { revision: draft.cloudRevision }); cloudIds.delete(draft.cloudId); }
                     clearTimeout(draft.timer); draft.request = null; drafts = drafts.filter(item => item !== draft);
                 } catch (error) { report('服务器表单删除失败，本地内容已保留：' + error.message, true); }
                 finally { cloudFlights.delete(draft); }
