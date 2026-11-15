@@ -163,6 +163,8 @@
         .task-filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}.task-filters [aria-pressed=true]{background:var(--accent,#4767d4);color:#fff}.page>hr{border:0;border-top:1px solid var(--line);margin:12px 0 18px}.task-submit-remark{display:flex;align-items:center;gap:10px;min-width:0;padding-right:4px}.task-submit-remark>label{flex:none}.task-submit-remark>input{flex:1;width:100%;min-width:0;box-sizing:border-box}
         @media(max-width:600px){.task-submit-remark{flex-direction:column;align-items:stretch}}
     </style>
+<link rel="stylesheet" href="/client/task-list-loading.css">
+<link rel="stylesheet" href="/client/upstream-exits.css">
 </head>
 <body>
 <main class="page">
@@ -418,6 +420,8 @@
 <script src="/client/audio-track-repair.js"></script>
 <script src="/client/download-form-tabs.js"></script>
 <script src="/client/telegram-target-forward.js"></script>
+<script src="/client/task-list-loading.js"></script>
+<script src="/client/upstream-exit-select.js"></script>
 <script>
     const urlInput = document.getElementById('urlInput');
     const startBtn = document.getElementById('startBtn');
@@ -809,7 +813,7 @@
             notice.textContent = '正在创建私人下载任务...';
             created = await api('/api/youtube-premium/tasks', {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url, mode: draft.mode, asMusic: draft.asMusic, cacheFiles: draft.cacheFiles, downloadSections: draft.downloadSections.trim(), remark: draft.remark.trim(), selectedFormatIds, manualFormat, useManualFormat: Boolean(manualFormat) }), keepalive: true
+                body: JSON.stringify({ networkExit: draft.networkExit, networkTicket: draft.analysis?.networkTicket, url, mode: draft.mode, asMusic: draft.asMusic, cacheFiles: draft.cacheFiles, downloadSections: draft.downloadSections.trim(), remark: draft.remark.trim(), selectedFormatIds, manualFormat, useManualFormat: Boolean(manualFormat) }), keepalive: true
             });
             downloadForms.reset(draft);
             notice.textContent = '任务已创建。';
@@ -2089,6 +2093,7 @@
         }
         if (task.hasFile) main.appendChild(window.TelegramTargetForward.create(task, '/api/youtube-premium', api));
         if (task.status === 'completed' && task.hasFile && task.downloadSections && !task.asMusic && !['audio', 'song'].includes(task.mediaType)) main.appendChild(window.AudioTrackRepair.create(task, '/api/youtube-premium', api));
+        if (task.networkRoute) main.append(UpstreamExitUI.route(task.networkRoute));
         card.append(cover, main);
         return card;
     }
@@ -2132,17 +2137,19 @@
         });
     }
 
+    const networkExitInput = UpstreamExitUI.createSelect(urlInput);
     const downloadForms = DownloadFormTabs.create({
         serverForms: 'youtube-premium-dl',
         key: 'youtubePremiumDownloadForms', tabs: document.getElementById('downloadFormTabs'),
         copy: document.getElementById('copyDownloadForm'), remove: document.getElementById('deleteDownloadForm'), formatList,
-        fields: { url: urlInput, asMusic: asMusicInput, cacheFiles: cacheFilesInput, downloadSections: downloadSectionsInput,
+        fields: { networkExit: networkExitInput, url: urlInput, asMusic: asMusicInput, cacheFiles: cacheFilesInput, downloadSections: downloadSectionsInput,
             remark: preDownloadRemarkInput, manualFormat: manualFormatInput, useManualFormat: useManualFormatInput },
         readMode: mode, writeMode: value => { document.querySelector(`input[name="mode"][value="${value === 'custom' ? 'custom' : 'default'}"]`).checked = true; },
-        parse: (url, forceRefresh) => api('/api/youtube-premium/formats', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, refresh: forceRefresh === true })
+        parse: (url, forceRefresh, draft) => api('/api/youtube-premium/formats', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, refresh: forceRefresh === true, networkExit: draft.networkExit })
         }),
         paint(draft) {
+            networkExitInput.refreshDisplay();
             analysis = draft.analysis;
             startBtn.disabled = Boolean(draft.submitting);
             analyzeBtn.disabled = Boolean(draft.pending);
@@ -2355,6 +2362,7 @@
             if (!status.youtubePremiumCookie?.configured) showSetupWizard(0);
         })
         .catch(() => {});
+    loadTasks = TaskListLoading.wrap(loadTasks, { list: taskList, paused: isPremiumRemarkEditing, buttons: [...document.querySelectorAll('[data-task-category], #prevBtn, #nextBtn')] });
     loadTasks().catch(error => { taskCount.textContent = error.message; });
     setInterval(() => {
         if (!document.hidden && !document.querySelector('dialog[open]') && !isPremiumRemarkEditing()) {

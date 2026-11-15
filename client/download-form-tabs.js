@@ -269,7 +269,7 @@
             Object.assign(draft, { pending: true, error: '', analysis: null });
             update(draft);
             try {
-                const result = await parse(url, refresh);
+                const result = await parse(url, refresh, { ...draft });
                 if (draft.request !== request) return;
                 draft.analysis = result;
                 const available = new Set((result.formats || []).filter(format =>
@@ -327,7 +327,7 @@
         }
         copy.onclick = () => {
             const draft = capture();
-            insert({ ...readFields(), analysis: draft.analysis, ids: draft.ids?.slice() || null, restoreIds: draft.restoreIds });
+            insert({ ...readFields(), analysis: draft.analysis ? { ...draft.analysis, networkTicket: undefined, networkRoute: undefined } : null, ids: draft.ids?.slice() || null, restoreIds: draft.restoreIds });
         };
         remove.onclick = async () => {
             capture();

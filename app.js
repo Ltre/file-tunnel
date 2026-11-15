@@ -326,6 +326,7 @@ const progressQueueSnapshot = {
 const PROGRESS_QUEUE_SNAPSHOT_TTL = 15000;
 const fileTransferProgressStates = new Map();
 const PROGRESS_UI_MIN_INTERVAL = 120;
+const progressUiPending = new Map();
 const FORCE_RESTORE_PROGRESS_THRESHOLD = 30;
 const FORCE_RESTORE_STALL_MS = 12000;
 const HISTORY_RECONCILE_MESSAGE_LIMIT = 1000;
@@ -3559,8 +3560,23 @@ function initFileAssetTransfer() {
                 now - lastPaintAt >= PROGRESS_UI_MIN_INTERVAL ||
                 !document.getElementById(progressElementId(progressKey));
             if (shouldPaintProgress) {
+                const pending = progressUiPending.get(progressKey);
+                if (pending) clearTimeout(pending.timer);
+                progressUiPending.delete(progressKey);
                 showProgress(progressKey, fileName, progress, status, { route });
                 progressUiLastPaint.set(progressKey, now);
+            } else {
+                let pending = progressUiPending.get(progressKey);
+                if (!pending) {
+                    pending = { timer: setTimeout(() => {
+                        progressUiPending.delete(progressKey);
+                        if (!activeFileProgress.has(progressKey)) return;
+                        showProgress(progressKey, pending.fileName, pending.progress, pending.status, { route: pending.route });
+                        progressUiLastPaint.set(progressKey, Date.now());
+                    }, Math.max(0, PROGRESS_UI_MIN_INTERVAL - (now - lastPaintAt))) };
+                    progressUiPending.set(progressKey, pending);
+                }
+                Object.assign(pending, { fileName, progress, status, route });
             }
             if (terminal) {
                 activeFileProgress.delete(progressKey);
@@ -3571,6 +3587,16 @@ function initFileAssetTransfer() {
                 }, 800);
                 progressHideTimers.set(progressKey, timer);
             }
+        },
+        onUploadIdle: (fileId, fileName, route, reason) => {
+            const key = getFileProgressKey(fileId, route);
+            const pending = progressUiPending.get(key);
+            if (pending) clearTimeout(pending.timer);
+            progressUiPending.delete(key);
+            clearTimeout(progressHideTimers.get(key)); progressHideTimers.delete(key);
+            activeFileProgress.delete(key); completedFileProgress.delete(key);
+            progressUiLastPaint.delete(key); hideProgress(key);
+            historyLog('file-upload-attempt-ended', { fileId, fileName, transport: route, reason });
         },
         onQueue: (fileId, queueLength, activeDownloads) => showQueuedFileTransfer(fileId, queueLength, activeDownloads),
         onDownloadIdle: (fileId, reason) => {

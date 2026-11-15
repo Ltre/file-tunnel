@@ -16,7 +16,8 @@
         ['', '/data-usage', '◴', '数据目录空间占用'],
         ['', '/system-backup', '⛁', '系统备份程序'],
         ['配置', '/tgbot', '⚙', 'Telegram Bot 配置'],
-        ['', '/sns-cookies', '◉', 'SNS Cookies 配置']
+        ['', '/sns-cookies', '◉', 'SNS Cookies 配置'],
+        ['', '/upstream-exits', '⇄', '上游分流出口设置']
     ];
     const allowed = new Set([...items.map(item => item[1]), '/vclient', '/video-transcode-guide.html']);
     const frame = document.getElementById('admin-content'), nav = document.getElementById('admin-navigation');

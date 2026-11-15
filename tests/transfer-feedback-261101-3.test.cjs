@@ -66,6 +66,7 @@ test('all started ranges going offline hide only idle progress and retain retrie
 test('rendered transfer summary translates each dynamic count and survives language switches',()=>{
  const f=fixture();let language='en';Object.assign(f.context,{localStorage:{getItem:()=>language},navigator:{language:'en'},Node:{TEXT_NODE:3}});
  Object.assign(f.context.document,{readyState:'loading',addEventListener(){},documentElement:{}});
+ Object.assign(f.context.window,{addEventListener(){}});
  vm.runInContext(fs.readFileSync('client/i18n-catalog.js','utf8'),f.context);vm.runInContext(fs.readFileSync('client/i18n.js','utf8'),f.context);
  f.rows.push({dataset:{progressDirection:'receive',progressActivity:'starting'}});f.context.updateProgressDrawerSummary();
  for(const [lang,expected] of [['en','1 tasks · 1 ready to transfer'],['ja','タスク 1 件 · 転送準備済み 1 件'],['zh-Hant','1 個工作 · 1 個準備傳輸']]){

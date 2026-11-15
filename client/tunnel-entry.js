@@ -10,7 +10,8 @@
     const select = document.getElementById('landingSessionSelect');
     const recentButton = document.getElementById('landingRecentBtn');
     const t = value => window.TunnelI18n?.t(value) || value;
-    let sessions = [], joining = false;
+    let sessions = [], joining = false, routeInteracted = false;
+    for (const event of ['pointerdown', 'keydown']) landing.addEventListener(event, () => { routeInteracted = true; }, { once: true, capture: true });
 
     function openSession(id, replace = false) {
         const url = new URL('/', location.origin);
@@ -26,7 +27,8 @@
         return new Promise((resolve, reject) => {
             let finished = false;
             const finish = (value,error) => { if (finished) return; finished=true; clearTimeout(timer); error?reject(error):resolve(value); };
-            const timer = setTimeout(()=>finish(null,Error('database-timeout')),1200);
+            // Keep the route usable after the presentation deadline, but accept a late database result.
+            const timer = setTimeout(() => { landing.hidden = false; }, 1200);
             const request = indexedDB.open('TunnelDB');
             let absent = false;
             request.onupgradeneeded = () => { absent = true; request.transaction.abort(); };
@@ -151,7 +153,7 @@
         let stored;
         try { stored = await readDatabase(); } catch (_) { landing.hidden=false;note.textContent=t('暂时无法读取浏览器数据库，已保留本机隧道列表。');return; }
         renderSessions(storedDirectory().length?storedDirectory():stored.sessions);
-        if (!new URLSearchParams(location.search).has('leave') && !stored.shared && sessions.length) { openSession(sessions[0].sessionId, true); return; }
+        if (!routeInteracted && !new URLSearchParams(location.search).has('leave') && !stored.shared && sessions.length) { openSession(sessions[0].sessionId, true); return; }
         if (stored.shared) { const notice = document.getElementById('sharedFilesNotice'); notice.hidden = false; notice.textContent = `已收到 ${stored.shared} 个分享文件，请选择要发送到的传输隧道。`; }
         landing.hidden = false;
     }

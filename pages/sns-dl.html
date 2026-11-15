@@ -96,6 +96,8 @@
         .task-filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}.task-filters [aria-pressed=true]{background:var(--accent,#4767d4);color:#fff}.shell>hr{border:0;border-top:1px solid var(--line);margin:12px 0 18px}.task-submit-remark{display:flex;align-items:center;gap:10px;min-width:0;padding-right:4px}.task-submit-remark>label{flex:none}.task-submit-remark>input{flex:1;width:100%;min-width:0;box-sizing:border-box}
         @media(max-width:600px){.task-submit-remark{flex-direction:column;align-items:stretch}}
     </style>
+<link rel="stylesheet" href="/client/task-list-loading.css">
+<link rel="stylesheet" href="/client/upstream-exits.css">
 </head>
 <body>
 <main class="shell">
@@ -157,6 +159,8 @@
 <script src="/client/audio-track-repair.js"></script>
 <script src="/client/download-form-tabs.js"></script>
 <script src="/client/telegram-target-forward.js"></script>
+<script src="/client/task-list-loading.js"></script>
+<script src="/client/upstream-exit-select.js"></script>
 <script>
 (() => {
     const API_ROOT = '/api/sns-dl';
@@ -326,6 +330,7 @@
         showNotice('正在创建独立 SNS 下载任务…');
         try {
             const task = await api(`${API_ROOT}/tasks`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
+                networkExit:draft.networkExit, networkTicket:draft.analysis?.networkTicket,
                 url, mode:draft.mode, selectedFormatIds, cacheFiles:draft.cacheFiles, downloadSections:draft.downloadSections.trim(),
                 remark:draft.remark.trim(), manualFormat, useManualFormat:Boolean(manualFormat)
             }) });
@@ -398,7 +403,7 @@
         const card = element('article','task'); card.dataset.taskId = task.id;
         const head = element('div','task-head'); const main = element('div','task-main');
         const cover = document.createElement('img'); cover.className='cover'; cover.alt=''; cover.loading='lazy'; if (task.cover) cover.src=task.cover;
-        const text = element('div'); text.style.minWidth='0'; text.append(element('div','title',task.title || '等待解析页面信息…'));
+        const text = element('div'); text.style.minWidth='0'; if(task.networkRoute) text.append(UpstreamExitUI.route(task.networkRoute)); text.append(element('div','title',task.title || '等待解析页面信息…'));
         const badges = element('div','badges'); badges.append(element('span','badge',platformLabels[task.platform] || task.platform || 'SNS'),element('span',`badge ${task.status}`,statusLabels[task.status] || task.status));
         if (task.mediaType) badges.append(element('span','badge',task.mediaType === 'audio' ? '音频' : task.mediaType === 'video' ? '视频' : task.mediaType));
         text.append(badges);
@@ -508,14 +513,16 @@
     }
     async function downloadThumbnail(task) { const response=await fetch(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/thumbnail`,{method:'POST',credentials:'same-origin'});if(!response.ok){const data=await response.json().catch(()=>({}));throw new Error(data.error||`HTTP ${response.status}`);}const blob=await response.blob();const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download=`${task.title||task.platform||'sns'}-thumbnail`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
 
+    const networkExitInput = UpstreamExitUI.createSelect(urlInput);
     const downloadForms = DownloadFormTabs.create({
         serverForms: 'sns-dl',
         key: 'snsDownloadForms', tabs: $('downloadFormTabs'), copy: $('copyDownloadForm'), remove: $('deleteDownloadForm'), formatList,
-        fields: { url: urlInput, cacheFiles: cacheFilesInput, downloadSections: downloadSectionsInput,
+        fields: { networkExit: networkExitInput, url: urlInput, cacheFiles: cacheFilesInput, downloadSections: downloadSectionsInput,
             remark: $('preDownloadRemarkInput'), manualFormat: manualFormatInput, useManualFormat: useManualFormatInput },
         readMode: mode, writeMode: value => { document.querySelector(`input[name="mode"][value="${value === 'custom' ? 'custom' : 'default'}"]`).checked = true; },
-        parse: (url, refresh) => api(`${API_ROOT}/formats`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url,refresh}) }),
+        parse: (url, refresh, draft) => api(`${API_ROOT}/formats`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url,refresh,networkExit:draft.networkExit}) }),
         paint(draft) {
+            networkExitInput.refreshDisplay();
             analysis = draft.analysis;
             startBtn.disabled = Boolean(draft.submitting);
             analyzeBtn.disabled = Boolean(draft.pending);
@@ -557,6 +564,7 @@
     document.querySelectorAll('[data-close-dialog]').forEach(button=>button.addEventListener('click',()=>button.closest('dialog').close()));
     document.querySelectorAll('dialog').forEach(dialog=>dialog.addEventListener('click',event=>{if(event.target===dialog)dialog.close();}));
     previewDialog.addEventListener('close', disposePreview);
+    loadTasks = TaskListLoading.wrap(loadTasks, { list: taskList, paused: isTaskRefreshPaused, buttons: [...document.querySelectorAll('[data-task-category], #prevBtn, #nextBtn')] });
     setInterval(()=>{if(!document.hidden&&!document.querySelector('dialog[open]')&&!isTaskRefreshPaused())loadTasks();},2500);
     loadTasks();
 })();

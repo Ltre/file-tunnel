@@ -37,6 +37,17 @@ function clipRange(value) {
 function downloadFileName(task, platform = task.platform) {
     const storedName = task.outputFileName || task.outputPath || '';
     if (!storedName) return '';
+    if (platform === 'youtube' && task.mediaType === 'song') {
+        const song = task.songMetadata || {}, reference = task.referenceInfo || {};
+        const artist = song.artists || song.artist || reference.sourceArtist || reference.artist || '';
+        const title = song.title || reference.sourceTrack || reference.sourceTitle || '';
+        if (artist && title) {
+            const names = (Array.isArray(artist) ? artist : String(artist).split(/\s*[／/]\s*/)).map(clean).filter(Boolean).join('＆');
+            const extension = path.extname(storedName);
+            return (names + ' - ' + clean(title)).slice(0, Math.max(1,240-extension.length)).replace(/[\ud800-\udbff]$/, '') + extension;
+        }
+        return path.basename(storedName);
+    }
     const reference = task.referenceInfo || {};
     const url = sourceUrl(reference.webpageUrl || reference.sourceUrl || task.url);
     const parts = url?.pathname.split('/').filter(Boolean) || [];

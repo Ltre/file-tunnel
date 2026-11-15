@@ -1,0 +1,24 @@
+'use strict';
+const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),{EventEmitter}=require('node:events'),acorn=require('acorn');
+const {createUpstreamExits}=require('../server/upstream-exits');
+const source=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8'),ast=acorn.parse(source,{ecmaVersion:'latest',allowReturnOutsideFunction:true});
+const fn=name=>{const node=ast.body.find(n=>n.type==='FunctionDeclaration'&&n.id.name===name);return source.slice(node.start,node.end);};
+test('YouTube format API retains normal/music cache hits and writes fresh analyses with managed outlets configured',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'cache-outlet-')),exits=createUpstreamExits({dataDir:dir,startRuntime:()=>{throw Error('Cache hits must not launch sing-box');}});t.after(async()=>{await exits.close();fs.rmSync(dir,{recursive:true,force:true});});
+ const node=exits.saveNode(null,{name:'synthetic',server:'127.0.0.1',port:443,password:'synthetic'});exits.saveService('youtube',{revision:0,defaultExit:node.id,mode:'ordered',order:[],includeDirect:false});
+ let parses=0,writes=0;const normal={title:'cached normal',formats:[{id:'18'}],referenceInfo:{id:'video'}},music={title:'cached music',formats:[{id:'140'}],referenceInfo:{id:'music'}},cache=new Map([['url',{analysis:normal,musicAnalysis:music}]]);
+ const context={normalizeYoutubeSourceUrl:()=> 'url',youtubePremiumMetadataCache:cache,analyzeYoutubePremiumUrl:async()=>{parses++;return{title:'fresh',formats:[{id:'18'}],referenceInfo:{id:'fresh'}};},enrichYoutubePremiumAnalysisOrdinals:async x=>x,requireYoutubePremiumCookies:()=> 'synthetic-cookies',setYoutubePremiumMetadataCache:(url,patch)=>{writes++;cache.set(url,{...cache.get(url),...patch});},sanitizeYoutubePremiumError:e=>e.message};
+ const call=ast.body.find(n=>n.expression?.arguments?.[0]?.value==='/api/youtube-premium/formats').expression,handler=vm.runInNewContext('('+source.slice(call.arguments.at(-1).start,call.arguments.at(-1).end)+')',context);
+ async function request(body){let output;const req={body:{url:'https://youtube.com/watch?v=cached',networkExit:node.id,...body}},res=new EventEmitter();res.setHeader=()=>{};res.status=()=>res;res.json=value=>{output=value;return res;};await exits.requestScope(req,res,()=>handler(req,res));res.emit('finish');return output;}
+ assert.equal((await request({})).title,'cached normal');assert.equal((await request({})).title,'cached normal');assert.equal((await request({asMusic:true})).title,'cached music');assert.equal(parses,0);assert.equal(exits.publicConfig().runtimes.length,0);
+ assert.equal((await request({refresh:true})).title,'fresh');assert.equal(parses,1);assert.equal(writes,4);assert.equal(cache.get('url').analysis.title,'fresh');assert.equal(cache.get('url').musicAnalysis.title,'cached music');assert.equal(cache.get('url').analysis.networkTicket,undefined);
+});
+test('SNS analysis retains cache reads, refresh writes, candidate lists and explicit selection under a task scope',async t=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'sns-cache-outlet-')),exits=createUpstreamExits({dataDir:dir,startRuntime:()=>{throw Error('Cached work must not launch sing-box');}});t.after(async()=>{await exits.close();fs.rmSync(dir,{recursive:true,force:true});});
+ const node=exits.saveNode(null,{name:'synthetic',server:'127.0.0.1',port:443,password:'synthetic'});exits.saveService('twitter',{revision:0,defaultExit:node.id,mode:'ordered',order:[],includeDirect:false});
+ let parses=0;const formats=[{id:'18',kind:'video_audio'}],base={url:'https://x.com/test/status/1',platform:'twitter',title:'cached',formats,mediaType:'video',referenceInfo:{}},cache=new Map([[base.url,{analysis:base}]]);
+ const context={normalizeSnsDownloadUrl:url=>({url,platform:'twitter'}),snsDownloadMetadataCache:cache,buildSnsDefaultSelection:()=>({formatSelector:'18',ids:['18']}),validateFormatSelection:(items,ids)=>({formatSelector:ids.join('+'),ids,formats:items}),getSnsCookieFileForUrl:()=>'',path,
+  runYtDlpJson:async()=>{parses++;return{title:'fresh',formats};},normalizeSnsYtDlpFormats:f=>f,normalizeSnsDownloadReferenceInfo:()=>({extractor:'fixture'}),setSnsDownloadMetadataCache:(url,analysis)=>cache.set(url,{analysis})};
+ const analyze=vm.runInNewContext('('+fn('analyzeSnsDownloadUrlUnrouted')+')',context);
+ await exits.runTask({url:base.url},async()=>{const first=await exits.content(base.url,()=>analyze(base.url,{includeFormats:true,selectedFormatIds:['18']}));assert.equal(first.cacheHit,true);assert.equal(first.formats,formats);assert.equal(parses,0);const next=await analyze(base.url,{refresh:true});assert.equal(next.title,'fresh');assert.equal(parses,1);assert.equal(cache.get(base.url).analysis.title,'fresh');});
+});

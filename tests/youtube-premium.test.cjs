@@ -448,7 +448,7 @@ test('routes, page and extension preserve the private credential boundary', () =
     assert.match(page, /row\.classList\.toggle\('is-disabled', checkbox\.disabled\)/);
     assert.match(page, /已自动勾选最高音质纯音频编号/);
     assert.match(page, /data\.musicFormatId \? \[data\.musicFormatId\]/);
-    assert.match(page, /body: JSON\.stringify\(\{ url, refresh: forceRefresh === true \}\)/);
+    assert.match(page, /body: JSON\.stringify\(\{ url, refresh: forceRefresh === true, networkExit: draft\.networkExit \}\)/);
     assert.match(page, /asMusicInput\.addEventListener\('change',[\s\S]*?draft\.ids = null;[\s\S]*?downloadForms\.update\(draft\)/);
     assert.match(page, /清除服务端缓存/);
     assert.match(page, /重新抓取/);

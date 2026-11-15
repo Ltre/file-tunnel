@@ -187,6 +187,9 @@ const FFMPEG_COMMAND = resolveMediaToolCommand('ffmpeg');
 const FFPROBE_COMMAND = resolveMediaToolCommand('ffprobe');
 let infraStore = null;
 let vclientControl = null;
+const upstreamExits = require('./server/upstream-exits').createUpstreamExits({ dataDir: SERVER_DATA_DIR, root: __dirname });
+upstreamExits.installFetch();
+require('./server/sns-post-markdown').setUpstreamAdapter(upstreamExits);
 const adminAuth = createAdminAuth({ dataDir: SERVER_DATA_DIR, issuer: 'Instant Tunnel Admin' });
 const tunnelAccess=require('./server/tunnel-access').createTunnelAccess(SERVER_DATA_DIR);
 const taskAutoCache=require('./server/task-auto-cache').createTaskAutoCache();
@@ -206,6 +209,7 @@ function logYoutubePremiumTaskEvent(event = {}) {
 
 const youtubePremiumService = createYoutubePremiumService({
     dataDir: SERVER_DATA_DIR,
+    runTask: upstreamExits.runTask,
     analyze: analyzeYoutubePremiumUrl,
     download: downloadYoutubePremiumTask,
     sanitizeError: sanitizeYoutubePremiumError,
@@ -227,6 +231,7 @@ function logSnsDownloadTaskEvent(event = {}) {
 
 const snsDownloadService = createSnsDownloadService({
     dataDir: SERVER_DATA_DIR,
+    runTask: upstreamExits.runTask,
     analyze: analyzeSnsDownloadUrl,
     download: downloadSnsDownloadTask,
     sanitizeError: sanitizeSnsDownloadError,
@@ -369,8 +374,8 @@ const diskOperations = createDiskOperations({ dataDir: SERVER_DATA_DIR });
 // The drive always targets the official Bot API and implements large logical
 // files itself. Other Telegram features may keep their existing endpoint.
 const telegramChatDictionary = createTelegramChatDictionary({ dataDir: SERVER_DATA_DIR });
-const diskTelegram = createDiskTelegram({ dataDir: SERVER_DATA_DIR, getBaseUrl: () => 'https://api.telegram.org',
-    resolveChatIdentifier: value => telegramChatDictionary.lookup(value)?.chatId || value });
+const diskTelegram = upstreamExits.wrapService('telegram', createDiskTelegram({ dataDir: SERVER_DATA_DIR, getBaseUrl: () => 'https://api.telegram.org',
+    resolveChatIdentifier: value => telegramChatDictionary.lookup(value)?.chatId || value }));
 const telegramChatResolver = createTelegramChatResolver({
     dictionary: telegramChatDictionary,
     getChat: (chatId, { token, baseUrl, signal }) => diskTelegram.call({ token, baseUrl, channelId: chatId }, 'getChat', { chat_id: chatId }, undefined, 0, { signal })
@@ -1337,6 +1342,7 @@ app.get('/web-workshop-guide.html', (req, res) => {
 });
 
 require('./server/admin-layout').registerAdminLayout(app, { requireAuth:adminAuth.requireAuth, root:__dirname });
+require('./server/upstream-exit-routes').registerUpstreamExitRoutes(app, { exits: upstreamExits, requireAuth: adminAuth.requireAuth, root: __dirname });
 
 //禁止直接从pages目录，以无校验态访问管理页面
 app.use([
@@ -5251,7 +5257,10 @@ function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '', sourceLanguageMeta
     };
 }
 
-async function collectYoutubeReferenceInfo(rawUrl, options = {}) {
+async function collectYoutubeReferenceInfo(...args) {
+    return upstreamExits.scope(args[0], () => collectYoutubeReferenceInfoUnrouted(...args));
+}
+async function collectYoutubeReferenceInfoUnrouted(rawUrl, options = {}) {
     let meta = options.meta || await runYtDlpJson(rawUrl, {
         noPlaylist: true,
         cookiePath: options.cookiePath,
@@ -5267,18 +5276,20 @@ async function collectYoutubeReferenceInfo(rawUrl, options = {}) {
     }
     const language = guessYoutubeSourceLanguage(meta);
     let sourceLanguageMeta = null;
-    if (language) {
+    for (const referenceLanguage of require('./server/youtube-reference-language').referenceLanguages(meta, language)) {
         try {
             sourceLanguageMeta = await runYtDlpJson(rawUrl, {
                 noPlaylist: true,
                 cookiePath: options.cookiePath,
                 allowIgnoreNoFormatsFallback: false,
                 bypassCache: options.bypassCache === true,
-                youtubeLanguage: language,
+                youtubeLanguage: referenceLanguage,
                 signal: options.signal
             });
+            break;
         } catch (_) {
             sourceLanguageMeta = null;
+            if (options.signal?.aborted) break;
         }
     }
     const reference = buildYoutubeReferenceInfo(meta, rawUrl, sourceLanguageMeta || meta);
@@ -5318,7 +5329,7 @@ function buildYoutubeSongMetadata(meta = {}, sourceUrl = '') {
 function getYtDlpInvocation(args = []) {
     const command = process.env.YT_DLP_BIN || 'yt-dlp';
     const prefixArgs = String(process.env.YT_DLP_BIN_ARGS || '').split(/\s+/).filter(Boolean);
-    return { command, args: [...prefixArgs, ...args] };
+    return { command, args: [...prefixArgs, ...upstreamExits.cliArgs(args)] };
 }
 
 function copyYtDlpCookies(args) {
@@ -5394,6 +5405,9 @@ function classifySnsMedia(sourceUrl, meta = {}) {
 }
 
 function runYtDlpJson(url, options = {}) {
+    return upstreamExits.content(url, async () => { await upstreamExits.ready(); return runYtDlpJsonUnrouted(url, options); });
+}
+function runYtDlpJsonUnrouted(url, options = {}) {
     if (options.noCookie === undefined && /^https?:\/\/(?:(?:www|mobile|m)\.)?(?:twitter|x)\.com\//i.test(url)) {
         return runYtDlpJson(url, { ...options, noCookie: true }).catch(error => {
             // A no-video or network error is not a reason to spend an account Cookie.
@@ -6107,6 +6121,11 @@ function describeTelegramNetworkError(error) {
 }
 
 async function telegramFetchJson(method, init = {}, options = {}) {
+    return upstreamExits.serviceScope('telegram', () => /^get[A-Z]/.test(method)
+        ? upstreamExits.content('https://api.telegram.org', () => telegramFetchJsonUnrouted(method, init, options), () => true)
+        : telegramFetchJsonUnrouted(method, init, options));
+}
+async function telegramFetchJsonUnrouted(method, init = {}, options = {}) {
     const token = options.token || getTelegramBotToken();
     if (!token) throw new Error('telegram-bot-disabled');
     const apiBase = options.apiBaseUrl || getTelegramBotApiBaseUrl();
@@ -6868,7 +6887,17 @@ function spawnCapture(command, args, options = {}) {
     });
 }
 
-function spawnYtDlpCapture(args, options = {}) {
+async function spawnYtDlpCapture(args, options = {}) {
+    const sourceUrl = options.sourceUrl || args.find(value => /^https?:\/\//i.test(String(value))) || '';
+    return upstreamExits.content(sourceUrl, async () => {
+        await upstreamExits.ready();
+        return spawnYtDlpCaptureUnrouted(args, { ...options, onOutput(chunk) {
+            upstreamExits.observeCommand(chunk);
+            options.onOutput?.(chunk);
+        } });
+    }, () => true);
+}
+function spawnYtDlpCaptureUnrouted(args, options = {}) {
     const cookies = copyYtDlpCookies(args);
     const invocation = getYtDlpInvocation(cookies.args);
     return spawnCapture(invocation.command, invocation.args, {
@@ -7359,7 +7388,10 @@ function buildSnsDefaultSelection(formats = [], mediaType = 'video') {
     };
 }
 
-async function analyzeSnsDownloadUrl(rawUrl, options = {}) {
+async function analyzeSnsDownloadUrl(...args) {
+    return upstreamExits.content(args[0], () => analyzeSnsDownloadUrlUnrouted(...args));
+}
+async function analyzeSnsDownloadUrlUnrouted(rawUrl, options = {}) {
     const normalized = normalizeSnsDownloadUrl(rawUrl);
     const report = (message, details = {}, level = 'info') => options.onDetail?.({ message, details, level });
     let base = options.refresh === true ? null : snsDownloadMetadataCache.get(normalized.url)?.analysis;
@@ -7725,7 +7757,10 @@ async function enrichYoutubePremiumAnalysisOrdinals(analysis, options = {}) {
     };
 }
 
-async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
+async function analyzeYoutubePremiumUrl(...args) {
+    return upstreamExits.content(args[0], () => analyzeYoutubePremiumUrlUnrouted(...args));
+}
+async function analyzeYoutubePremiumUrlUnrouted(rawUrl, options = {}) {
     const parsed = parseSupportedSocialUrl(String(rawUrl || '').trim());
     if (!parsed || !['youtube', 'ytmusic'].includes(parsed.platform) || isYouTubePlaylistOnly(parsed.parsed.href)) {
         throw new Error('youtube-url-required');
@@ -8340,7 +8375,11 @@ function ensureGeneratedSnsMessage(sessionId, session, taskRecord) {
     return generatedMessage;
 }
 
-async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId, markdownOwnerId = '') {
+async function fetchSnsMediaIntoTunnel(...args) {
+    const item = getHistoryMessageEntry(sessions.get(args[0]), args[1])?.message?.snsMediaItems?.find(item => item?.id === args[2]);
+    return upstreamExits.scope(item?.sourceUrl || item?.mediaUrl || '', () => fetchSnsMediaIntoTunnelUnrouted(...args));
+}
+async function fetchSnsMediaIntoTunnelUnrouted(sessionId, messageId, mediaItemId, markdownOwnerId = '') {
     const session = sessions.get(sessionId);
     const entry = getHistoryMessageEntry(session, messageId);
     const message = entry?.message;
@@ -9302,6 +9341,7 @@ function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast'
 // ==================== Socket.io 连接处理 ====================
 
 const snsPostPublisher = require('./server/sns-post-markdown').createTunnelSnsPostPublisher({
+    runTask: (source, work) => upstreamExits.scope(source.sourceUrl, work),
     assetDir: TELEGRAM_ASSET_DIR,
     trackProgress: true,
     session: id => sessions.get(id),
@@ -11926,6 +11966,7 @@ async function shutdown(signal) {
     await systemBackup.close();
     const mediaStopDeadline = setTimeout(() => process.exit(1), 10000); mediaStopDeadline.unref();
     await mediaLibrary.close();
+    await upstreamExits.close();
     clearTimeout(mediaStopDeadline);
     flushInfraAuditQueue();
     diskAPI.close();

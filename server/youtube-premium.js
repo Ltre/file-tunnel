@@ -328,6 +328,7 @@ function createYoutubePremiumService({
     download,
     sanitizeError = error => error?.message || 'download-failed',
     concurrency = 1,
+    runTask = (_task, work) => work(),
     onLog = () => {}
 }) {
     const tasksPath = path.join(dataDir, 'youtube-premium-tasks.json');
@@ -385,6 +386,8 @@ function createYoutubePremiumService({
         const hasFile = Boolean(task.outputPath && fs.existsSync(task.outputPath));
         return {
             id: task.id,
+            networkExit: task.networkExit,
+            networkRoute: task.networkRoute || null,
             autoCacheEnabled: task.autoCacheEnabled !== false,
             cacheFiles: task.cacheFiles,
             handled: task.handled === true,
@@ -422,6 +425,9 @@ function createYoutubePremiumService({
     };
 
     async function run(task) {
+        return runTask(task, () => runUnrouted(task), route => update(task, { networkRoute: route }));
+    }
+    async function runUnrouted(task) {
         const controller = new AbortController();
         controllers.set(task.id, controller);
         const taskDir = path.join(outputDir, task.id);
@@ -607,6 +613,7 @@ function createYoutubePremiumService({
             const downloadSections = String(input.downloadSections || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 500);
             const now = Date.now();
             const task = {
+                networkExit: String(input.networkExit || '').slice(0,80), networkTicket: String(input.networkTicket || '').slice(0,80),
                 id: crypto.randomUUID(), url, title: '', cover: '', mode, manualFormat, asMusic: input.asMusic === true, downloadSections, selectedFormatIds,
                 cacheFiles: typeof input.cacheFiles === 'boolean' ? input.cacheFiles : undefined, autoCacheEnabled: input.cacheFiles !== false,
                 mediaType: '', status: 'queued', progress: { percent: 0 }, outputFileName: '',

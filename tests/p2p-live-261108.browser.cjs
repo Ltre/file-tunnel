@@ -5,7 +5,7 @@ const {registerFileAssetHandlers}=require('../server/file-assets');
 const {chromium}=require(path.join(os.homedir(),'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'));
 const root=path.resolve(__dirname,'..'),read=file=>fs.readFileSync(path.join(root,file),'utf8'),appSource=read('app.js'),serverSource=read('server.js');
 const part=(source,start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
-async function runPeerScenario(t, bulk = false, abandoned = false) {
+async function runPeerScenario(t, bulk = false, abandoned = false, reverse = false) {
     const app=express(),sessionId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',ids=['00000000-0000-4000-8000-000000000001','ffffffff-ffff-4fff-8fff-ffffffffffff'];
     const devices=new Map(),sessions=new Map([[sessionId,{devices,fileAssets:new Map()}]]),deviceSockets=new Map(),events=[];
     app.use('/client',express.static(path.join(root,'client')));
@@ -29,7 +29,7 @@ async function runPeerScenario(t, bulk = false, abandoned = false) {
         socket.on('fixture-business-burst',(_data,ack)=>{for(let n=0;n<100;n++)context.checkMessageRate();ack({ok:true});});
         registerFileAssetHandlers(socket,{sessions,deviceSockets,getSessionId:()=>sessionId,getDeviceId:()=>deviceId,isValidId:value=>typeof value==='string'&&!!value,sanitize:String,historyLog:(event,details)=>events.push({event,details})});
     });
-    const browser=await chromium.launch({channel:'chrome',headless:true});t.after(()=>browser.close());const a=await browser.newPage(),b=await browser.newPage({locale:'en-US',isMobile:true,viewport:{width:390,height:844}});
+    const browser=await chromium.launch({channel:'chrome',headless:true});t.after(()=>browser.close());const desktop=await browser.newPage(),mobile=await browser.newPage({locale:'en-US',isMobile:true,viewport:{width:390,height:844}}),a=reverse?mobile:desktop,b=reverse?desktop:mobile;
     if(bulk){
         await a.goto(base+'/?id='+ids[0]);await a.waitForFunction(()=>window.ready);
         await a.evaluate(async()=>{for(let n=0;n<45;n++)await fixture.provide(n.toString(16).padStart(8,'0')+'-0000-4000-8000-000000000000',n===44?4400000:4900000);});
@@ -66,9 +66,12 @@ async function runPeerScenario(t, bulk = false, abandoned = false) {
     assert.ok(samples.some(item=>item.details.fileTransport===(abandoned?'socket.io-relay':'p2p')), 'sampling context reflects the real attempt; a short subsequent P2P file may fall within the sampling throttle');
     const routes=await a.evaluate(()=>fixture.events.filter(item=>item.event==='file-asset-route-p2p-send-completed'));
     assert.equal(routes.length,abandoned?1:2,JSON.stringify(await a.evaluate(()=>fixture.events.slice(-25))));assert.equal(events.filter(item=>item.event==='file-asset-relay-started').length,abandoned?1:0);
-    const selected=await a.evaluate(async()=>{const pc=[...fixture.state.peers.values()][0],stats=await pc.getStats();return [...stats.values()].filter(item=>item.type==='candidate-pair'&&item.state==='succeeded').map(item=>({state:item.state,nominated:item.nominated,bytesSent:item.bytesSent}));});assert.ok(selected.some(item=>item.bytesSent>0));
+    // Chrome may briefly return a cached stats snapshot taken before file bytes
+    // were sent. File contents/ACKs above already validate the completed path.
+    await a.waitForFunction(async()=>{const pc=[...fixture.state.peers.values()][0],stats=await pc.getStats();return [...stats.values()].some(item=>item.type==='candidate-pair'&&item.state==='succeeded'&&item.bytesSent>0);},null,{timeout:3000});
     // The reviewed baseline uses the identical P2P region: no broad rollback.
 }
 test('real Chrome peers use the unchanged native ICE and file DataChannel path, then serve a second file without relay',{timeout:30000},t=>runPeerScenario(t));
 test('a fresh receiver restores 45 history files totaling 220 MB over native DataChannels without single-file retries',{timeout:70000},t=>runPeerScenario(t,true));
 test('an explicitly stalled file uses a noncompeting real Socket.IO retry even without a close notice, then the next file returns to P2P',{timeout:30000},t=>runPeerScenario(t,false,true));
+test('a mobile Chrome profile sends files back to the desktop over the same native P2P path without relay',{timeout:30000},t=>runPeerScenario(t,false,false,true));

@@ -88,6 +88,7 @@ function createSnsDownloadService({
     download,
     sanitizeError = error => String(error?.message || 'sns-download-failed'),
     concurrency = 1,
+    runTask = (_task, work) => work(),
     onLog = () => {}
 }) {
     if (!dataDir || typeof analyze !== 'function' || typeof download !== 'function') {
@@ -129,6 +130,8 @@ function createSnsDownloadService({
         const taskPath = `/api/sns-dl/tasks/${encodeURIComponent(task.id)}`;
         return {
             id: task.id,
+            networkExit: task.networkExit,
+            networkRoute: task.networkRoute || null,
             autoCacheEnabled: task.autoCacheEnabled !== false,
             cacheFiles: task.cacheFiles,
             handled: task.handled === true,
@@ -182,6 +185,9 @@ function createSnsDownloadService({
     } catch (_) {}
 
     async function run(task) {
+        return runTask(task, () => runUnrouted(task), route => update(task, { networkRoute: route }));
+    }
+    async function runUnrouted(task) {
         const controller = new AbortController();
         const taskDir = path.join(outputDir, task.id);
         const progressLog = { percent: -1, at: 0 };
@@ -296,6 +302,7 @@ function createSnsDownloadService({
             if (selectedFormatIds.length > 2) throw new Error('custom-format-count-invalid');
             const now = Date.now();
             const task = {
+                networkExit: String(input.networkExit || '').slice(0,80), networkTicket: String(input.networkTicket || '').slice(0,80),
                 id: crypto.randomUUID(), url: normalized.url, platform: normalized.platform,
                 title: '', cover: '', mode, manualFormat,
                 cacheFiles: typeof input.cacheFiles === 'boolean' ? input.cacheFiles : undefined, autoCacheEnabled: input.cacheFiles !== false,
