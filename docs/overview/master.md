@@ -6,10 +6,10 @@
 
 本套总览的初始创建阶段已经完成并冻结。长期维护工作在 `dev/doc-overview` 进行；当前已完整覆盖的应用源码事实为：
 
-- 源码 Commit：`71e58b07350a0ef3b480fa82272177863de74448`
-- 源码提交时间：`2026-11-06T22:53:34Z`
+- 源码 Commit：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`
+- 源码提交时间：`2026-11-16T16:43:54Z`
 - 首轮整理日期：2026-09-26
-- 文档更新时间：2026-11-07
+- 文档更新时间：2026-11-17
 
 精确增量锚点见 [VERSION.md](./VERSION.md)。
 
@@ -32,6 +32,9 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 - 已合入的串流控制台、节目编排与观看/操控/来源授权；
 - 七主题、独立系统备份、SNS 帖子 Markdown 与后台隧道设备权限；
 - PWA / Service Worker / 移动工作区；
+- 16 语言按需加载、系统语言确认及发布时语言包一致性检查；
+- SNS / YouTube 下载表单跨浏览器云端草稿、revision 冲突保护；
+- 多条记录逐项转发确认、未知结果核对、P2P 明确放弃和缓存安全清理。
 - 独立后台布局、设备/磁链统计、持久磁链登记、安全、构建和部署。
 
 后续修改任何子系统，都不应只读单个 UI 文件。大量功能通过 `app.js`、`server.js`、`client/*`、`server/*`、Service Worker、IndexedDB、Socket.IO 与外部服务交叉。
@@ -58,12 +61,12 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 
 ### 文件传输、缓存与媒体
 
-- [transfer-cache.md](./transfer-cache.md) — 传输记录、文件资产、P2P、Relay、多源恢复、浏览器缓存、文件句柄、备份/导入、资源管理器。
+- [transfer-cache.md](./transfer-cache.md) — 传输记录、文件资产、P2P/Relay、明确放弃与回退、批量转发确认、多源恢复、缓存盘点/安全清理、资源管理器。
   - [transfer-cache/magnet-download.md](./transfer-cache/magnet-download.md) — Drop2Tunnel 自定义磁链、种子发现、独立下载器与磁链缓存。
   - [transfer-cache/folder-archive-directory-mirror.md](./transfer-cache/folder-archive-directory-mirror.md) — 文件夹 ZIP、合辑打包与 File System Access 目录镜像。
 - [media-player-realtime.md](./media-player-realtime.md) — 图片/视频/音频预览、音乐播放器、摄像头、语音、对讲、联系人呼叫、远程预览。
 - [media-library.md](./media-library.md) — 独立媒体后台、截图/Clip/压缩与安全删除、取帧回退、按会话分目录收藏、网盘授权与恢复。
-- [streaming-console.md](./streaming-console.md) — **已实现**的串流控制台：节目/来源、观看与操控、票据、缓存、订阅、邀请与恢复。
+- [streaming-console.md](./streaming-console.md) — **已实现**的串流控制台：节目/来源、观看与操控、票据、缓存、订阅、邀请与恢复；收藏入口当前显示“我收藏的”。
 - [light-transfer.md](./light-transfer.md) — D2L1 光学二维码文件协议、残片、网络加速、完整性与完成写入。
 
 ### Telegram
@@ -74,13 +77,13 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 ### 内容生产与下载处理
 
 - [web-workshop.md](./web-workshop.md) — 网页工坊、`.html.zip`、草稿、编辑权限、Service Worker Runtime、发布与资源导入。
-- [download-transcode.md](./download-transcode.md) — SNS、YouTube Premium、metadata、Telegram 转发、音轨修复、视频转码。
+- [download-transcode.md](./download-transcode.md) — SNS、YouTube Premium、metadata、跨浏览器表单云存储、Telegram 转发、音轨修复、FFmpeg 时间戳进度。
   - [download-transcode/sns-cookie-sync.md](./download-transcode/sns-cookie-sync.md) — SNS Cookie 管理、多服务器自动同步扩展与私人 Premium Cookie。
 
 ### 平台与运维
 
 - [pwa-ui.md](./pwa-ui.md) — PWA、Service Worker、主题、宽屏三栏、移动 workspace、Overlay、全局 UI 状态。
-  - [pwa-ui/localization.md](./pwa-ui/localization.md) — 16 语言、本地化运行时、服务端 Telegram 翻译与 i18n 审计。
+  - [pwa-ui/localization.md](./pwa-ui/localization.md) — 16 语言、启动包与按需语言 JSON、系统语言确认、构建一致性与 i18n 审计。
   - [pwa-ui/themes.md](./pwa-ui/themes.md) — 七主题、双栏/三栏、轻量路由与共享扫码组件。
 - [admin-security-deployment.md](./admin-security-deployment.md) — 管理后台布局/拆页、设备权限与日志、磁链统计、TOTP、Secrets、数据占用、Nginx/CDN、构建部署。
 - [system-backup.md](./system-backup.md) — 管理员 FULL/CORE 数据备份、SQLite 在线快照、分段清单、重试及恢复限制。
