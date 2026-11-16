@@ -1,7 +1,7 @@
 # 测试体系、人工验收与历史回归索引
 
-> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
-> **文档更新时间**：`2026-11-07`
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **文档更新时间**：`2026-11-17`
 
 ## 1. 为什么本项目尤其依赖回归资料
 
@@ -452,3 +452,38 @@ AI 后续做 bisect/调研时，应把 commit title 中的这些自然语言作�
 开发日志分别记录各阶段专项与隔离浏览器结果，且明确写有某些**首次复现失败→修复通过**、并存的旧基线失败和人工验收例外。不得把多阶段数量相加称为“一次全量通过”，也不能从局部 `127/127` 推断全部仓库测试均已重新执行。本轮只是文档维护，**没有运行 Node、Playwright、真实 Telegram 或移动端测试**。
 
 高风险未完成验收：真正的跨机器局域网 VPN/PAC 下 WebRTC 选路、两小时跨境观看、原 Windows 进程退出原因、真实 SNS/X 资源变化、系统备份恢复、用户正式数据迁移及 Android 扫码/键盘。
+
+## 19. 2026-11-07—10：新增回归与最终阶段记录
+
+### 本轮新增测试文件（33）
+
+| 范围 | 新增测试 |
+|---|---|
+| 管理员、表单与控制中心 | `admin-confirm-261108.browser.cjs`、`admin-form-cache-261109.test.cjs`、`admin-form-cache-261109.browser.cjs`、`control-center-261107.browser.cjs` |
+| 备份与缓存安全 | `backup-261107.test.cjs`、`cache-safety-261107.test.cjs`、`diagnostics/memory-inventory-261107.browser.cjs` |
+| 批量转发与确认 | `bulk-forward-261108.test.cjs`、`forward-confirmation-261108.test.cjs`、`forward-results-261108.browser.cjs`、`persisted-forward-261108.test.cjs` |
+| P2P、来源与 Relay | `p2p-live-261108.browser.cjs`、`relay-diagnostics-261109.test.cjs`、`source-access-261107.test.cjs` |
+| 国际化与发布缓存 | `frontend-i18n-audit-261108.test.cjs`、`i18n-catalog-261108.test.cjs`、`i18n-261108.browser.cjs`、`i18n-261109.browser.cjs`、`i18n-lazy-261109-2.browser.cjs`、`i18n-packs-261109.test.cjs`、`public-drive-i18n-261109.browser.cjs`、`streaming-i18n-261109.browser.cjs`、`sw-language-update-261109.browser.cjs` |
+| 页面交互与入口 | `interactions-261108.browser.cjs`、`startup-count-261107.browser.cjs`、`ui-261109-2.browser.cjs`、`telegram-app-return-261109.browser.cjs` |
+| 下载与转码 | `magnet-download-261108.browser.cjs`、`transcode-progress-261108.test.cjs` |
+| 网盘待转存 | `pending-save-preflight-261108.browser.cjs` |
+| 网页 ZIP 来源 | `web-zip-offline-source-261109.test.cjs`、`web-zip-origin-261108.test.cjs`、`web-zip-visibility-261107.test.cjs` |
+
+本轮另修改 11 个既有测试/夹具：`deploy-drive-261012-2.test.cjs`、`disk-accounts-261012-1.test.cjs`、`disk-client.test.cjs`、`disk-cross-tunnel-261025-2.test.cjs`、`disk-login-selection-261012-3.test.cjs`、`disk-native-mount-ui.test.cjs`、`disk-partitions.test.cjs`、`file-asset-audit-isolation.test.cjs`、`p2p-connection-regression.test.cjs` 及两个 `tests/support/*` fixture。部分测试名带旧日期，是本轮新增到当前分支的回归文件，不表示对应功能在该旧日期才实现。
+
+### 开发日志报告的最终阶段验证
+
+`docs/devlog/dev-2611.md` 的 261109-2 最终验收记录（2026-11-10）报告：
+
+- Node 专项簇 **140/140** 通过，失败/跳过 0；覆盖表单服务端计数与 revision、语言目录与生成包、P2P 放弃标识、缓存保护、备份、来源权限、网盘目录/挂载/导航等。
+- 隔离 Chrome **67/67** 通过，失败/跳过 0；覆盖七主题/控制中心、表单跨浏览器同步、16 语言按需加载、迟到响应、缓存损坏重取、通知/账号磁贴、网盘和旧 Service Worker 更新。
+- 真实 Chrome WebRTC/Socket.IO **3/3**；包括 45 文件、220,000,000 字节逐字节一致，以及已判失败 P2P 显式放弃后经真实 Relay 重试并让后续文件恢复 P2P。
+- Service Worker 旧版本升级及磁链恢复 **3/3**；发布构建/verify 与生成包检查 **2/2**。开发日志将重复用例去重后统计为 **71 个不同浏览器用例**，不能将上述分组简单相加为独立总数。
+- 最终检查还记录 JS/CJS/MJS 语法 28 处、页面内脚本 15 处、JSON 14 份通过；这些是当时该批改动的验收记录，不是本次文档更新重新运行的结果。
+
+### 必须保留的现场边界
+
+- 真实手机代理下四组 P2P 环境没有在该阶段本机现场复现；不能据此断言代理环境根因已经定位或全部通过。
+- Telegram App 的 OIDC 回调隔离测试通过，但真实 Android Telegram App 线上灰度返回仍待人工验证。
+- 没有部署生产环境，也没有使用真实正式 Telegram 账号和生产数据完成演练。
+- 本轮 Overview 维护只检查并整理分支已合入代码/测试，没有重新运行 Node、Playwright、真实 WebRTC、磁链或 Android 测试。
