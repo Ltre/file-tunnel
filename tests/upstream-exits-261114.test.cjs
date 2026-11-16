@@ -111,3 +111,22 @@ test('Telegram read streams retain the selected service scope until the consumer
  const service=h.exits.wrapService('telegram',{async readPart(){await(await h.exits.fetch('https://api.telegram.org/metadata')).text();return require('node:stream').Readable.from(['body']);}});
  const stream=await service.readPart();await wait(55);assert.equal(h.stops.length,0);let result='';for await(const chunk of stream)result+=chunk;assert.equal(result,'body');await wait(55);assert.equal(h.stops.length,1);
 });
+test('format requests validate the final analysis without rejecting optional playlist metadata or locking on it',async t=>{
+ const h=fixture(t),a=h.node('A'),b=h.node('B');h.policy(a.id,{order:[b.id]});
+ await h.exits.runTask({url:'https://youtube.com/watch?v=formats'},async()=>{
+  h.exits.current().requireFormats=true;
+  await h.exits.content('https://youtube.com/playlist',async()=>{await h.exits.ready();return{id:'album',entries:[{id:'track'}]};});
+  assert.equal(h.exits.current().locked,false);assert.equal(h.exits.current().attempts[0].status,'auxiliary');
+  const tried=[];await h.exits.analyze('https://youtube.com/watch?v=formats',async()=>{await h.exits.ready();const id=h.exits.current().selected.id;tried.push(id);return{id:'track',formats:id===a.id?[]:[{format_id:'18'}]};});
+  assert.deepEqual(tried,[a.id,b.id]);assert.equal(h.exits.current().locked,true);assert.equal(h.exits.current().selected.id,b.id);
+ });
+});
+test('request tracing reports real selected names, targets and outcomes while redacting credentials',async t=>{
+ const logs=[],h=fixture(t,{log:event=>logs.push(event),nativeFetch:async()=>new Response('rate-limited',{status:429})}),a=h.node('A');h.policy(a.id);
+ await h.exits.runTask({url:'https://youtube.com/watch?v=fixture'},async()=>{
+  const response=await h.exits.fetch('https://user:credential@youtube.com/page?token=private-token');assert.equal(response.status,429);await response.text();
+  await assert.rejects(h.exits.trace('https://api.telegram.org/botprivate-token/getFile',()=>{throw Error('private-A https://user:credential@youtube.com/?token=private-token');}),/private-A/);
+ });
+ const start=logs.find(x=>x.event==='request-start'),end=logs.find(x=>x.event==='request-finished');assert.equal(start.exitName,'A');assert.equal(end.status,429);assert.equal(end.ok,false);
+ assert.ok(logs.some(x=>x.event==='request-failed'));assert.doesNotMatch(JSON.stringify(logs),/private-A|private-token|credential/);
+});

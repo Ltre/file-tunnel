@@ -4013,7 +4013,9 @@ function initDiskEnhancements() {
         $disk('diskTaskCount').textContent = ongoing.length ? '· ' + ongoing.length + ' 项进行中' : '';
         $disk('diskTaskList').replaceChildren(...jobs.slice(0, 30).map(job => {
             const row = document.createElement('div'); row.className = 'disk-task-row';
-            const title = document.createElement('strong'); title.textContent = (job.title ? job.title + ' · ' : '') + job.message;
+            const title = document.createElement('strong');
+            if(job.title){const label=document.createElement('span');label.dataset.i18nRaw='true';label.textContent=job.title+' · ';title.append(label);}
+            const result=document.createElement('span');result.textContent=job.message||'';title.append(result);
             const detail = document.createElement('span'); detail.textContent = (job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)} · ` : '') + job.phase + ' · ' + (job.status === 'failed' ? '已失败' : job.percent === null ? '处理中（进度未定）' : Math.round(job.percent) + '%') + (job.totalBytes ? ' · ' + formatFileSize(job.processedBytes) + '/' + formatFileSize(job.totalBytes) : '') + (job.errorCode ? ' · ' + telegramDriveErrorText({ message: job.errorCode, userMessage: job.errorMessage, errorDetails: job.errorDetails }) : '');
             if (job.type === 'upload') { detail.className = 'disk-task-upload-progress'; detail.textContent = [job.folderPath !== undefined ? `目录：${telegramDriveDisplayPath(job.folderPath)}` : '', ...diskUploadProgressLines(job), job.status === 'failed' ? '已失败 · ' + telegramDriveErrorText({ message: job.errorCode, userMessage: job.errorMessage, errorDetails: job.errorDetails }) : job.status === 'completed' ? '已完成' : ''].filter(Boolean).join('\n'); }
             if (job.warnings?.length || job.result?.warnings?.length) detail.textContent += ' · ' + telegramDriveWarningText([...(job.warnings || []), ...(job.result?.warnings || [])]);

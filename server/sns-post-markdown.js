@@ -465,7 +465,8 @@ async function inspectSnsPost(source, { runMetadata, cookieFileForUrl, request, 
     }
     if (isTwitter && incomplete()) {
         try {
-            const browser = await (readBrowserPost || require('./twitter-post-browser').readBrowserPost)(source.sourceUrl, { cookie: cookieHeader(cookieFileForUrl?.(source.sourceUrl), source.sourceUrl), proxy: configuredProxy(new URL(source.sourceUrl)) });
+            const read = proxy => (readBrowserPost || require('./twitter-post-browser').readBrowserPost)(source.sourceUrl, { cookie: cookieHeader(cookieFileForUrl?.(source.sourceUrl), source.sourceUrl), proxy: proxy === undefined ? configuredProxy(new URL(source.sourceUrl)) : proxy });
+            const browser = await (upstreamAdapter ? upstreamAdapter.publicProxy(source.sourceUrl, read) : read());
             webpage = twitterMedia.mergeParts([webpage, browser]);
             recoveredEntries = twitterMedia.mergeMetas(recoveredEntries, browser.videoMetas);
         } catch (_) { /* A crawler failure must not erase media already obtained. */ }

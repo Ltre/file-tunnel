@@ -40,6 +40,7 @@
             this.desiredAssets = new Map();
             this.transfers = new Map();
             this.p2pUnavailablePeers = new Map();
+            this.outgoingProgress = new Map();
             this.peerRouteSamples = new Map();
             this.peerRouteConnections = new WeakMap();
             this.downloadQueue = [];
@@ -232,6 +233,74 @@
         createRequestId(assetId) {
             const random = Math.random().toString(36).slice(2, 10);
             return `req-${String(assetId || '').slice(0, 8)}-${Date.now().toString(36)}-${random}`;
+        }
+
+        uploadProgressKey(assetId, deviceId) {
+            return JSON.stringify([assetId, deviceId]);
+        }
+
+        reportUploadProgress(asset, deviceId, transfer, attemptId, bytes, transport, receipt = null) {
+            if (this.cancelledAssets.has(asset.id)) return;
+            if (!transfer) {
+                const size = Number(asset.size) || this.dataSize(asset.data);
+                this.deps.onProgress(asset.id, asset.name, Math.min(99, Math.floor(bytes * 100 / Math.max(1, size))), transport);
+                return;
+            }
+            const key = this.uploadProgressKey(asset.id, deviceId), now = Date.now();
+            let group = this.outgoingProgress.get(key);
+            if (group?.completed) {
+                const freshReceipt = receipt && !receipt.fileComplete && !group.attempts.has(attemptId);
+                if (!freshReceipt && (receipt || now - group.updatedAt < 5000)) return;
+                group = null;
+            }
+            if (!group) {
+                if (this.outgoingProgress.size >= 64) {
+                    const oldest = [...this.outgoingProgress].sort((a, b) => a[1].updatedAt - b[1].updatedAt)[0];
+                    if (oldest) {
+                        this.outgoingProgress.delete(oldest[0]);
+                        const expired = oldest[1];
+                        if (!expired.completed) this.deps.onUploadIdle?.(expired.assetId, expired.name, expired.transport, 'upload-progress-capacity');
+                    }
+                }
+                group = { assetId: asset.id, name: asset.name, deviceId, size: asset.size, ranges: new Map(), attempts: new Set(), progress: -1, remoteBytes: null, updatedAt: now };
+                this.outgoingProgress.set(key, group);
+            }
+            group.updatedAt = now;
+            group.attempts.add(attemptId);
+            const rangeKey = transfer.rangeStart + ':' + transfer.rangeEnd;
+            group.ranges.set(rangeKey, Math.max(group.ranges.get(rangeKey) || 0, Math.min(transfer.rangeEnd - transfer.rangeStart, Math.max(0, bytes))));
+            if (receipt && receipt.fileSize === asset.size && Number.isSafeInteger(receipt.fileReceivedBytes) && receipt.fileReceivedBytes >= 0 && receipt.fileReceivedBytes <= asset.size) {
+                group.remoteBytes = Math.max(group.remoteBytes || 0, receipt.fileReceivedBytes);
+            }
+            const received = group.remoteBytes ?? [...group.ranges.values()].reduce((total, value) => total + value, 0);
+            const progress = Math.max(group.progress, Math.min(99, Math.floor(received * 100 / Math.max(1, group.size))));
+            // One file row survives individual range completion and range retries.
+            // The route is this provider's route; it does not describe other providers.
+            if (progress !== group.progress || transport !== group.transport) {
+                group.progress = progress; group.transport = transport;
+                this.deps.onProgress(asset.id, asset.name, progress, transport);
+            }
+        }
+
+        finishUploadProgress(assetId, deviceId) {
+            const group = this.outgoingProgress.get(this.uploadProgressKey(assetId, deviceId));
+            if (!group || group.completed) return;
+            group.completed = true; group.updatedAt = Date.now();
+            this.deps.onProgress(assetId, group.name, 100, group.transport);
+        }
+
+        endUploadProgress(asset, deviceId, transfer, transport, reason) {
+            if (transfer && this.outgoingProgress.has(this.uploadProgressKey(asset.id, deviceId))) return;
+            this.deps.onUploadIdle?.(asset.id, asset.name, transport, reason);
+        }
+
+        cleanupUploadProgress() {
+            const now = Date.now();
+            for (const [key, group] of this.outgoingProgress) {
+                if (now - group.updatedAt < 90000) continue;
+                this.outgoingProgress.delete(key);
+                if (!group.completed) this.deps.onUploadIdle?.(group.assetId, group.name, group.transport, 'upload-progress-idle');
+            }
         }
 
         sourceAuthorization(assetId) {
@@ -509,6 +578,7 @@
         }
 
         checkRequestStalls() {
+            this.cleanupUploadProgress();
             const now = Date.now();
             for (const assetId of Array.from(this.desiredAssets.keys())) {
                 this.ensureDesiredDownloadQueued(assetId, 'watchdog-orphaned-desired');
@@ -793,6 +863,7 @@
                     ? String(transfer.forceRequestId).replace(/[^a-zA-Z0-9_.:-]/g, '-')
                     : '';
                 const requestId = `${this.createRequestId(assetId)}:${forceToken ? `force:${forceToken}:` : ''}${transferId}:${range.retryCount}`;
+                range.requestId = requestId;
                 const forced = Boolean(transfer.forceRequestId || range.retryCount > 0);
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
@@ -826,8 +897,11 @@
         beginMultiSourceRange(assetId, asset, deviceId, transport, part, attemptId = '') {
             const transfer = this.multiSourceTransfers.get(assetId);
             const range = transfer?.ranges.get(part?.transferId);
-            if (!transfer || !range || !range.active || range.retryScheduled || range.completed || asset.id !== assetId ||
-                part.rangeStart !== range.rangeStart || part.rangeEnd !== range.rangeEnd) {
+            if (!transfer || !range || !range.active || range.retryScheduled || range.completed) {
+                this.log('stale-range-start-ignored', { assetId, transferId: part?.transferId, attemptId, reason: 'range-no-longer-requested' });
+                return false;
+            }
+            if (asset.id !== assetId || part.rangeStart !== range.rangeStart || part.rangeEnd !== range.rangeEnd) {
                 throw new Error('Invalid multi-source range metadata');
             }
             if (this.isStaleAttempt(range, attemptId, transport)) {
@@ -1101,6 +1175,7 @@
 
         handleAvailable(data) {
             const asset = data && data.asset;
+            if (asset?.id && data.from) this.finishUploadProgress(asset.id, data.from);
             if (asset?.id && data.from) {
                 this.deps.load(asset.id)
                     .then(local => {
@@ -1444,7 +1519,7 @@
                 if (channel?._fileAssetRejected) {
                     const routeId = transfer?.transferId ? `${from}:${transfer.transferId}` : from;
                     const rejectedTransport = transfer ? `sending-multi-source:${routeId}` : `sending:${routeId}`;
-                    this.deps.onProgress(asset.id, asset.name, 100, rejectedTransport);
+                    this.endUploadProgress(asset, from, transfer, rejectedTransport, 'receiver-rejected');
                     this.emitTransferStatus(asset.id, from, 'failed', transfer?.transferId, requestId);
                     this.log('send-p2p-rejected', {
                         assetId: asset.id,
@@ -1457,7 +1532,7 @@
                 }
                 const routeId = transfer?.transferId ? `${from}:${transfer.transferId}` : from;
                 const abandonedTransport = transfer ? `sending-multi-source:${routeId}` : `sending:${routeId}`;
-                this.deps.onUploadIdle?.(asset.id, asset.name, abandonedTransport, 'p2p-attempt-ended');
+                this.endUploadProgress(asset, from, transfer, abandonedTransport, 'p2p-attempt-ended');
                 if (/send queue is full|backpressure/i.test(err.message || '') || err.message === 'File asset channel drain timeout') {
                     let abandonedAttemptId;
                     if (/^File asset channel backpressure (?:stalled|timeout)(?::|$)/.test(err.message || '') || err.message === 'File asset channel drain timeout') {
@@ -1507,7 +1582,7 @@
                     return true;
                 } catch (relayErr) {
                     const failedRelayTransport = transfer ? `sending-multi-source-relay:${routeId}` : `sending-relay:${routeId}`;
-                    this.deps.onUploadIdle?.(asset.id, asset.name, failedRelayTransport, 'relay-attempt-failed');
+                    this.endUploadProgress(asset, from, transfer, failedRelayTransport, 'relay-attempt-failed');
                     this.routeLog('relay-failed', {
                         assetId: asset.id,
                         peerDeviceId: from,
@@ -1735,13 +1810,22 @@
             const routeId = transfer?.transferId ? `${peerDeviceId}:${transfer.transferId}` : peerDeviceId;
             const transport = transfer ? `sending-multi-source:${routeId}` : `sending:${routeId}`;
             const chunkSize = this.p2pChunkSize(channel);
-            let queuedBytes = 0, reported = -1;
-            // queuedBytes includes bytes accepted by send(), not bytes drained to the peer.
-            // This channel is dedicated to this file/range; exclude its pending buffer.
+            let queuedBytes = 0, confirmedBytes = null, reported = -1, fullFileReceived = false;
+            channel._fileAssetSendProgress = message => {
+                if (message.assetId !== asset.id || (message.transferId || '') !== (transfer?.transferId || '') ||
+                    (message.attemptId || '') !== attemptId || message.totalBytes !== rangeEnd - rangeStart ||
+                    !Number.isSafeInteger(message.receivedBytes) || message.receivedBytes < 0 || message.receivedBytes > rangeEnd - rangeStart ||
+                    confirmedBytes !== null && message.receivedBytes < confirmedBytes) return;
+                confirmedBytes = message.receivedBytes;
+                fullFileReceived ||= message.fileComplete === true && message.fileSize === asset.size &&
+                    message.fileReceivedBytes === asset.size && message.receivedBytes === rangeEnd - rangeStart;
+                this.reportUploadProgress(asset, peerDeviceId, transfer, attemptId, confirmedBytes, transport, message);
+            };
             channel._fileAssetProgress = () => {
-                const drained = Math.max(0, queuedBytes - (Number(channel.bufferedAmount) || 0));
-                const progress = Math.min(99, Math.floor(drained * 100 / Math.max(1, rangeEnd - rangeStart)));
-                if (progress > reported) { reported = progress; this.deps.onProgress(asset.id, asset.name, progress, transport); }
+                const drained = confirmedBytes ?? Math.max(0, queuedBytes - (Number(channel.bufferedAmount) || 0));
+                if (drained === reported) return;
+                reported = drained;
+                this.reportUploadProgress(asset, peerDeviceId, transfer, attemptId, drained, transport);
             };
             try {
             await this.sendWithBackpressure(
@@ -1774,9 +1858,12 @@
             );
             await this.waitForChannelDrain(channel);
             await receiverAck;
-            this.deps.onProgress(asset.id, asset.name, 100, transport);
+            if (transfer) {
+                if (fullFileReceived) this.finishUploadProgress(asset.id, peerDeviceId);
+                else this.reportUploadProgress(asset, peerDeviceId, transfer, attemptId, rangeEnd - rangeStart, transport);
+            } else this.deps.onProgress(asset.id, asset.name, 100, transport);
             this.log('sent-p2p', { asset: metadata, transfer });
-            } finally { delete channel._fileAssetProgress; }
+            } finally { delete channel._fileAssetProgress; delete channel._fileAssetSendProgress; }
         }
 
         emitWithAck(eventName, payload, timeout = 15000) {
@@ -1835,14 +1922,14 @@
                     chunk: this.sliceData(asset.data, offset, Math.min(offset + RELAY_CHUNK_SIZE, rangeEnd))
                 }, RELAY_ACK_TIMEOUT);
                 const sent = Math.min(rangeEnd, offset + RELAY_CHUNK_SIZE) - rangeStart;
-                this.deps.onProgress(asset.id, asset.name, Math.min(99, Math.floor(sent * 100 / (rangeEnd - rangeStart))), transport);
+                this.reportUploadProgress(asset, deviceId, transfer, attemptId, sent, transport);
             }
             if (this.rejectedUploadKeys.has(cancelKey)) throw new Error('File asset receiver rejected relay');
             await this.emitWithAck('file-asset-relay-complete', {
                 sessionId: this.deps.getSessionId(), to: deviceId, assetId: asset.id, transferId: transfer?.transferId,
                 attemptId
             }, RELAY_COMPLETE_ACK_TIMEOUT);
-            this.deps.onProgress(asset.id, asset.name, 100, transport);
+            if (!transfer) this.deps.onProgress(asset.id, asset.name, 100, transport);
             this.log('sent-relay', { asset: metadata, peerDeviceId: deviceId, transfer });
         }
 
@@ -2024,6 +2111,16 @@
             if (transferId && this.transfers.has(assetId)) {
                 return { ok: false, reason: 'full-transfer-active' };
             }
+            if (transferId) {
+                const range = this.multiSourceTransfers.get(assetId)?.ranges.get(transferId);
+                // Existing request and attempt fields are capped at 120 characters
+                // on the wire, including forced restore tokens. Match that prefix.
+                const requestPrefix = String(range?.requestId || '').slice(0, 120);
+                if (!range || !range.active || range.retryScheduled || range.completed ||
+                    requestPrefix && attemptId && !String(attemptId).startsWith(requestPrefix + (requestPrefix.length < 120 ? '-' : ''))) {
+                    return { ok: false, reason: 'stale-request' };
+                }
+            }
             if (!transferId && this.multiSourceTransfers.has(assetId)) {
                 return { ok: false, reason: 'multi-source-active' };
             }
@@ -2088,20 +2185,42 @@
             }
         }
 
+        reportIncomingProgress(deviceId, assetId, channel, transferId, completedTransfer = null) {
+            const multi = completedTransfer || (transferId ? this.multiSourceTransfers.get(assetId) : null);
+            const active = multi ? multi.ranges.get(transferId) : this.transfers.get(assetId);
+            if (!active || active.from !== deviceId || channel.readyState !== 'open' ||
+                channel._fileAssetAttemptId && active.attemptId && channel._fileAssetAttemptId !== active.attemptId) return;
+            const total = multi ? active.rangeEnd - active.rangeStart : active.asset.size;
+            const previous = channel._fileAssetRxProgress, now = Date.now();
+            const complete = Boolean(completedTransfer && [...multi.ranges.values()].every(range => range.completed));
+            if (!complete && previous && (active.receivedSize < previous.bytes || active.receivedSize < total && now - previous.at < 200)) return;
+            const fileSize = multi ? multi.asset.size : active.asset.size;
+            const fileReceivedBytes = multi ? multi.completedBytes + [...multi.ranges.values()].filter(range => !range.completed).reduce((sum, range) => sum + range.receivedSize, 0) : active.receivedSize;
+            try {
+                channel.send(JSON.stringify({ type: 'file-asset-progress', assetId, transferId: transferId || '', attemptId: channel._fileAssetAttemptId || '', receivedBytes: active.receivedSize, totalBytes: total, fileReceivedBytes, fileSize, fileComplete: complete }));
+                channel._fileAssetRxProgress = { bytes: active.receivedSize, at: now };
+            } catch (_) { /* Progress feedback cannot interrupt reception. */ }
+        }
+
         async handleChannelMessage(deviceId, assetId, data, channel, transferId = null) {
             if (typeof data !== 'string') {
                 this.capturePeerRoute(deviceId, { assetId, transferId: transferId || '', attemptId: channel._fileAssetAttemptId || '', phase: 'receiving-progress', fileTransport: 'p2p' });
                 if (transferId && this.multiSourceTransfers.has(assetId)) {
-                    return this.queueMultiSourceChunk(assetId, transferId, deviceId, data, channel._fileAssetAttemptId || '');
+                    await this.queueMultiSourceChunk(assetId, transferId, deviceId, data, channel._fileAssetAttemptId || '');
+                    this.reportIncomingProgress(deviceId, assetId, channel, transferId);
+                    return;
                 }
                 const active = this.transfers.get(assetId);
                 if (active && active.from !== deviceId) {
                     this.log('stale-provider-chunk-ignored', { assetId, peerDeviceId: deviceId, activeProvider: active.from });
                     return;
                 }
-                return this.queueChunk(assetId, data, channel._fileAssetAttemptId || '');
+                await this.queueChunk(assetId, data, channel._fileAssetAttemptId || '');
+                this.reportIncomingProgress(deviceId, assetId, channel, null);
+                return;
             }
             const message = JSON.parse(data);
+            if (message.type === 'file-asset-progress') { channel._fileAssetSendProgress?.(message); return; }
             if (message.type === 'file-asset-rejected' && message.assetId === assetId) {
                 channel._fileAssetRejected = message.reason || 'receiver-rejected';
                 channel.close();
@@ -2138,15 +2257,18 @@
                 if (message.transfer?.transferId) {
                     const started = this.beginMultiSourceRange(assetId, message.asset, deviceId, 'p2p', message.transfer, message.attemptId || '');
                     if (!started) channel.close();
+                    else this.reportIncomingProgress(deviceId, assetId, channel, message.transfer.transferId);
                     return;
                 }
                 const started = this.begin(assetId, message.asset, deviceId, 'p2p', message.attemptId || '');
                 if (!started) channel.close();
+                else this.reportIncomingProgress(deviceId, assetId, channel, null);
                 return;
             }
             if (message.type === 'file-asset-complete' && message.assetId === assetId) {
                 try {
                     let completed;
+                    const multi = message.transferId ? this.multiSourceTransfers.get(assetId) : null;
                     if (message.transferId && this.multiSourceTransfers.has(assetId)) {
                         completed = await this.completeMultiSourceRange(assetId, message.transferId, deviceId, 'p2p', message.attemptId || channel._fileAssetAttemptId || '');
                     } else {
@@ -2157,6 +2279,7 @@
                         setTimeout(() => channel.close(), 50);
                         return;
                     }
+                    if (multi) this.reportIncomingProgress(deviceId, assetId, channel, message.transferId, multi);
                     this.routeLog('receiver-p2p-complete', {
                         assetId,
                         peerDeviceId: deviceId,
@@ -2367,6 +2490,11 @@
             if (!assetId) return;
             this.clearRetryTimer(assetId);
             this.cancelledAssets.add(assetId);
+            for (const [key, group] of this.outgoingProgress) {
+                if (group.assetId !== assetId) continue;
+                this.outgoingProgress.delete(key);
+                this.deps.onUploadIdle?.(assetId, group.name, group.transport, 'upload-progress-cancelled');
+            }
             this.abortFullTransferWriter(assetId);
             this.releaseDownload(assetId);
             this.notifyDownloadIdle(assetId, 'receiver-cancelled');

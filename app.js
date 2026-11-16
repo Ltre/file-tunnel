@@ -356,7 +356,7 @@ window.addEventListener('pagehide', event => {
 
 function getFileProgressKey(fileId, transport = '') {
     const route = String(transport || '');
-    if (route.startsWith('sending-multi-source')) return `${fileId}::sending-multi-source`;
+    if (route.startsWith('sending-multi-source')) return `${fileId}::sending-multi-source:${route.split(':')[1] || ''}`;
     if (!route.startsWith('sending')) return fileId;
     return `${fileId}::${route.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 }

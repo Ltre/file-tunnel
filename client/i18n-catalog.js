@@ -4,6 +4,60 @@
     // Parameter values, authored content and protocol identifiers are not keys.
     const languages = [["zh-Hans","中文简体"],["zh-Hant","中文繁體"],["en","English"],["ja","日本語"],["fr","Français"],["ru","Русский"],["es","Español"],["it","Italiano"],["ko","한국어"],["ms","Bahasa Melayu"],["id","Bahasa Indonesia"],["vi","Tiếng Việt"],["km","ភាសាខ្មែរ"],["my","မြန်မာဘာသာ"],["th","ไทย"],["de","Deutsch"]];
     const catalog = {
+  "纯文本": {
+      "zh-Hant": "純文字",
+      "en": "Plain text",
+      "ja": "プレーンテキスト",
+      "fr": "Texte brut",
+      "ru": "Обычный текст",
+      "es": "Texto sin formato",
+      "it": "Testo semplice",
+      "ko": "일반 텍스트",
+      "ms": "Teks biasa",
+      "id": "Teks biasa",
+      "vi": "Văn bản thuần",
+      "km": "អត្ថបទធម្មតា",
+      "my": "ရိုးရိုးစာသား",
+      "th": "ข้อความธรรมดา",
+      "de": "Klartext"
+  },
+
+  "十六进制": {
+      "zh-Hant": "十六進位",
+      "en": "Hexadecimal",
+      "ja": "16進数",
+      "fr": "Hexadécimal",
+      "ru": "Шестнадцатеричный",
+      "es": "Hexadecimal",
+      "it": "Esadecimale",
+      "ko": "16진수",
+      "ms": "Perenambelasan",
+      "id": "Heksadesimal",
+      "vi": "Thập lục phân",
+      "km": "គោលដប់ប្រាំមួយ",
+      "my": "ဆယ့်ခြောက်လီစနစ်",
+      "th": "เลขฐานสิบหก",
+      "de": "Hexadezimal"
+  },
+
+  "操作完成": {
+      "zh-Hant": "操作完成",
+      "en": "Operation completed",
+      "ja": "操作が完了しました",
+      "fr": "Opération terminée",
+      "ru": "Операция завершена",
+      "es": "Operación completada",
+      "it": "Operazione completata",
+      "ko": "작업 완료",
+      "ms": "Operasi selesai",
+      "id": "Operasi selesai",
+      "vi": "Thao tác hoàn tất",
+      "km": "ប្រតិបត្តិការបានបញ្ចប់",
+      "my": "လုပ်ဆောင်မှု ပြီးဆုံးပါပြီ",
+      "th": "ดำเนินการเสร็จแล้ว",
+      "de": "Vorgang abgeschlossen"
+  },
+
 
   "暂无用户加入": {
     "zh-Hant": "暫無使用者加入",

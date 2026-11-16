@@ -378,7 +378,7 @@
     }
     function makeAction(label, handler, options = {}) {
         const button = element('button',options.danger ? 'danger' : '',label); button.type = 'button';
-        button.addEventListener('click',async () => { if (options.confirm && !confirm(options.confirm)) return; button.disabled = true; try { await handler(); } catch (error) { alert(error.message); } finally { button.disabled = false; } });
+        button.addEventListener('click',async () => { if (options.confirm && !confirm(options.confirm)) return; button.disabled = true; try { if(options.remove){await TaskListLoading.remove(button,button.closest('article.task'),handler);await loadTasks();}else await handler(); } catch (error) { alert(error.message); } finally { button.disabled = false; } });
         return button;
     }
     function taskReferenceDetails(task) {
@@ -403,7 +403,7 @@
         const card = element('article','task'); card.dataset.taskId = task.id;
         const head = element('div','task-head'); const main = element('div','task-main');
         const cover = document.createElement('img'); cover.className='cover'; cover.alt=''; cover.loading='lazy'; if (task.cover) cover.src=task.cover;
-        const text = element('div'); text.style.minWidth='0'; if(task.networkRoute) text.append(UpstreamExitUI.route(task.networkRoute)); text.append(element('div','title',task.title || '等待解析页面信息…'));
+        const text = element('div'); text.style.minWidth='0'; text.append(element('div','title',task.title || '等待解析页面信息…'));
         const badges = element('div','badges'); badges.append(element('span','badge',platformLabels[task.platform] || task.platform || 'SNS'),element('span',`badge ${task.status}`,statusLabels[task.status] || task.status));
         if (task.mediaType) badges.append(element('span','badge',task.mediaType === 'audio' ? '音频' : task.mediaType === 'video' ? '视频' : task.mediaType));
         text.append(badges);
@@ -415,7 +415,7 @@
         }
         const details=element('div','details');
         [['媒体编号',task.selectedFormatIds?.length ? task.selectedFormatIds.join(' + ') : ''],['指定片段',task.downloadSections],['文件',task.outputFileName],['大小',task.outputFileSize ? formatSize(task.outputFileSize):''],['创建',formatDate(task.createdAt)],['完成',formatDate(task.completedAt)]].filter(([,value])=>value).forEach(([label,value])=>{const item=element('span');item.append(element('strong','',`${label}：`),String(value));details.append(item);});
-        card.append(details,taskReferenceDetails(task));
+        card.append(details,UpstreamExitUI.route(task.networkRoute,task.id),taskReferenceDetails(task));
         if (task.tags?.length) { const tags=element('div','tags'); task.tags.forEach(tag=>tags.append(element('span','tag',tag))); card.append(tags); }
         const remark=element('div','remark-editor'); const textarea=document.createElement('textarea'); textarea.value=task.remark||''; textarea.placeholder='任务备注（转发时优先作为文件备注）';
         remark.append(textarea,makeAction('保存备注',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({remark:textarea.value})});await loadTasks({force:true});})); card.append(remark);
@@ -453,14 +453,14 @@
         if (['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('取消',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/cancel`,{method:'POST'});await loadTasks();}));
         if (['failed','cancelled','cleared'].includes(task.status)) actions.append(makeAction('重新抓取',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/retry`,{method:'POST'});await loadTasks();}));
         if (task.hasFile) actions.append(makeAction('清服务端缓存',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}/clear`,{method:'POST'});await loadTasks();},{confirm:'确认清理该任务的服务端成品？浏览器缓存不受影响。'}));
-        if (!['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('删除记录',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'DELETE'});await loadTasks();},{danger:true,confirm:'确认删除这条任务记录及服务端成品？'}));
+        if (!['queued','parsing','downloading','merging'].includes(task.status)) actions.append(makeAction('删除记录',async()=>{await api(`${API_ROOT}/tasks/${encodeURIComponent(task.id)}`,{method:'DELETE'});},{remove:true,danger:true,confirm:'确认删除这条任务记录及服务端成品？'}));
         card.append(actions);
         if (task.hasFile) card.append(window.TelegramTargetForward.create(task, API_ROOT, api));
         if (task.status === 'completed' && task.hasFile && task.downloadSections && !task.asMusic && !['audio','song'].includes(task.mediaType)) card.append(window.AudioTrackRepair.create(task, API_ROOT, api));
         return card;
     }
     function isTaskRemarkEditing() { return Boolean(document.activeElement?.closest?.('.remark-editor')); }
-    function isTaskRefreshPaused() { return window.AudioTrackRepair.busy() || window.TelegramTargetForward.busy(taskList) || isTaskRemarkEditing() || Boolean(taskList.querySelector('[data-reference-interacting]')); }
+    function isTaskRefreshPaused() { return TaskListLoading.busy(taskList) || window.AudioTrackRepair.busy() || window.TelegramTargetForward.busy(taskList) || isTaskRemarkEditing() || Boolean(taskList.querySelector('[data-reference-interacting]')); }
     async function loadTasks({force=false}={}) {
         if (!force && isTaskRefreshPaused()) return;
         const revision = ++taskListRevision;

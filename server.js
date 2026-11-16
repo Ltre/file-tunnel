@@ -5405,7 +5405,7 @@ function classifySnsMedia(sourceUrl, meta = {}) {
 }
 
 function runYtDlpJson(url, options = {}) {
-    return upstreamExits.content(url, async () => { await upstreamExits.ready(); return runYtDlpJsonUnrouted(url, options); });
+    return upstreamExits.content(url, async () => { await upstreamExits.ready(); return upstreamExits.trace(url,()=>runYtDlpJsonUnrouted(url, options),'yt-dlp-metadata'); });
 }
 function runYtDlpJsonUnrouted(url, options = {}) {
     if (options.noCookie === undefined && /^https?:\/\/(?:(?:www|mobile|m)\.)?(?:twitter|x)\.com\//i.test(url)) {
@@ -6891,10 +6891,10 @@ async function spawnYtDlpCapture(args, options = {}) {
     const sourceUrl = options.sourceUrl || args.find(value => /^https?:\/\//i.test(String(value))) || '';
     return upstreamExits.content(sourceUrl, async () => {
         await upstreamExits.ready();
-        return spawnYtDlpCaptureUnrouted(args, { ...options, onOutput(chunk) {
+        return upstreamExits.trace(sourceUrl,()=>spawnYtDlpCaptureUnrouted(args, { ...options, onOutput(chunk) {
             upstreamExits.observeCommand(chunk);
             options.onOutput?.(chunk);
-        } });
+        } }),'yt-dlp-download');
     }, () => true);
 }
 function spawnYtDlpCaptureUnrouted(args, options = {}) {
@@ -7389,7 +7389,7 @@ function buildSnsDefaultSelection(formats = [], mediaType = 'video') {
 }
 
 async function analyzeSnsDownloadUrl(...args) {
-    return upstreamExits.content(args[0], () => analyzeSnsDownloadUrlUnrouted(...args));
+    return upstreamExits.analyze(args[0], () => analyzeSnsDownloadUrlUnrouted(args[0],upstreamExits.parseOptions(args[1])));
 }
 async function analyzeSnsDownloadUrlUnrouted(rawUrl, options = {}) {
     const normalized = normalizeSnsDownloadUrl(rawUrl);
@@ -7758,7 +7758,7 @@ async function enrichYoutubePremiumAnalysisOrdinals(analysis, options = {}) {
 }
 
 async function analyzeYoutubePremiumUrl(...args) {
-    return upstreamExits.content(args[0], () => analyzeYoutubePremiumUrlUnrouted(...args));
+    return upstreamExits.analyze(args[0], () => analyzeYoutubePremiumUrlUnrouted(args[0],upstreamExits.parseOptions(args[1])));
 }
 async function analyzeYoutubePremiumUrlUnrouted(rawUrl, options = {}) {
     const parsed = parseSupportedSocialUrl(String(rawUrl || '').trim());

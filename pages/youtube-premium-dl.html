@@ -852,7 +852,9 @@
                     button.textContent = '正在提交...';
                     notice.textContent = '正在清理旧成品并提交重新抓取任务...';
                 }
-                const updated = await api(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}${action}`, { method });
+                let updated;
+                if (method === 'DELETE') await TaskListLoading.remove(button,button.closest('article.task'),async()=>{updated=await api(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}${action}`, { method });});
+                else updated = await api(`/api/youtube-premium/tasks/${encodeURIComponent(task.id)}${action}`, { method });
                 if (action === '/retry') notice.textContent = `重新抓取已提交：${statusDetails[updated.status] || statusLabels[updated.status] || updated.status}`;
                 await loadTasks();
             } catch (error) {
@@ -1912,6 +1914,7 @@
             meta.appendChild(item);
         });
         main.appendChild(meta);
+        main.append(UpstreamExitUI.route(task.networkRoute,task.id));
         const tags = document.createElement('div');
         tags.className = 'task-tags';
         for (const tag of task.tags || []) {
@@ -2093,12 +2096,11 @@
         }
         if (task.hasFile) main.appendChild(window.TelegramTargetForward.create(task, '/api/youtube-premium', api));
         if (task.status === 'completed' && task.hasFile && task.downloadSections && !task.asMusic && !['audio', 'song'].includes(task.mediaType)) main.appendChild(window.AudioTrackRepair.create(task, '/api/youtube-premium', api));
-        if (task.networkRoute) main.append(UpstreamExitUI.route(task.networkRoute));
         card.append(cover, main);
         return card;
     }
 
-    function isPremiumRemarkEditing() { return window.AudioTrackRepair.busy() || window.TelegramTargetForward.busy(taskList) || Boolean(document.activeElement?.closest?.('.task-remark')); }
+    function isPremiumRemarkEditing() { return TaskListLoading.busy(taskList) || window.AudioTrackRepair.busy() || window.TelegramTargetForward.busy(taskList) || Boolean(document.activeElement?.closest?.('.task-remark')); }
 
     let taskCategory = 'pending', taskListRevision = 0;
     document.querySelectorAll('[data-task-category]').forEach(button => button.onclick = () => {

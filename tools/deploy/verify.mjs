@@ -82,7 +82,7 @@ function shouldExistAsStaticFile(ref) {
   if (ref === '/' || ref.startsWith('/?')) return false;
   if (ref === '/manifest.webmanifest' || ref.startsWith('/manifest.webmanifest?')) return false;
   if (ref === '/runtime-config.js') return false;
-  if (/^\/(?:admin|disk-management|s3-management|s3-api-guide|data-usage|system-backup|media-library|tgbot|sns-cookies|sns-dl|youtube-premium-dl|downloader|downloadList|record|magnet|device|light-file-parts|telegram-content|video-transcode|vclient|web-zip-preview|disk)(?:[/?#]|$)/.test(ref)) return false;
+  if (/^\/(?:admin|disk-management|s3-management|s3-api-guide|data-usage|system-backup|media-library|tgbot|sns-cookies|sns-dl|youtube-premium-dl|upstream-exits|downloader|downloadList|record|magnet|device|light-file-parts|telegram-content|video-transcode|vclient|web-zip-preview|disk)(?:[/?#]|$)/.test(ref)) return false;
   return true;
 }
 

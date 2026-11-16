@@ -24,7 +24,7 @@ function serviceFor(value) {
     return 'other';
 }
 
-function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), idleMs = 30000, startRuntime, nativeFetch = global.fetch } = {}) {
+function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), idleMs = 30000, startRuntime, nativeFetch = global.fetch, log = event => console.log('[upstream-exit]', event) } = {}) {
     const filename = path.join(dataDir, 'upstream-exits.json');
     let config = { nodes: [], services: {} }, closed = false;
     if (fs.existsSync(filename)) {
@@ -40,6 +40,27 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
         try { fs.chmodSync(filename, 0o600); } catch (_) {}
     };
     const clean = (value, max = 200) => String(value || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, max);
+    function safeUrl(value) {
+        try {
+            const url = new URL(value);url.username='';url.password='';url.hash='';
+            url.pathname=url.pathname.replace(/\/bot[^/]+/g,'/bot[hidden]');
+            for(const key of url.searchParams.keys())if(/token|auth|secret|password|cookie|signature|api.?key/i.test(key))url.searchParams.set(key,'[hidden]');
+            return clean(url.href,2048);
+        } catch (_) { return '(未提供有效地址)'; }
+    }
+    function safeError(ctx,error) {
+        let text=String(error?.message || error || '');
+        for(const node of ctx?.snapshot.nodes || config.nodes)if(node.password)text=text.split(node.password).join('[hidden]');
+        return clean(text.replace(/(https?:\/\/)[^/\s]+@/gi,'$1[hidden]@').replace(/\/bot[^/\s]+/g,'/bot[hidden]').replace(/((?:token|password|secret|cookie|signature|api.?key)=)[^&\s]+/gi,'$1[hidden]'),500);
+    }
+    function record(ctx,event,url,extra={}) {
+        try{log({event,traceId:ctx?.traceId || '',service:ctx?.service || serviceFor(url),exitName:ctx?.selected?.name || '沿用原有网络配置',url:safeUrl(url),...extra});}catch(_){}
+    }
+    async function trace(url,work,kind='http') {
+        const ctx=storage.getStore(),started=performance.now();if(ctx?.managed&&!ctx.selected)await select(ctx,order(ctx)[0]);record(ctx,'request-start',url,{kind});
+        try{const result=await work();record(ctx,'request-finished',url,{kind,durationMs:Math.round(performance.now()-started),...(typeof result?.status==='number'?{status:result.status,ok:result.ok}:{ok:true})});return result;}
+        catch(error){record(ctx,'request-failed',url,{kind,durationMs:Math.round(performance.now()-started),error:safeError(ctx,error)});throw error;}
+    }
     const publicNode = node => Object.fromEntries(['id','name','server','port','serverName','verifyTls','remark','revision'].map(key=>[key,node[key]]).concat([['hasPassword',Boolean(node.password)]]));
     function publicConfig() {
         return { nodes: config.nodes.map(publicNode), services: SERVICES.map(id => ({ id, configured: Boolean(config.services[id]),
@@ -123,10 +144,10 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
     function context(url, requested, onChange = () => {}, ticket) {
         const saved = ticket && tickets.get(ticket);
         if (saved && saved.expires > Date.now() && saved.url === url && saved.requested === (requested || '')) {
-            return { ...saved.context, lease:null, dispatcher:null, attempts:[...saved.context.attempts], onChange, inContent:false, closed:false };
+            return { ...saved.context, requireFormats:false, lease:null, dispatcher:null, attempts:[...saved.context.attempts], onChange, traceId:crypto.randomUUID().slice(0,8), inContent:false, closed:false };
         }
         const snapshot = clone(config), service = serviceFor(url), policy = snapshot.services[service];
-        return { url,service,snapshot,policy,requested:requested || '', managed:Boolean(policy || requested), selected:null,locked:false,attempts:[],onChange,lease:null,dispatcher:null,inContent:false,closed:false };
+        return { traceId:crypto.randomUUID().slice(0,8),url,service,snapshot,policy,requested:requested || '', managed:Boolean(policy || requested), selected:null,locked:false,attempts:[],onChange,lease:null,dispatcher:null,inContent:false,closed:false };
     }
     const summary = ctx => ({ service:ctx.service, selected:ctx.selected ? { id:ctx.selected.id,name:ctx.selected.name } : null, locked:ctx.locked,
         attempts:ctx.attempts.map(item => ({ ...item })) });
@@ -144,7 +165,7 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
     async function select(ctx,id) {
         if(ctx.dispatcher)await ctx.dispatcher.destroy();ctx.dispatcher=null;ctx.lease?.release();ctx.lease=null;
         ctx.closed=false;ctx.hadNetwork=false;ctx.commandOutput=''; ctx.selected = id==='direct'?{id:'direct',name:'本机直连'}:ctx.snapshot.nodes.find(n=>n.id===id);
-        const item={id,name:ctx.selected.name,status:'trying',at:Date.now()};ctx.attempts.push(item);changed(ctx);
+        const item={id,name:ctx.selected.name,status:'trying',at:Date.now()};ctx.attempts.push(item);changed(ctx);record(ctx,'exit-attempt',ctx.url,{attempt:ctx.attempts.length});
     }
     async function transport(ctx) {
         if(!ctx.selected)await select(ctx,order(ctx)[0]);
@@ -166,7 +187,7 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
                 if(current.selected?.id!==id)await select(current,id);
                 current.inContent=true;
                 const value=await work();
-                if(!validate(value) || (current.requireFormats && !value?.formats?.length)){
+                if(!validate(value)){
                     const error=Error('该出口未取得任务所需的有效内容');
                     if(typeof value?.status==='number' && typeof value?.body?.cancel==='function'){
                         error.upstreamResponse=value;
@@ -174,8 +195,8 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
                     }
                     throw error;
                 }
-                current.locked=Boolean(current.hadNetwork);current.attempts.at(-1).status=current.locked?'success':'cached';changed(current);return value;
-            }catch(error){last=error;if(current.locked)throw error;if(current.attempts.length){current.attempts.at(-1).status='failed';current.attempts.at(-1).error=clean(String(error.message).split(current.selected?.password || '\0').join('[hidden]'),500);changed(current);}if(error.name==='AbortError'||/cancelled|canceled/i.test(error.message))throw error;}
+                current.locked=Boolean(current.hadNetwork && (!current.requireFormats || value?.formats?.length));current.attempts.at(-1).status=current.locked?'success':current.hadNetwork?'auxiliary':'cached';changed(current);record(current,current.locked?'exit-selected':current.hadNetwork?'auxiliary-content':'cache-hit',url);return value;
+            }catch(error){last=error;if(current.locked)throw error;if(current.attempts.length){current.attempts.at(-1).status='failed';current.attempts.at(-1).error=safeError(current,error);changed(current);record(current,'exit-failed',url,{error:safeError(current,error)});}if(error.name==='AbortError'||/cancelled|canceled/i.test(error.message))throw error;}
             finally{current.inContent=false;}
         }
         // Preserve the final HTTP response for the original business decoder
@@ -218,8 +239,8 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
     async function routedFetch(input,init){
         const url=typeof input==='string'||input instanceof URL?String(input):input.url;
         const ctx=storage.getStore();
-        if(ctx){if(!ctx.managed)return nativeFetch(input,init);ctx.hadNetwork=true;return nativeFetch(input,{...init,dispatcher:await transport(ctx)});}
-        if(!config.services[serviceFor(url)])return nativeFetch(input,init);
+        if(ctx){if(!ctx.managed)return trace(url,()=>nativeFetch(input,init));ctx.hadNetwork=true;return trace(url,async()=>nativeFetch(input,{...init,dispatcher:await transport(ctx)}));}
+        if(!config.services[serviceFor(url)])return trace(url,()=>nativeFetch(input,init));
         // Standalone HTTP consumers keep the component leased until the body ends.
         const own=context(url);return storage.run(own,async()=>{
             try{
@@ -240,9 +261,10 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
     function requestScope(req,res,next){
         const url=String(req.body?.url || ''),requested=clean(req.body?.networkExit,80);
         const ctx=context(url,requested,()=>{},req.body?.networkTicket);
-        ctx.requireFormats=true;
+        ctx.requireFormats=true;const parseStarted=performance.now();record(ctx,'formats-start',url,{refresh:req.body?.refresh===true});
         const json=res.json.bind(res);
         res.json=data=>{
+            record(ctx,data?.error?'formats-failed':'formats-completed',url,{durationMs:Math.round(performance.now()-parseStarted),formatCount:Array.isArray(data?.formats)?data.formats.length:0,...(data?.error?{error:safeError(ctx,data.error)}:{})});
             if(data && typeof data==='object' && !data.error && ctx.selected){
                 if(tickets.size>=256)tickets.delete(tickets.keys().next().value);
                 const token=crypto.randomUUID();tickets.set(token,{url,requested,expires:Date.now()+30*60000,context:{...ctx,snapshot:clone(ctx.snapshot),onChange:()=>{},lease:null,dispatcher:null}});
@@ -253,7 +275,7 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
         res.once('finish',()=>{release(ctx).catch(()=>{});});res.once('close',()=>{release(ctx).catch(()=>{});});
         return storage.run(ctx,next);
     }
-    async function publicProxy(url,work){const ctx=storage.getStore();if(!ctx)return withContext(context(url),()=>publicProxy(url,work));if(!ctx.managed)return work(undefined);return content(url,async()=>{await transport(ctx);ctx.hadNetwork=true;return work(ctx.lease?.proxy || '');},()=>true);}
+    async function publicProxy(url,work){const ctx=storage.getStore();if(!ctx)return withContext(context(url),()=>publicProxy(url,work));if(!ctx.managed)return trace(url,()=>work(undefined),'page-reader');return content(url,async()=>{await transport(ctx);ctx.hadNetwork=true;return trace(url,()=>work(ctx.lease?.proxy || ''),'page-reader');},()=>true);}
     function observeCommand(chunk){
         const ctx=storage.getStore();if(!ctx?.managed || ctx.locked)return;
         ctx.commandOutput=((ctx.commandOutput || '')+String(chunk)).slice(-16384);
@@ -286,8 +308,11 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
     }
     async function close(){closed=true;for(const runtime of runtimes.values()){clearTimeout(runtime.timer);try{(runtime.worker||await runtime.starting)?.stop();}catch(_){}}runtimes.clear();tickets.clear();}
     return { publicConfig,saveNode,deleteNode,saveService,content,runTask,requestScope,fetch:routedFetch,cliArgs,publicProxy,testPage,confirmExit,serviceScope,wrapService,observeCommand,
+        analyze(url,work){return content(url,work,value=>valid(value)&&(!storage.getStore()?.requireFormats || Boolean(value?.formats?.length)));},
         scope(url,work){return storage.getStore()?work():withContext(context(url),work);},
         ready(){const ctx=storage.getStore();if(ctx?.initialError)return Promise.reject(ctx.initialError);if(ctx?.managed){ctx.hadNetwork=true;return transport(ctx);}return Promise.resolve();},
+        trace,
+        parseOptions(options={}){const ctx=storage.getStore();return ctx?.requireFormats?{...options,onDetail(detail){record(ctx,'formats-detail',ctx.url,{message:safeError(ctx,detail.message),formatCount:detail.details?.formatCount ?? detail.details?.cachedFormatCount});options.onDetail?.(detail);}}:options;},
         current:()=>storage.getStore(),close,serviceFor,installFetch(){global.fetch=routedFetch;},restoreFetch(){if(global.fetch===routedFetch)global.fetch=nativeFetch;} };
 }
 module.exports={createUpstreamExits,SERVICES,serviceFor};

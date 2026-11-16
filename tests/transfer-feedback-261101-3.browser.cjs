@@ -11,10 +11,11 @@ function fn(name){const start=appSource.indexOf(name),rest=appSource.slice(start
   const progressHtml=fs.readFileSync('pages/index.html','utf8').match(/<div class="transfer-progress"[\s\S]*?(?=\s*<!-- 大文件确认)/)[0];
   app.get('/',(_req,res)=>res.type('html').send(`<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="/client/index.css"><script src="/client/file-assets.js"></script></head><body>${progressHtml}<article class="message" data-file-id="missing"><span class="file-size"></span></article><div id="actions"></div><script>
   const state={sessionId:'isolated',deviceId:'receiver',peers:new Map(),socket:{connected:true,emit:(event,data)=>events.push({event,data})}},events=[],logs=[],cache=new Map();
-  let fileAssetTransfer,fileCacheStore=null,progressDrawerCollapsed=false;const activeFileProgress=new Set(),completedFileProgress=new Set(),progressHideTimers=new Map(),progressUiLastPaint=new Map(),fileTransferProgressStates=new Map();
+  let fileAssetTransfer,fileCacheStore=null,progressDrawerCollapsed=false;const activeFileProgress=new Set(),completedFileProgress=new Set(),progressHideTimers=new Map(),progressUiLastPaint=new Map(),progressUiPending=new Map(),fileTransferProgressStates=new Map();
   const progressQueueSnapshot={queueLength:0,activeDownloads:0,updatedAt:0,expireTimer:null},PROGRESS_QUEUE_SNAPSHOT_TTL=15000,PROGRESS_UI_MIN_INTERVAL=120,FORCE_RESTORE_STALL_MS=12000,FORCE_RESTORE_PROGRESS_THRESHOLD=30;
   const historyLog=(event,data)=>logs.push({event,data}),getFromStore=async(_store,id)=>cache.get(id),saveToStore=async(_store,file)=>cache.set(file.id,file),materializeExternalFileRecord=async x=>x,materializeCachedFileRecord=async x=>x;
   const connectToPeerForFileAsset=async()=>{},ensurePeerOfferForFileAsset=async()=>{},waitForDataChannel=async()=>{},maybeShowLanP2pGuide=()=>{},refreshCollectionPreviewCardForFile=async()=>{},refreshActiveFilePreviewForFile=async()=>{};
+  const tunnelAuthorization=()=>({deviceId:state.deviceId,grant:''}),serverAssetRecoveries={metadata:new Map()},refreshOpenSnsMediaClientStates=()=>{};
   const isFileFavorite=async()=>false,createFileActionButton=(label,_tip,run)=>{const button=document.createElement('button');button.textContent=label;button.onclick=run;return button;},setFilePreviewActions=actions=>document.getElementById('actions').replaceChildren(...actions.filter(Boolean));
   const requestServerAssetWithPeerPreference=async()=>{const response=await fetch('/missing-file');throw Error((await response.json()).error);},formatFileSize=value=>value+' B';
   ${section('function getFileProgressKey(','function getBinaryDataSize(')}
@@ -51,6 +52,17 @@ function fn(name){const start=appSource.indexOf(name),rest=appSource.slice(start
    receiver.cancel(asset.id);return{before,oneLeft,allOffline,retained};
   });
   assert.deepEqual(retried,{before:true,oneLeft:true,allOffline:false,retained:true});
+  const wholeFile=await page.evaluate(async()=>{
+   const sender=fixture.transfer,asset={id:'whole-file-progress',name:'large.msi',size:115384320},part={transferId:'part-1',rangeStart:0,rangeEnd:2097152},route='sending-multi-source:phone:part-1';
+   sender.reportUploadProgress(asset,'phone',part,'attempt-1',2097152,route,{fileSize:asset.size,fileReceivedBytes:Math.ceil(asset.size*0.45)});
+   sender.endUploadProgress(asset,'phone',part,route,'range-ended');
+   sender.reportUploadProgress(asset,'phone',{transferId:'part-3',rangeStart:6291456,rangeEnd:8388608},'attempt-3',0,'sending-multi-source:phone:part-3');
+   await new Promise(resolve=>setTimeout(resolve,950));
+   const rows=[...document.querySelectorAll('#progressList .progress-item')].filter(row=>row.dataset.fileId===asset.id),before={rows:rows.length,percent:rows[0]?.dataset.progressValue,text:rows[0]?.textContent};
+   sender.handleAvailable({asset,from:'phone'});await new Promise(resolve=>setTimeout(resolve,950));
+   return{before,remaining:[...document.querySelectorAll('#progressList .progress-item')].filter(row=>row.dataset.fileId===asset.id).length};
+  });
+  assert.equal(wholeFile.before.rows,1);assert.equal(wholeFile.before.percent,'45');assert.doesNotMatch(wholeFile.before.text,/99%|100%|P2P \+/);assert.equal(wholeFile.remaining,0,'only whole-file completion removes the row');
   const result=await page.evaluate(async()=>{
    fixture.transfer.cancel('offline');const receiver=fixture.transfer,body=new Uint8Array(512*1024).fill(61),asset={id:'12345678-1234-4123-8123-123456789abc',name:'native-rtc.bin',size:body.length,type:'application/octet-stream',data:body.buffer};
    await receiver.request(asset.id,'provider',asset);const a=new RTCPeerConnection(),b=new RTCPeerConnection();let release;const gate=new Promise(resolve=>release=resolve);receiver.deps.store=async file=>{await gate;fixture.cache.set(file.id,file);};
@@ -73,6 +85,6 @@ function fn(name){const start=appSource.indexOf(name),rest=appSource.slice(start
    await page.evaluate(value=>TunnelI18n.setLanguage(value),language);assert.equal(await page.locator('#progressDrawerSummary').innerText(),expected);
   }
   await page.evaluate(()=>hideProgress('summary-check'));
-  console.log('PASS manual restore without alert, no-provider discovery, all-source disconnect cleanup, native RTC progress and completion, live summary language switching');
+  console.log('PASS manual restore without alert, no-provider discovery, all-source disconnect cleanup, whole-file sender row survives range completion at 45%, native RTC progress and completion, live summary language switching');
  }finally{await browser?.close();server?.closeAllConnections();if(server)await new Promise(resolve=>server.close(resolve));}
 })().catch(error=>{console.error(error);process.exitCode=1;});
