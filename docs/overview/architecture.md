@@ -1,7 +1,7 @@
 # 系统架构、运行边界与数据所有权
 
-> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
-> **文档更新时间**：`2026-11-07`
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **文档更新时间**：`2026-11-17`
 > 本文按当前合入实现区分隧道基础审计的 sql.js、网盘元数据的原生 SQLite WAL、独立 S3 凭据和 Telegram 外部消息。不得把已有 SQLite/S3 仍写作计划，也不得把有限兼容与多实例安全夸大成完全实现。
 
 ## 1. 整体定位
@@ -398,3 +398,23 @@ P2P 历史回归极多，尤其涉及：
 ### 管理与客户端边界
 
 `server/tunnel-permissions.js` 通过管理员/设备选择编辑既有隧道权限，不创建新的会话成员；`server/request-rate-limit.js` 只调整可信代理链的限流身份 Key；`server/process-diagnostics.js` 负责进程信号与脱敏日志，不能作为远端完整回放。七主题由 `client/theme-preference.js`、`themes*.css` 与首页/轻量路由共用，浏览器缓存和 CSS 断点不改变任何后台鉴权。详见 [串流台](./streaming-console.md)、[主题](./pwa-ui/themes.md)、[系统备份](./system-backup.md)。
+
+## 13. 2026-11-07—10：表单快照、延迟语言包、可确认转发与缓存所有权
+
+### 管理员下载表单不属于下载任务数据库
+
+`server/admin-form-cache.js` 在管理员认证后提供 SNS / YouTube Premium 两类表单 JSON 快照，存于 `SERVER_DATA_DIR/admin-forms/`。它有独立 clientKey、revision、服务端序号、原子写入和 2 MiB 单份大小上限；与 yt-dlp 任务队列、Cookie、服务器输出缓存、Telegram 转存回执分离。删除或提交后清理表单不会取消/重建已提交的下载任务。
+
+### 国际化发布资产与业务缓存分离
+
+唯一人工词条源是 `client/i18n-catalog.js`；`tools/build-i18n-packs.cjs` 生成简中/繁中/英文启动包及其余语言 JSON，客户端在用户确认/选择后按需加载。构建阶段比对生成资产与源目录，Service Worker 只预缓存 app shell 与基础运行时。语言包缓存、业务 IndexedDB 和普通 Service Worker app cache 不应混为一类，切换语言不会清理业务数据。详见 [localization.md](./pwa-ui/localization.md)。
+
+### 转发是带持久确认的跨隧道操作
+
+批量转发客户端保留稳定目标消息 ID；服务端按来源会话/设备/消息 ID 做并发幂等，目标历史写入并 flush 后才 ACK。超时状态通过独立 `forward-message-status` 重新核对目标记录和 `forwardedFrom`，不把未知结果直接当失败重建。文件来源权限同时绑定原来源隧道 deviceId 与签名 grant；精确目标消息锚点可从持久历史读取，避免只因内存历史窗口已滚动就丢失合法来源关系。
+
+P2P 信令限流与普通消息分开；文件 DataChannel 只有在已有背压等待明确失败后才发出匹配 attempt 的放弃通知，接收端校验后才释放该次活动任务。缓存盘点使用元数据游标，垃圾缓存清理前重新校验引用和会话归属；IndexedDB 读取失败必须停止删除。
+
+### 网页 ZIP 的来源证明不等于访问权
+
+`webZipSourceProof` 是签名的来源关系标记，不是编辑令牌或隧道 grant；真正的源读取仍需当前隧道绑定身份的有效 grant 和 read capability，网页编辑仍需独立编辑凭据。同步可基于持久权限和现有已验证授权处理离线源，但不会因此自动加入原隧道。
