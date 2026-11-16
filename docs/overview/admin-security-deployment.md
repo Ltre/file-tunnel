@@ -1,7 +1,7 @@
 # 管理后台、安全边界与部署
 
-> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
-> **文档更新时间**：`2026-11-07`
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **文档更新时间**：`2026-11-17`
 
 ## 1. 管理后台定位
 
@@ -463,3 +463,15 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 - `server/process-diagnostics.js` 记录启动、退出/信号、异常类型和资源量、过滤敏感错误文本；这提供排查依据，不能代替系统内存/进程转储。管理员私钥、网盘授权与串流设备凭据应继续保持最小权限和独立生命周期。
 - 当前 `nginx/file-tunnel.conf` 的代理/HTTP/HTTPS 配置应按现有代码和真正前置代理链核对。2026-10-27 的“禁止无 TLS”资料是**分析与计划，未据此宣布已部署强制 TLS 网关拒绝规则**；不要把最后一跳 HTTP 与访客侧明文访问直接等同。
 - 系统备份、串流、主题和 Markdown 新增脚本/静态资源需进入相应构建/verify 路径；管理员专用代码不应机械塞入前台离线 PWA 资源缓存。
+
+## 25. 2026-11-09—10：管理员下载表单云端保存
+
+`server/admin-form-cache.js` 新增管理员鉴权的 `/api/admin-forms/{sns-dl|youtube-premium-dl}` API，挂载时由 `adminAuth.requireAuth` 保护，所有响应使用 `Cache-Control: no-store`。它保存的是两类下载页面的**表单草稿快照**，不是抓取任务、Cookie、登录凭据或下载文件。
+
+- 数据分别保存在 `SERVER_DATA_DIR/admin-forms/sns-dl/` 与 `youtube-premium-dl/`，每份表单一个 JSON 文件；`.sequence.json` 提供服务端递增编号，避免不同浏览器本地 TAB 编号冲突。
+- 服务端只接收白名单字段（模式、URL、音乐/缓存选项、截取区间、备注、手写格式等），另保存候选格式解析结果和选中格式 ID；单份序列化数据上限 2 MiB。不会接收 Cookie 或 arbitrary 文件路径。
+- 更新和删除必须携带当前 `revision`，客户端身份由稳定 `clientKey` 关联。每种表单串行执行，文件先写唯一临时文件再原子 rename；首次保存重试用相同 clientKey 返回已接受快照，不覆盖迟到的新版本。revision 不匹配返回 409，不静默覆盖。
+- 新浏览器可以加载云端表单；复制出的新 TAB 是本地草稿，不自动共享云端 ID。若服务器版本更新而本地有不同内容，保留本地副本；远端已删除时也保留本地内容。提交下载任务后清理云表单与任务提交/执行解耦，清理失败只保留可重试的清理待办，不重新提交下载任务。
+- API 路由位于 `server.js`，前端共用 `client/download-form-tabs.js`，SNS 与 YouTube Premium 页面分别传入 `serverForms: 'sns-dl'` / `'youtube-premium-dl'`。
+
+专项测试：`tests/admin-form-cache-261109.test.cjs`、`admin-form-cache-261109.browser.cjs`。更多用户侧行为见 [download-transcode.md](./download-transcode.md)。
