@@ -1,7 +1,7 @@
 # 多语言、本地化运行时与 i18n 审计
 
-> **源码基线 Commit**：`b422e438fe50f78fdacd84ac1dff34a30a3d43ba`  
-> **文档更新时间**：`2026-09-26`
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **文档更新时间**：`2026-11-17`
 
 ## 1. 模块定位
 
@@ -212,3 +212,30 @@ Git 历史里有过翻译错误回退，因此一个重要原则是：
 各模块文档描述业务原始中文术语；本文件描述语言实现。
 
 后续 Agent 不应为了“Overview 统一英文”把需求里的按钮原名改掉。原始中文 UI 名称往往正是追查 Prompt / DOM / Git Log 的检索锚点。
+
+## 14. 2026-11-07—10：唯一词条源、按需语言包与系统语言确认
+
+### 14.1 目录和运行时拆分
+
+`client/i18n-catalog.js` 仍是唯一人工维护的词条、动态模板和规则来源。发布不再把完整目录直接作为首屏脚本：
+
+- `tools/build-i18n-packs.cjs` 从唯一目录生成 `client/i18n-bootstrap.js` 和 `client/i18n/{language}.json`。启动包只包含简体中文、繁体中文、英文基础词条及运行配置；其余 13 种语言按需取包。完整目录约 2.08 MB，启动包约 305 KB。
+- 当前支持 16 种语言。其余语言包以目录源码 SHA-256 的前 16 位作为版本，客户端校验语言、版本、词条键集合、模板数量及字符串类型；请求按语言去重，额外语言包最多在本机 localStorage 缓存一份当前版本。下载有 15 秒超时，缓存损坏或版本不符时重新获取，失败不改变已保存语言偏好。
+- 生成目录会包含 `zh-Hant.json` 供构建一致性检查；正常繁体中文启动已在基础包中，首屏不额外请求该文件。
+- `client/localization-runtime.js` 现在只是兼容加载器，最终只加载 `client/i18n.js`；`client/sns-post-i18n.js` 和 `client/streaming-i18n.js` 不再维护各自的翻译字典，相关新词由中央目录维护。
+
+### 14.2 系统语言不是按服务器地区推断
+
+- 语言偏好默认是 `system`。简体中文、繁体中文、英文可由启动包直接呈现；若浏览器系统语言是其它支持语言，首屏先用英文，不在页面初始化时自动下载。
+- 页面整体加载完成后，用户**主动打开隧道设置**时才提示是否下载检测到的系统语言包。确认且下载、校验成功后才切换；取消不下载。明确选择的语言优先于系统语言，系统语言确认状态与偏好跨同源页面同步。
+- 语言判断来自浏览器 `navigator.language` / `navigator.languages`，不是 IP、服务器地区或账户地区。浏览器后续触发 `languagechange` 时，只有仍选择“使用系统语言”才重新处理。
+- 异步下载完成只刷新仍然有效的当前语言；失败发出专用事件并可重试，不以迟到响应覆盖用户后来选择的语言。localStorage 写入失败时，本页仍可使用暂存偏好。
+
+### 14.3 构建、缓存和原文边界
+
+- `tools/deploy/build.mjs` 在构建前执行语言包一致性检查，打包 bootstrap 与 `client/i18n/` JSON；修改目录后先运行 `node tools/build-i18n-packs.cjs` 重新生成。构建会对服务端动态生成的 Telegram OIDC 回调 HTML 中的脚本引用执行与静态页面相同的资产指纹替换。
+- 页面与独立入口（分享、协同、网页 ZIP 预览、磁链/光媒页及 Telegram OIDC 回调）统一使用启动包和同一运行时，不再重复加载完整目录。Service Worker 当前资源版本为 `instant-tunnel-v140-content-v8-ui-i18n-cloud-261109-2-final`；激活时只清理旧的 `instant-tunnel-*` 缓存，不删除其它应用的 CacheStorage，也不清理业务 IndexedDB。
+- 动态文案只翻译已识别的系统模板及命名标签，不翻译用户正文、文件名、路径、分区名、消息内容和富文本编辑区域。参数值、错误码及文件路径保留原文。动态 DOM 使用 WeakMap 保存原文与空白，避免 MutationObserver 反复翻译后空格累积。
+- `tools/frontend-i18n-audit.js` 提供前端词条审计，默认只读；`--rewrite-dialogs` 才执行原生 `alert/confirm/prompt` 包装改写。最终目录覆盖 15 个目标翻译语言，构建检查生成文件与唯一源目录一致。审计候选和自动提取结果不是“所有运行时文案都可自动翻译”的承诺。
+
+关联回归：`tests/frontend-i18n-audit-261108.test.cjs`、`i18n-catalog-261108.test.cjs`、`i18n-261108.browser.cjs`、`i18n-261109.browser.cjs`、`i18n-lazy-261109-2.browser.cjs`、`i18n-packs-261109.test.cjs`、`public-drive-i18n-261109.browser.cjs`、`streaming-i18n-261109.browser.cjs`、`sw-language-update-261109.browser.cjs`。
