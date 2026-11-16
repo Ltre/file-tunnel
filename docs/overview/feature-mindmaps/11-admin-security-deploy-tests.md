@@ -1,6 +1,6 @@
 # 后台管理、安全、部署、存储与测试回归 — 思维导图
 
-> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
 > **文档更新时间**：2026-10-16  
 > **状态**：现有功能与运行边界  
 > **主要参考**：[../admin-security-deployment.md](./../admin-security-deployment.md)、[../tests-and-regressions.md](./../tests-and-regressions.md)、[../source-map.md](./../source-map.md)
@@ -286,3 +286,10 @@ mindmap
 ```
 
 注意：该图概括细节与交互边界；具体调用链、迁移过程、失败回滚及版本差异以链接的模块文档和实际源码为准。
+
+## 2026-11-07—10 增量
+
+- 管理员下载表单云存储：SNS/YouTube 两类白名单 JSON 快照、clientKey/revision、原子写入、冲突保护和提交后独立清理。
+- 系统备份完成前重新核对每个远端分段的文件 ID、大小与 SHA-256；失败不发布完成 manifest。
+- i18n 构建生成包检查纳入部署构建；Service Worker 只清理自身 `instant-tunnel-*` 旧缓存，不清理同源其它应用缓存。
+- 新增 33 个测试文件并修改 11 个旧测试/夹具；阶段验证和未现场验收边界见 [tests-and-regressions.md](../tests-and-regressions.md)。
