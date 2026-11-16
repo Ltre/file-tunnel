@@ -236,7 +236,7 @@
 | 新文件 | 对应 Overview |
 |---|---|
 | `client/i18n-bootstrap.js` | `pwa-ui/localization.md` |
-| `client/i18n/es.json`、`fa.json`、`fr.json`、`id.json`、`it.json`、`ja.json`、`km.json`、`ko.json`、`ms.json`、`my.json`、`ru.json`、`th.json`、`vi.json`、`zh-Hant.json` | `pwa-ui/localization.md` |
+| `client/i18n/{es,fa,fr,id,it,ja,km,ko,ms,my,ru,th,vi,zh-Hant}.json` | `pwa-ui/localization.md` |
 
 **验收结果：当前 116 个 `client/**` 文件全部有明确模块归属。**
 
