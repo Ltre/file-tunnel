@@ -422,3 +422,20 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 | SNS 下载草稿与文件名 | `client/download-form-tabs.js/.css`、`server/download-file-name.js`、`pages/sns-dl.html`、`youtube-premium-dl.html` | [download-transcode.md](./download-transcode.md) |
 
 补充资料：`docs/devlog/dev-2610-streaming-console.md`、`docs/devlog/dev-2610-UI261026.md`、`docs/devlog/dev-2611.md`；2026-10-27 的禁止 TLS 方案、部分外部产品计划和用户尚未执行的后续事项仍不得从 Prompt 当作已合入实现。**不读取其它分支来替换此分支的代码事实。**
+
+## 19. 2026-11-07—10 当前源码新增导航
+
+| 已合入能力 | 当前代码入口 | 主要证据 |
+|---|---|---|
+| 管理员下载表单云端快照 | `server/admin-form-cache.js`、`server.js`、`client/download-form-tabs.js`、`pages/sns-dl.html`、`pages/youtube-premium-dl.html` | [admin-security-deployment.md](./admin-security-deployment.md)、[download-transcode.md](./download-transcode.md)、`tests/admin-form-cache-261109.*` |
+| 16 语言启动包和按需语言 | `client/i18n-catalog.js`、`i18n-bootstrap.js`、`client/i18n/*.json`、`client/i18n.js`、`tools/build-i18n-packs.cjs`、`tools/frontend-i18n-audit.js` | [pwa-ui/localization.md](./pwa-ui/localization.md)、`tests/i18n-*.{test,browser}.cjs`、`tests/sw-language-update-261109.browser.cjs` |
+| P2P 明确放弃、信令独立限流和 Relay 诊断 | `client/file-assets.js`、`server/file-assets.js`、`server.js` | [transfer-cache.md](./transfer-cache.md)、`tests/p2p-connection-regression.test.cjs`、`p2p-live-261108.browser.cjs`、`relay-diagnostics-261109.test.cjs` |
+| 批量转发逐条结果和持久确认 | `app.js`、`server.js` | `tests/bulk-forward-261108.test.cjs`、`forward-confirmation-261108.test.cjs`、`forward-results-261108.browser.cjs`、`persisted-forward-261108.test.cjs` |
+| 资源盘点与缓存清理安全 | `app.js`、`client/file-assets.js` | `tests/cache-safety-261107.test.cjs`、`diagnostics/memory-inventory-261107.browser.cjs` |
+| 网盘分区默认名、待转存预检和进度流上限 | `server/disk-partitions.js`、`client/disk-ui.js`、`client/disk-pending-save.js`、`client/disk-client.js` | [telegram-drive.md](./telegram-drive.md)、`tests/pending-save-preflight-261108.browser.cjs`、`disk-partitions.test.cjs`、`disk-client.test.cjs` |
+| 备份完成前远端分段复核 | `server/data-backup.js`、`client/data-backup.js` | [system-backup.md](./system-backup.md)、`tests/backup-261107.test.cjs` |
+| 网页 ZIP 来源证明/离线源访问 | `server/web-zip-credentials.js`、`web-zip-sync.js`、`server.js` | [web-workshop.md](./web-workshop.md)、`tests/web-zip-*-26110*.test.cjs` |
+| FFmpeg 时间戳进度、磁链 Relay ACK | `server/video-transcode.js`、`pages/video-transcode.html`、`pages/downloader.html` | [download-transcode.md](./download-transcode.md)、[magnet-download.md](./transfer-cache/magnet-download.md)、`tests/transcode-progress-261108.test.cjs`、`magnet-download-261108.browser.cjs` |
+| 控制中心通知/账号入口、IME 输入和 Telegram OIDC 返回页 | `app.js`、`client/notification-center.js`、`client/tunnel-entry.js`、`server.js` | [pwa-ui.md](./pwa-ui.md)、`tests/control-center-261107.browser.cjs`、`telegram-app-return-261109.browser.cjs` |
+
+上述路径均来自当前分支的实际文件变更；Prompt/Devlog 可解释动机与验收边界，但不能替代这些代码入口。
