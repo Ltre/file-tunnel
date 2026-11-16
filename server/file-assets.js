@@ -579,8 +579,6 @@ function registerFileAssetHandlers(socket, context) {
                 if (requestId) meta.requestId = requestId;
             }
             if (status === 'completed' || status === 'failed') releaseAssignment(record, assetId, to, transferId);
-            const expectedAttemptId = `${String(requestId || '').replace(/[^a-zA-Z0-9_.:-]/g, '-')}-p2p-${transferId || 'full'}`.slice(0, 120);
-            const abandonedAttemptId = status === 'failed' && requestId && data?.abandonedAttemptId === expectedAttemptId ? expectedAttemptId : undefined;
             const targetSocket = deviceSockets.get(to);
             if (targetSocket) {
                 targetSocket.emit('file-asset-transfer-status', {
@@ -588,8 +586,7 @@ function registerFileAssetHandlers(socket, context) {
                     from: deviceId,
                     transferId,
                     status,
-                    requestId,
-                    ...(abandonedAttemptId ? { abandonedAttemptId } : {})
+                    requestId
                 });
             }
             historyLog('file-asset-transfer-status', {

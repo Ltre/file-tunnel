@@ -21,14 +21,18 @@ test('a late full-file chunk from another provider cannot enter the current rece
  await transfer.handleChannelMessage('old','file',new Uint8Array(1).buffer,{});assert.equal(appended,0);
  await transfer.handleChannelMessage('current','file',new Uint8Array(1).buffer,{});assert.equal(appended,1);
 });
-test('sender progress follows buffer drain and reports completion only after the existing receiver acknowledgement',async()=>{
+test('sender snapshots subtract queued bytes and completion waits for both drain and receiver acknowledgement',async()=>{
  const progress=[],context={window:{},setInterval:()=>0,setTimeout,clearTimeout,console};vm.runInNewContext(source,context);
  const transfer=new context.window.FileAssetTransfer({onProgress:(_id,_name,value)=>progress.push(value),log:()=>{},getPeer:()=>null});
  transfer.metadata=a=>({id:a.id});transfer.dataSize=data=>data.byteLength;transfer.sliceData=(data,l,h)=>data.slice(l,h);
  let acknowledge;transfer.waitForTransferAck=()=>new Promise(resolve=>acknowledge=resolve);
  const channel={readyState:'open',bufferedAmount:0,send(data){if(typeof data!=='string')this.bufferedAmount+=data.byteLength;},addEventListener(){},removeEventListener(){}};
  const sending=transfer.sendViaDataChannel(channel,{id:'file',name:'file',data:new Uint8Array(2*1024*1024)});
+ try{
  await new Promise(resolve=>setTimeout(resolve,25));assert.ok(Math.max(...progress)<99,'enqueuing the complete file must not claim near-completion');
- const draining=setInterval(()=>{channel.bufferedAmount=Math.max(0,channel.bufferedAmount-256*1024);},20);
- try{await new Promise(resolve=>setTimeout(resolve,210));assert.ok(progress.some(value=>value>0&&value<99),'progress must continue while waiting for buffered data to drain');assert.equal(progress.includes(100),false);acknowledge();await sending;assert.equal(progress.at(-1),100);assert.equal(channel._fileAssetProgress,undefined);for(let i=1;i<progress.length;i++)assert.ok(progress[i]>=progress[i-1]);}finally{clearInterval(draining);}
+ const count=progress.length;channel.bufferedAmount=0;await new Promise(resolve=>setTimeout(resolve,35));
+ assert.equal(progress.length,count,'the restored drain wait does not create an additional progress timer');
+ assert.equal(progress.includes(100),false,'drain alone is not receiver completion');acknowledge();await sending;assert.equal(progress.at(-1),100);assert.equal(channel._fileAssetProgress,undefined);
+ for(let i=1;i<progress.length;i++)assert.ok(progress[i]>=progress[i-1]);
+ }finally{channel.bufferedAmount=0;acknowledge?.();await sending;}
 });

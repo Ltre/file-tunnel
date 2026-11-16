@@ -5,7 +5,7 @@ const {registerFileAssetHandlers}=require('../server/file-assets');
 const {chromium}=require(path.join(os.homedir(),'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'));
 const root=path.resolve(__dirname,'..'),read=file=>fs.readFileSync(path.join(root,file),'utf8'),appSource=read('app.js'),serverSource=read('server.js');
 const part=(source,start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
-async function runPeerScenario(t, bulk = false, abandoned = false, reverse = false, multi = false, forced = false, relayProvider = true) {
+async function runPeerScenario(t, bulk = false, abandoned = false, reverse = false, multi = false, forced = false, relayProvider = true, largeRejoin = false) {
     const app=express(),sessionId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',ids=['00000000-0000-4000-8000-000000000001','ffffffff-ffff-4fff-8fff-ffffffffffff',...(multi?['88888888-8888-4888-8888-888888888888']:[])];
     const devices=new Map(),sessions=new Map([[sessionId,{devices,fileAssets:new Map()}]]),deviceSockets=new Map(),events=[];
     app.use('/client',express.static(path.join(root,'client')));
@@ -31,12 +31,13 @@ async function runPeerScenario(t, bulk = false, abandoned = false, reverse = fal
     });
     const browser=await chromium.launch({channel:'chrome',headless:true});t.after(()=>browser.close());const desktop=await browser.newPage(),mobile=await browser.newPage({locale:'en-US',isMobile:true,viewport:{width:390,height:844}}),a=reverse?mobile:desktop,b=reverse?desktop:mobile;
     if(multi){
-        const c=await browser.newPage(),file='dddddddd-dddd-4ddd-8ddd-dddddddddddd',size=12*1024*1024;
+        const c=await browser.newPage(),file='dddddddd-dddd-4ddd-8ddd-dddddddddddd',size=largeRejoin?115384320:12*1024*1024;
         await Promise.all([a.goto(base+'/?id='+ids[0]),b.goto(base+'/?id='+ids[1]),c.goto(base+'/?id='+ids[2])]);await Promise.all([a.waitForFunction(()=>window.ready),b.waitForFunction(()=>window.ready),c.waitForFunction(()=>window.ready)]);
         await a.evaluate(({file,size})=>fixture.provide(file,size),{file,size});await c.evaluate(async({file,size,to,relayProvider})=>{await fixture.provide(file,size);if(relayProvider)fixture.transfer.p2pUnavailablePeers.set(to,Date.now()+60000);},{file,size,to:ids[1],relayProvider});
         for(let n=0;n<100&&(sessions.get(sessionId).fileAssets.get(file)?.providers.size||0)<2;n++)await new Promise(resolve=>setTimeout(resolve,10));
+        if(largeRejoin){await b.reload();await b.waitForFunction(()=>window.ready);assert.equal(await b.evaluate(file=>fixture.cache.has(file),file),false);}
         await b.evaluate(({file,from,size,forced})=>fixture.transfer.request(file,from,{id:file,name:file+'.bin',size,type:'application/octet-stream'},forced?{force:true,requestId:'force-'+('restore-token-'.repeat(20))}:{}),{file,from:ids[0],size,forced});
-        await b.waitForFunction(file=>fixture.cache.has(file),file,{timeout:30000});
+        await b.waitForFunction(file=>fixture.cache.has(file),file,{timeout:largeRejoin?180000:30000});
         const result=await b.evaluate(file=>{const data=new Uint8Array(fixture.cache.get(file).data);for(let i=0;i<data.length;i++)if(data[i]!==i%251)return{valid:false};return{valid:true,bytes:data.length,multi:fixture.events.some(x=>x.event==='file-asset-multi-source-started'),routes:fixture.events.filter(x=>x.event==='file-asset-range-receiving').map(x=>x.details.transport)};},file);
         const cachedAt=await b.evaluate(file=>fixture.cacheTimes.get(file),file);
         for(const sender of [a,c])await sender.waitForFunction(file=>fixture.progress.some(row=>row.id===file&&row.percent===100),file,{timeout:5000});
@@ -67,18 +68,17 @@ async function runPeerScenario(t, bulk = false, abandoned = false, reverse = fal
     await b.evaluate(()=>new Promise(resolve=>fixture.state.socket.emit('fixture-business-burst',{},resolve)));
     const fileIds=['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','cccccccc-cccc-4ccc-8ccc-cccccccccccc'];
     if(abandoned){
-        // Suppress the receiver's close notification to model a dead P2P path:
-        // the real Socket.IO abandonment notice must release the active task.
-        await b.evaluate(()=>{const original=fixture.transfer.setupChannel.bind(fixture.transfer);fixture.transfer.setupChannel=(...args)=>{original(...args);args[2].onclose=null;};});
-        await a.evaluate(()=>{const original=fixture.transfer.sendViaDataChannel.bind(fixture.transfer);let once=true;fixture.transfer.sendViaDataChannel=async(channel,asset,range,peer,attemptId)=>{if(!once)return original(channel,asset,range,peer,attemptId);once=false;await fixture.transfer.sendWithBackpressure(channel,JSON.stringify({type:'file-asset-start',asset:fixture.transfer.metadata(asset),transfer:range,attemptId}));await new Promise(resolve=>fixture.releaseStall=resolve);throw Error('File asset channel backpressure stalled');};});
+        // An explicitly closed file channel uses the baseline Relay fallback.
+        // A backpressure stall has a different policy and must not be relabeled.
+        await a.evaluate(()=>{const original=fixture.transfer.sendViaDataChannel.bind(fixture.transfer);let once=true;fixture.transfer.sendViaDataChannel=async(channel,...args)=>{if(!once)return original(channel,...args);once=false;channel.close();throw Error('File asset channel closed');};});
     }
     for(const [index,id] of fileIds.entries()) {
         await a.evaluate(id=>fixture.provide(id),id);await b.evaluate(({id,from})=>fixture.request(id,from),{id,from:ids[0]});
-        if(abandoned&&index===0){await b.waitForFunction(id=>fixture.transfer.transfers.has(id),id);await a.evaluate(()=>fixture.releaseStall());}
         await b.waitForFunction(id=>fixture.cache.has(id),id,{timeout:12000});const correct=await b.evaluate(id=>[...new Uint8Array(fixture.cache.get(id).data)].every((value,n)=>value===n%251),id);assert.equal(correct,true);
         if(abandoned&&index===0){assert.equal(events.filter(item=>item.event==='file-asset-relay-started').length,1);const remaining=await a.evaluate(id=>Math.max(0,(fixture.transfer.p2pUnavailablePeers.get(id)||0)-Date.now()),ids[1]);await a.waitForTimeout(remaining+40);}
     }
-    assert.equal(events.filter(item=>item.event==='file-asset-relay-started').length,abandoned?1:0,'only the explicitly abandoned attempt may use a relay retry');
+    assert.equal(events.filter(item=>item.event==='file-asset-relay-started').length,abandoned?1:0,'only the explicitly closed attempt may use a relay retry');
+    if(abandoned)assert.ok(await a.evaluate(()=>fixture.events.some(item=>item.event==='file-asset-route-p2p-degrade-to-relay'&&item.details.error==='File asset channel closed')));
     await a.waitForFunction(expected=>fixture.events.filter(item=>item.event==='file-asset-route-p2p-send-completed').length===expected,abandoned?1:2);
     await a.waitForFunction(()=>fixture.events.some(item=>item.event==='file-asset-route-connection-stats'&&item.details.selected&&item.details.local?.protocol&&item.details.remote?.protocol));
     const samples=await a.evaluate(()=>fixture.events.filter(item=>item.event==='file-asset-route-connection-stats'));
@@ -94,8 +94,10 @@ async function runPeerScenario(t, bulk = false, abandoned = false, reverse = fal
 }
 test('real Chrome peers use the unchanged native ICE and file DataChannel path, then serve a second file without relay',{timeout:30000},t=>runPeerScenario(t));
 test('a fresh receiver restores 45 history files totaling 220 MB over native DataChannels without single-file retries',{timeout:90000},t=>runPeerScenario(t,true));
-test('an explicitly stalled file uses a noncompeting real Socket.IO retry even without a close notice, then the next file returns to P2P',{timeout:30000},t=>runPeerScenario(t,false,true));
+test('an explicitly closed file channel falls back to real Socket.IO Relay, then the next file returns to P2P after cooldown',{timeout:30000},t=>runPeerScenario(t,false,true));
 test('a mobile Chrome profile sends files back to the desktop over the same native P2P path without relay',{timeout:30000},t=>runPeerScenario(t,false,false,true));
 test('a real three-peer range download combines P2P and Relay without restarting completed ranges',{timeout:40000},t=>runPeerScenario(t,false,false,false,true));
 test('a forced three-peer restore retains long request-token compatibility over P2P and Relay',{timeout:40000},t=>runPeerScenario(t,false,false,false,true,true));
 test('two real source peers deliver over P2P to one receiver without completing either file row at a range boundary',{timeout:40000},t=>runPeerScenario(t,false,false,false,true,false,false));
+
+test('a rejoining receiver restores a 115384320-byte file from two native P2P sources and verifies every byte and final completion',{timeout:180000},t=>runPeerScenario(t,false,false,false,true,false,false,true));

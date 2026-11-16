@@ -234,7 +234,12 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
             ctx.selected=selected.id==='direct'?{id:'direct',name:selected.name}:ctx.snapshot.nodes.find(node=>node.id===selected.id);
             if(!ctx.selected)ctx.initialError=Error('此任务原先采用的出口节点已删除，不能自动更换出口');
         }
-        return withContext(ctx,work);
+        return withContext(ctx,()=>{
+            // A format ticket may already have locked the exit. Its existing
+            // history still needs to reach this new task's persisted record.
+            if(ctx.attempts.length)changed(ctx);
+            return work();
+        });
     }
     async function routedFetch(input,init){
         const url=typeof input==='string'||input instanceof URL?String(input):input.url;

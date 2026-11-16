@@ -53,10 +53,13 @@ function fn(name){const start=appSource.indexOf(name),rest=appSource.slice(start
   });
   assert.deepEqual(retried,{before:true,oneLeft:true,allOffline:false,retained:true});
   const wholeFile=await page.evaluate(async()=>{
-   const sender=fixture.transfer,asset={id:'whole-file-progress',name:'large.msi',size:115384320},part={transferId:'part-1',rangeStart:0,rangeEnd:2097152},route='sending-multi-source:phone:part-1';
-   sender.reportUploadProgress(asset,'phone',part,'attempt-1',2097152,route,{fileSize:asset.size,fileReceivedBytes:Math.ceil(asset.size*0.45)});
-   sender.endUploadProgress(asset,'phone',part,route,'range-ended');
-   sender.reportUploadProgress(asset,'phone',{transferId:'part-3',rangeStart:6291456,rangeEnd:8388608},'attempt-3',0,'sending-multi-source:phone:part-3');
+   const sender=fixture.transfer,asset={id:'whole-file-progress',name:'large.msi',size:115384320},contribution=Math.ceil(asset.size*0.45),rangeSize=2097152;
+   for(let start=0;start<contribution;start+=rangeSize){
+    const end=Math.min(start+rangeSize,contribution),part={transferId:'part-'+start,rangeStart:start,rangeEnd:end},route='sending-multi-source:phone:'+part.transferId;
+    sender.reportUploadProgress(asset,'phone',part,'attempt-'+start,end-start,route);
+    sender.endUploadProgress(asset,'phone',part,route,'range-ended');
+   }
+   sender.reportUploadProgress(asset,'phone',{transferId:'part-next',rangeStart:contribution,rangeEnd:contribution+rangeSize},'attempt-next',0,'sending-multi-source:phone:part-next');
    await new Promise(resolve=>setTimeout(resolve,950));
    const rows=[...document.querySelectorAll('#progressList .progress-item')].filter(row=>row.dataset.fileId===asset.id),before={rows:rows.length,percent:rows[0]?.dataset.progressValue,text:rows[0]?.textContent};
    sender.handleAvailable({asset,from:'phone'});await new Promise(resolve=>setTimeout(resolve,950));
