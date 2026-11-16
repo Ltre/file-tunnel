@@ -1,6 +1,6 @@
 # 文件、合辑、P2P、缓存、恢复与磁链 — 思维导图
 
-> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
 > **文档更新时间**：2026-10-16  
 > **状态**：现有功能与运行边界  
 > **主要参考**：[../transfer-cache.md](./../transfer-cache.md)、[../transfer-cache/magnet-download.md](./../transfer-cache/magnet-download.md)、[../transfer-cache/folder-archive-directory-mirror.md](./../transfer-cache/folder-archive-directory-mirror.md)
@@ -282,3 +282,10 @@ mindmap
 ```
 
 注意：该图概括细节与交互边界；具体调用链、迁移过程、失败回滚及版本差异以链接的模块文档和实际源码为准。
+
+## 2026-11-07—10 增量
+
+- 文件 P2P：仅在已确认背压停滞/超时或 drain timeout 后关闭当前文件 DataChannel；共享 PeerConnection 保留，接收端按 abandonedAttemptId 精确释放同一活动 attempt，之后走原有冷却和重试。
+- 跨隧道来源：请求绑定源隧道 deviceId、签名 grant 和精确 recordMessageId；批量转发逐条确认，超时查询目标记录，未知结果沿用稳定消息 ID。
+- 缓存：元数据游标避免枚举时加载所有 Blob；垃圾清理前重新检查引用、会话归属和最新目录，任何读取错误都停止删除。
+- 磁链 Relay：start/chunk/complete 处理结果通过 Socket.IO ACK 返回。
