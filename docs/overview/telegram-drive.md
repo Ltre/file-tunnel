@@ -1,7 +1,7 @@
 # Telegram 虚拟网盘：身份、文件系统、上传、流媒体与管理
 
-> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
-> **文档更新时间**：`2026-11-07`
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **文档更新时间**：`2026-11-17`
 > **重要现状**：网盘共享元数据已改用 node:sqlite 的磁盘 SQLite WAL（当前 schema 6）；S3 Compatible 子集、共享 Content Object、渐进上传、回收站、协同挂载等均已合入。S3 凭据、上传暂存、Telegram Chat 字典等仍有独立文件；不等于实现完整 AWS S3 或多实例分布式一致性。
 
 ## 1. 产品初衷
@@ -781,3 +781,25 @@ Content 在仍有引用、租约、历史已确认关联或可疑频道别名时
 - 网盘路径/文件跳转、来源定位、转发选择弹层和资源浏览器的历史导航在 10—11 月修复了滚动、关闭和迟到响应错位。网盘文件是否真的保存成功、是否能定位到目标，必须由原生索引与回执证明，不能因为 Snackbar 消失就默认成功。
 - 文件保存的 HTML ZIP 更新涉及特殊编辑权限：已转发的原记录不等于编辑者获得整个来源隧道权限；创建者专用凭据和异步镜像由 `server/web-zip-credentials.js`、`server/web-zip-sync.js` 单独核验，详情见 [web-workshop.md](./web-workshop.md)。
 - 串流台读取网盘资源通过独立受限 `server/streaming-disk.js` 适配器，读取时仍检查源对象/Content 版本和审核标记，不给节目观看者源账号的管理登录凭据；它不是改变网盘全部文件 API 的公共匿名读取授权。
+
+## 33. 2026-11-07—10：默认分区名称、待转存预检与进度流限制
+
+### 默认分区名称与手动命名
+
+`server/disk-partitions.js` 在公开分区数据中增加 `nameIsDefault`，用来区分系统生成的默认显示名与用户明确输入的名称。新建默认分区设置该标记；用户执行重命名后清除标记。旧数据兼容时，只有默认分区显示名为“默认分区”且创建/更新时间相同的旧记录才推断为系统默认名。前端编辑框对默认名留空并显示 placeholder；明确命名（即使恰好与系统文案相同）仍保留为真实名称。
+
+### 待转存恢复前置核验
+
+`DiskPendingSave.resume()` 在继续服务器待转存前先执行目标和来源预检：
+
+- 目标账号必须可登录；目标分区需仍存在、处于 ACTIVE，目标目录需能重新列出。
+- 随后复核来源任务的完成版本/大小及服务端完成回执。目标目录被删除、来源版本变化、回执未知或登录失效时，不应直接重试写入。
+- 前端经 `DiskClient.withActivity()` 把“正在核验目标目录和来源版本”登记为账号活动，账号切换和任务提示能看到该阶段；只有核验通过才进入原有继续/恢复逻辑。
+
+### HTTP 连接池与界面文案
+
+- `client/disk-client.js` 对辅助上传进度 EventSource 设最多 **2 条并发流**；同一 operation 的旧流会先关闭，超额的新辅助流不再建立，普通操作轮询仍负责更新任务状态。这是为了避免 HTTP/1 每源连接数被进度流占满，影响目录读取、上传和操作轮询。
+- 网盘文件菜单中的“下载并缓存”改为“下载”，底层仍调用原来的 `downloadTelegramDriveItem()`；并未取消已有缓存、预览或资源复用机制。
+- 管理员权限页面的隧道选择器现在先匹配实际下拉选项：匹配的 ID 选中下拉项并清空手动输入；不匹配的 ID 才进入手动模式并禁用下拉。保存完成后保持当前模式，手动输入变成有效下拉项或清空后可恢复下拉操作。该交互见 [admin-security-deployment.md](./admin-security-deployment.md)。
+
+回归：`tests/pending-save-preflight-261108.browser.cjs`、`tests/disk-partitions.test.cjs`、`tests/disk-native-mount-ui.test.cjs`、`tests/disk-client.test.cjs`、`tests/admin-confirm-261108.browser.cjs`。
