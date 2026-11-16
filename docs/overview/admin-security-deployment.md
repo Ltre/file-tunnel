@@ -469,7 +469,7 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 `server/admin-form-cache.js` 新增管理员鉴权的 `/api/admin-forms/{sns-dl|youtube-premium-dl}` API，挂载时由 `adminAuth.requireAuth` 保护，所有响应使用 `Cache-Control: no-store`。它保存的是两类下载页面的**表单草稿快照**，不是抓取任务、Cookie、登录凭据或下载文件。
 
 - 数据分别保存在 `SERVER_DATA_DIR/admin-forms/sns-dl/` 与 `youtube-premium-dl/`，每份表单一个 JSON 文件；`.sequence.json` 提供服务端递增编号，避免不同浏览器本地 TAB 编号冲突。
-- 服务端只接收白名单字段（模式、URL、音乐/缓存选项、截取区间、备注、手写格式等），另保存候选格式解析结果和选中格式 ID；单份序列化数据上限 2 MiB。不会接收 Cookie 或 arbitrary 文件路径。
+- 服务端只接收白名单字段（模式、URL、音乐/缓存选项、截取区间、备注、手写格式等），另保存候选格式解析结果和选中格式 ID；单份序列化数据上限 2 MiB；表单字段按白名单过滤，另保存要求包含 `formats` 数组的解析结果对象和选中 ID。该接口不是 Cookie 凭据同步 API，也不负责下载任务状态。
 - 更新和删除必须携带当前 `revision`，客户端身份由稳定 `clientKey` 关联。每种表单串行执行，文件先写唯一临时文件再原子 rename；首次保存重试用相同 clientKey 返回已接受快照，不覆盖迟到的新版本。revision 不匹配返回 409，不静默覆盖。
 - 新浏览器可以加载云端表单；复制出的新 TAB 是本地草稿，不自动共享云端 ID。若服务器版本更新而本地有不同内容，保留本地副本；远端已删除时也保留本地内容。提交下载任务后清理云表单与任务提交/执行解耦，清理失败只保留可重试的清理待办，不重新提交下载任务。
 - API 路由位于 `server.js`，前端共用 `client/download-form-tabs.js`，SNS 与 YouTube Premium 页面分别传入 `serverForms: 'sns-dl'` / `'youtube-premium-dl'`。
