@@ -1,6 +1,6 @@
 # 网盘高级能力：协同、分享、S3、回收站与编辑 — 思维导图
 
-> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
 > **文档更新时间**：2026-10-16  
 > **状态**：现有功能与运行边界  
 > **主要参考**：[../telegram-drive.md](./../telegram-drive.md)、[../../telegram-drive-content-objects.md](./../../telegram-drive-content-objects.md)、[../../telegram-drive-s3-compatible.md](./../../telegram-drive-s3-compatible.md)
@@ -298,3 +298,10 @@ mindmap
 ```
 
 注意：该图概括细节与交互边界；具体调用链、迁移过程、失败回滚及版本差异以链接的模块文档和实际源码为准。
+
+## 2026-11-07—10 增量
+
+- 默认分区公开 `nameIsDefault`，区分系统预填名称与用户显式命名；旧默认分区仅在显示名和时间戳条件匹配时推断。
+- 待转存恢复先验证目标账号、目标分区仍 ACTIVE、目标目录可读取，再核对来源版本/完成回执；验证过程显示为账号活动。
+- 辅助上传进度 EventSource 最多并发两条，避免占满 HTTP/1 每源连接池；超额进度流不创建，任务轮询仍保留。
+- 文件菜单“下载并缓存”改为“下载”，调用的仍是原下载逻辑。
