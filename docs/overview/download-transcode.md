@@ -585,7 +585,7 @@ X/Twitter 的帖子正文、作者名称、用户名/头像、最多多张配图
 - SNS `pages/sns-dl.html` 与 YouTube Premium `pages/youtube-premium-dl.html` 分别绑定服务端表单类型。带 `☁|` 的 TAB 表示当前快照已保存到服务器；编号由服务器序列分配，和本浏览器 TAB 的显示顺序无关。
 - 云端保存包含白名单表单参数、完整格式候选解析结果、已选格式、稳定 `clientKey`、revision 和更新时间。新浏览器可读取；复制 TAB 仍是本地草稿；删除云 TAB 先按 revision 删除对应服务端副本。
 - 本地旧版本与服务端新 revision 冲突时不静默覆盖用户输入；首次保存的迟到响应不会把已经提交并清空的表单重新标成云端保存。任务成功提交后清理表单副本，清理失败只保留可重试清理记录，不重提抓取任务。
-- 这是**表单跨浏览器保存**，不是把 SNS/YouTube 下载任务同步到其它设备，也不共享 Cookie、私人账号或服务器输出文件。服务端权限、存储与冲突语义见 [admin-security-deployment.md](./admin-security-deployment.md)。
+- 这是**表单跨浏览器保存**，不是把 SNS/YouTube 下载任务同步到其它设备，也不是 Cookie 凭据同步或服务器输出文件共享。页面提交白名单表单字段和格式解析结果，不把 Cookie 作为表单字段上传。服务端权限、存储与冲突语义见 [admin-security-deployment.md](./admin-security-deployment.md)。
 
 ### 视频转码进度和日志
 
