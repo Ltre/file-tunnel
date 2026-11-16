@@ -269,7 +269,7 @@ function accountUiFixture(remaining = { identity: { id: 'bob' }, accounts: [{ id
     const ui = fs.readFileSync(path.join(__dirname, '../client/disk-ui.js'), 'utf8');
     const start = ui.indexOf('function rememberTelegramDriveActiveAccount('), end = ui.indexOf('\nfunction appendTelegramDriveAddAccount(', start);
     const logoutStart = ui.indexOf('async function logoutTelegramDrive('), logoutEnd = ui.indexOf('\nasync function manageTelegramDriveSpaces(', logoutStart);
-    const startupLine = ui.split('\n').find(line => line.includes("const saved = telegramDriveEntryQuery.get('disk_account')"));
+    const startupLine = ui.split('\n').find(line => line.includes('const saved =') && line.includes("telegramDriveEntryQuery.get('disk_account')"));
     // Every execution below represents a fresh page load, with a fresh entry snapshot.
     const startupSelection = startupLine && `(() => { const telegramDriveEntryQuery = new URLSearchParams(location.search); ${startupLine} })();`;
     assert.ok(start >= 0 && end > start && logoutStart >= 0 && logoutEnd > logoutStart && startupSelection, '测试使用实际账号记录、切换、退出函数与实际启动解析逻辑');
@@ -303,7 +303,9 @@ test('从显式账号链接切换后更新地址和历史状态；刷新采用�
     assert.equal(updated.hash, '#record'); assert.equal(updated.searchParams.has('collaboration'), false, '不能刷新后重放前一账号的协同定位');
     assert.equal(previewOptions[0]?.replaceHistory, true, '切换账号不得通过关闭预览的history.back恢复旧账号URL');
     client.setAccount(''); storage.set('telegram-drive-active-account', 'alice');
-    vm.runInContext(startupSelection, context); assert.equal(client.getAccount(), 'bob', '刷新时URL的新账号优先于其它页面写入的localStorage账号');
+    vm.runInContext(startupSelection, context); assert.equal(client.getAccount(), 'alice', '待转存链接中的目标账号不能越过账号确认流程，启动时沿用当前活跃账号');
+    const regular = new URL(location.href); regular.searchParams.delete('pendingSave'); location.href = regular.href; location.search = regular.search;
+    vm.runInContext(startupSelection, context); assert.equal(client.getAccount(), 'bob', '普通显式账号链接刷新时仍优先于其它页面写入的localStorage账号');
 });
 
 test('退出当前账号后URL与剩余账号一致，最后退出清除选择器，退出其它账号不改变当前浏览状态', async t => {

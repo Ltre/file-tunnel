@@ -579,6 +579,8 @@ function registerFileAssetHandlers(socket, context) {
                 if (requestId) meta.requestId = requestId;
             }
             if (status === 'completed' || status === 'failed') releaseAssignment(record, assetId, to, transferId);
+            const expectedAttemptId = `${String(requestId || '').replace(/[^a-zA-Z0-9_.:-]/g, '-')}-p2p-${transferId || 'full'}`.slice(0, 120);
+            const abandonedAttemptId = status === 'failed' && requestId && data?.abandonedAttemptId === expectedAttemptId ? expectedAttemptId : undefined;
             const targetSocket = deviceSockets.get(to);
             if (targetSocket) {
                 targetSocket.emit('file-asset-transfer-status', {
@@ -586,7 +588,8 @@ function registerFileAssetHandlers(socket, context) {
                     from: deviceId,
                     transferId,
                     status,
-                    requestId
+                    requestId,
+                    ...(abandonedAttemptId ? { abandonedAttemptId } : {})
                 });
             }
             historyLog('file-asset-transfer-status', {
@@ -781,6 +784,8 @@ function registerFileAssetHandlers(socket, context) {
     });
 
     socket.on('file-asset-relay-complete', async (data, ack) => {
+        const startedAt = Date.now();
+        let phase = 'validate';
         try {
             const { sessionId, to, assetId, transferId, attemptId } = data || {};
             const { deviceId } = current();
@@ -804,7 +809,9 @@ function registerFileAssetHandlers(socket, context) {
                 ackFail(ack, 'target-offline');
                 return;
             }
+            phase = 'receiver-complete-ack';
             await emitWithAck(target, 'file-asset-relay-complete', { assetId, from: deviceId, transferId, attemptId: relay.attemptId || relayAttemptId }, RELAY_COMPLETE_ACK_TIMEOUT);
+            phase = 'record-completion';
             ackOk(ack);
             historyLog('file-asset-relay-completed', { sessionId, deviceId, targetDeviceId: to, socketId: socket.id, clientIp, asset: relay.asset, transfer: relay.transfer, attemptId: relay.attemptId || relayAttemptId });
             if (recordTransferEvent) {
@@ -827,7 +834,9 @@ function registerFileAssetHandlers(socket, context) {
                 }));
             }
         } catch (err) {
-            console.error('file-asset-relay-complete error:', err);
+            const trace = { phase, elapsedMs: Date.now() - startedAt, socketId: socket.id };
+            for (const key of ['sessionId', 'to', 'assetId', 'transferId', 'attemptId']) trace[key] = typeof data?.[key] === 'string' ? data[key].slice(0, 120) : '';
+            console.error('file-asset-relay-complete error:', err, trace);
             ackFail(ack, err.message || 'relay-complete-failed');
         }
     });

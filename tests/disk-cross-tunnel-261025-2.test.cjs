@@ -103,7 +103,7 @@ function forwardingFixture(t,{mode='collection',failAfter=Infinity}={}) {
     }};
     deviceSockets.set(f.viewer,viewerSocket);registerFileAssetHandlers(viewerSocket,fileContext(f.target,f.viewer));
     let middleware;
-    const gateContext={...f,currentSession:f.target,currentDevice:f.viewer,trustedInternalClient:false,socket:{data:{},use:fn=>{middleware=fn;}},
+    const gateContext={...f,currentSession:f.target,currentDevice:f.viewer,trustedInternalClient:false,socket:{...viewerSocket,use:fn=>{middleware=fn;}},
         emitSocketError:(name,message)=>events.push({name,data:{message}})};
     vm.runInNewContext(section(server,'    socket.use(([event,data],next)=>{',"    socket.on('session-short-code-update'"),gateContext);
     let seq=0;const sourceState={socket:sourceSocket,sessionId:f.source,deviceId:f.provider,deviceName:'source device'};

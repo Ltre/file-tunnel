@@ -37,7 +37,7 @@ function fixture() {
         DiskDirectoryPicker:{ choose:async options => { pickerOptions.push(options); return '授权根/子目录'; } },
         DiskMountUI:{ open:(mount, options) => { opened.push({ mount, options }); } }
     };
-    const context = vm.createContext({ telegramDriveMountContext:null, window, document:{ createElement:() => ({ append() {}, setAttribute() {} }), createTextNode:value => value },
+    const context = vm.createContext({ telegramDriveMountContext:null, window, document:{ createElement:() => ({ dataset:{}, append() {}, setAttribute() {} }), createTextNode:value => value },
         telegramDriveSpaces:[{ id:'partition-a', scopeKey:'scope-a' }],
         openTelegramDriveDialog:async () => 'collab-target', confirmTelegramDriveAction:async () => true,
         openTelegramDriveMount:async(mount)=>opened.push({mount,options:{}}),

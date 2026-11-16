@@ -198,7 +198,7 @@
         async function eraseFilter(target) {
             const total = await count(target);
             if (!total) { status.textContent = t('没有匹配的日志'); return; }
-            if (!global.confirm(t('确定删除匹配范围内的 {0} 条日志？此操作不可撤销。',total))) { render(); return; }
+            if (!(window.TunnelI18n?.confirm || global.confirm)(t('确定删除匹配范围内的 {0} 条日志？此操作不可撤销。',total))) { render(); return; }
             await remove(target); await load(true); status.textContent = t('已删除 {0} 条日志',total);
         }
         erase.onclick = () => run(() => eraseFilter(filter)); selected.onclick = () => run(() => eraseFilter(selectionFilter()));

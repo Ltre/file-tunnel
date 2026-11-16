@@ -7,6 +7,13 @@ const vm = require('node:vm');
 // Unit-level regression coverage only; browser ICE/DataChannel behavior requires an end-to-end test.
 const ROOT = path.resolve(__dirname, '..');
 
+test('chat and signaling retain independent bounded per-socket rate limits',()=>{
+    const source=fs.readFileSync(path.join(ROOT,'server.js'),'utf8'),start=source.indexOf('    let messageCount = 0;'),end=source.indexOf("    socket.on('register-profile-device'",start),context={Date};
+    vm.runInNewContext(source.slice(start,end),context);
+    for(let n=0;n<100;n++)assert.equal(context.checkMessageRate(),true);assert.equal(context.checkMessageRate(),false);
+    for(let n=0;n<100;n++)assert.equal(context.checkSignalRate(),true);assert.equal(context.checkSignalRate(),false);
+});
+
 test('SNS metadata parsing prefers local EJS and allows a bounded production wait', () => {
     const source = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8');
     assert.match(source, /Number\(process\.env\.SOCIAL_YTDLP_TIMEOUT_MS\) \|\| 90000/);
@@ -541,7 +548,7 @@ test('the tunnel short-code inputs use one browser input path', () => {
     const start = source.indexOf('function initSessionLanding(');
     const end = source.indexOf('\nfunction openSession', start);
     const landingSource = source.slice(start, end);
-    const inputStart = landingSource.indexOf("input.addEventListener('input'");
+    const inputStart = landingSource.indexOf('const commitInput');
     const inputEnd = landingSource.indexOf("input.addEventListener('keydown'", inputStart);
     const inputSource = landingSource.slice(inputStart, inputEnd);
 
@@ -549,6 +556,8 @@ test('the tunnel short-code inputs use one browser input path', () => {
     assert.doesNotMatch(landingSource, /addEventListener\('beforeinput'/);
     assert.match(inputSource, /event\.data \|\| event\.target\.value/);
     assert.match(inputSource, /window\.setTimeout/);
+    assert.match(inputSource, /event\.isComposing/);
+    assert.match(inputSource, /compositionend/);
     assert.doesNotMatch(inputSource, /fillCode/);
 });
 
@@ -691,6 +700,50 @@ test('P2P backpressure does not start a competing relay upload', async () => {
     assert.equal(sent, false);
     assert.equal(harness.metrics.p2pSends, 1);
     assert.equal(harness.metrics.relaySends, 0);
+});
+
+for (const reason of ['File asset channel backpressure stalled', 'File asset channel backpressure timeout: send queue is full', 'File asset channel drain timeout']) {
+    test('exhausted P2P backpressure closes only the failed file channel and the retry can relay: ' + reason, async () => {
+        const harness = createFileAssetHarness();
+        harness.transfer.sendViaDataChannel = async () => { harness.metrics.p2pSends++; throw Error(reason); };
+        const request = { asset: { id: 'asset-stall', name: 'fixture.bin', size: 4 }, from: 'device-b', requestId: 'request-stall' };
+        assert.equal(await harness.transfer.sendRequestedAsset(request), false);
+        assert.equal(harness.metrics.relaySends, 0, 'never run relay alongside the stalled P2P attempt');
+        assert.equal(harness.channels[0].readyState, 'closed', 'close the abandoned per-file channel so the receiver can release its stale task');
+        assert.ok(harness.transfer.p2pUnavailablePeers.get('device-b') > Date.now());
+        assert.equal(await harness.transfer.sendRequestedAsset({ ...request, requestId: 'request-retry' }), true);
+        assert.equal(harness.metrics.relaySends, 1);
+        harness.transfer.p2pUnavailablePeers.set('device-b', Date.now() - 1);
+        harness.transfer.sendViaDataChannel = async () => { harness.metrics.p2pSends++; };
+        assert.equal(await harness.transfer.sendRequestedAsset({ ...request, requestId: 'request-recovered' }), true);
+        assert.equal(harness.metrics.p2pSends, 2, 'P2P is retried after the existing five-second cooldown');
+        assert.equal(harness.metrics.relaySends, 1);
+    });
+}
+
+test('an explicit abandoned P2P attempt releases the matching receiver, but stale and ordinary failure notices do not', async () => {
+    const harness = createFileAssetHarness(), transfer = harness.transfer, retried = [];
+    transfer.desiredAssets.set('asset-stall', 'device-b'); transfer.requestIds.set('asset-stall', 'request-stall');
+    transfer.transfers.set('asset-stall', { from: 'device-b', transport: 'p2p', attemptId: 'request-stall-p2p-full' });
+    transfer.retryDownload = (...args) => retried.push(args);
+    const status = { assetId: 'asset-stall', from: 'device-b', status: 'failed', requestId: 'request-stall' };
+    await transfer.handleTransferStatus(status);
+    await transfer.handleTransferStatus({ ...status, abandonedAttemptId: 'older-p2p-full' });
+    await transfer.handleTransferStatus({ ...status, from: 'unrelated-device', abandonedAttemptId: 'request-stall-p2p-full' });
+    assert.equal(retried.length, 0);
+    await transfer.handleTransferStatus({ ...status, abandonedAttemptId: 'request-stall-p2p-full' });
+    assert.equal(retried.length, 1);
+});
+
+test('an abandoned range releases only the matching P2P range, retaining other active ranges', async () => {
+    const transfer = createFileAssetHarness().transfer, retried = [], ranges = new Map([
+        ['range-a', { from: 'device-b', transport: 'p2p', attemptId: 'request-range-p2p-range-a', active: true }],
+        ['range-b', { from: 'device-c', transport: 'p2p', attemptId: 'other-attempt', active: true }]
+    ]);
+    transfer.desiredAssets.set('asset-range', null); transfer.multiSourceTransfers.set('asset-range', { ranges });
+    transfer.retryMultiSourceRange = (...args) => retried.push(args);
+    await transfer.handleTransferStatus({ assetId: 'asset-range', from: 'device-b', transferId: 'range-a', status: 'failed', requestId: 'request-range', abandonedAttemptId: 'request-range-p2p-range-a' });
+    assert.equal(retried.length, 1); assert.equal(retried[0][1], 'range-a'); assert.equal(ranges.get('range-b').active, true);
 });
 
 test('relay start returns the receiver rejection to the server acknowledgement', async () => {

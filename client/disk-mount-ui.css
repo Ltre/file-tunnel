@@ -8,6 +8,7 @@
 .disk-mount-picker-body{display:grid;gap:10px;min-width:0;min-height:0}
 .disk-mount-picker-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .disk-mount-picker-controls label,.disk-mount-name-label{display:grid;gap:5px;min-width:0;font-size:12px;font-weight:700;color:var(--text-muted,#586a7e)}
+.disk-mount-picker-controls>label:only-child{grid-column:1/-1;width:100%}
 .disk-mount-picker-controls :is(select,input),.disk-mount-name-label input,.disk-mount-picker-body>input,.disk-mount-picker-body .disk-folder-editor input{box-sizing:border-box;min-width:0;width:100%;padding:9px;border:1px solid var(--panel-border,#cbd6e2);border-radius:9px;background:var(--panel-bg,#fff);color:var(--text-main,#243349);font:inherit}
 .disk-mount-picker-body>p{margin:0;font-size:12px;color:var(--text-muted,#586a7e)}
 .disk-mount-picker-body .disk-destination-tree{position:relative;min-height:130px;max-height:min(39dvh,370px);overflow:auto;padding:7px;border:1px solid var(--panel-border,#cbd6e2);border-radius:11px;background:var(--surface-soft,#f1f6fb)}

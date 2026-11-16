@@ -58,9 +58,9 @@ async function blockWeChatEmbeddedBrowser() {
     document.getElementById('wechatCopyUrlBtn')?.addEventListener('click', async () => {
         try {
             await navigator.clipboard.writeText(url);
-            alert('页面地址已复制，请用系统浏览器打开。');
+            (window.TunnelI18n?.alert || alert)('页面地址已复制，请用系统浏览器打开。');
         } catch (_) {
-            alert(url);
+            (window.TunnelI18n?.alert || alert)(url);
         }
     });
 }
@@ -1001,7 +1001,7 @@ async function saveToStore(storeName, data) {
     if (storeName === 'sessions' && state.isExitingTunnel && data?.sessionId === state.sessionId) return;
     if (storeName === 'sessions' && data?.sessionId) updateSessionDirectoryCache(data);
     if (storeName === 'files' && data?.id && !Object.hasOwn(data, 'data') && data.cacheCleared !== true) {
-        const existing = await getFromStore('files', data.id).catch(() => null);
+        const existing = await getFromStore('files', data.id);
         if (hasCompleteFileCache(existing, data)) {
             data = {
                 ...data,
@@ -1356,7 +1356,8 @@ function initSessionLanding({ hidden = false, overlay = false } = {}) {
             option.value = session.sessionId;
             const code = normalizeLocalShortCode(session.shortCode);
             const remark = String(session.remark || '').trim();
-            option.textContent = `${code || session.sessionId.slice(0, 8)}${remark ? ` · ${remark}` : ''}${session.sessionId === recentId ? ' · 最近使用' : ''}`;
+            option.dataset.i18nRaw = 'true';
+            option.textContent = `${code || session.sessionId.slice(0, 8)}${remark ? ` · ${remark}` : ''}${session.sessionId === recentId ? ' · ' + (window.TunnelI18n?.t('最近使用') || '最近使用') : ''}`;
             if (session.sessionId === (selectedId || recentId)) option.selected = true;
             sessionSelect.appendChild(option);
         });
@@ -1408,6 +1409,7 @@ function initSessionLanding({ hidden = false, overlay = false } = {}) {
         maybeAutoJoin();
     };
     initSessionLanding.scan = fillCode;
+    window.addEventListener('drop2tunnel-language-changed', () => initSessionLanding.refresh?.());
     document.getElementById('landingScanBtn').onclick = () => openTunnelCodeScanner().catch(error => { note.textContent=error.message; });
     const join = async () => {
         if (joinInProgress) return;
@@ -1427,7 +1429,8 @@ function initSessionLanding({ hidden = false, overlay = false } = {}) {
     };
 
     inputs.forEach((input, index) => {
-        input.addEventListener('input', event => {
+        const commitInput = event => {
+            if (event.isComposing) return;
             const value = String(event.data || event.target.value).toUpperCase().replace(/[^A-Z0-9]/g, '');
             event.target.value = value.slice(-1);
             if (event.target.value && inputs[index + 1]) {
@@ -1436,7 +1439,9 @@ function initSessionLanding({ hidden = false, overlay = false } = {}) {
                 }, 0);
             }
             maybeAutoJoin();
-        });
+        };
+        input.addEventListener('input', commitInput);
+        input.addEventListener('compositionend', commitInput);
         input.addEventListener('keydown', event => {
             if (event.key === 'Backspace' && !input.value && inputs[index - 1]) inputs[index - 1].focus();
             if (event.key === 'Enter') join();
@@ -1990,7 +1995,7 @@ function initSocket() {
     state.socket.on('session-deleted', async data => {
         if (data?.sessionId !== state.sessionId) return;
         await purgeLocalSession(data.sessionId);
-        alert('当前传输隧道已由管理员删除。');
+        (window.TunnelI18n?.alert || alert)('当前传输隧道已由管理员删除。');
         window.location.href = `${window.location.origin}/wasted?sessionId=${encodeURIComponent(data.sessionId)}`;
     });
     state.socket.on('device-profile', data => {
@@ -2040,7 +2045,7 @@ function initSocket() {
         storeTunnelAuthorization(data?.sessionId,data);
         if (data?.sessionId) openSession(data.sessionId);
     });
-    state.socket.on('short-code-error', (data) => alert(data?.message || '短码无法加入会话'));
+    state.socket.on('short-code-error', (data) => (window.TunnelI18n?.alert || alert)(data?.message || '短码无法加入会话'));
     state.socket.on('clipboard-update', (data) => receiveSharedClipboard(data));
 
     state.socket.on('signal', (data) => {
@@ -2947,14 +2952,13 @@ function announceEditorAsset(asset) {
 }
 
 async function announceStoredEditorAssets() {
+    const sessionId = state.sessionId;
     try {
-        let files = [];
-        if (typeof IDBKeyRange !== 'undefined') {
-            files = await getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId));
-        } else {
-            files = (await getAllFromStore('files')).filter(file => file.sessionId === state.sessionId);
-        }
-        files.filter(file => file.isEditorAsset && file.data).forEach(announceEditorAsset);
+        // Presence only needs metadata. Reading every cached video here can
+        // materialize gigabytes of ArrayBuffers just to find editor images.
+        const files = await getCurrentSessionFileInventory();
+        if (state.sessionId !== sessionId) return;
+        files.filter(file => file.isEditorAsset && hasCompleteFileInventoryCache(file, file)).forEach(announceEditorAsset);
     } catch (err) {
         console.error('Failed to announce editor assets:', err);
         historyLog('editor-asset-announce-failed', { error: err.message });
@@ -3495,6 +3499,7 @@ function initFileAssetTransfer() {
     fileAssetTransfer = new window.FileAssetTransfer({
         getSocket: () => state.socket,
         getSessionId: () => state.sessionId,
+        getTunnelAuthorization: tunnelAuthorization,
         getPeer: deviceId => state.peers.get(deviceId),
         connectPeer: connectToPeerForFileAsset,
         ensurePeerOffer: ensurePeerOfferForFileAsset,
@@ -4912,10 +4917,16 @@ function rememberWebZipEditCredential(credential, sessionId, messageId, deviceId
 async function requestWebZipEditCredential(fileInfo, messageId) {
     const sessionId=state.sessionId, deviceId=state.deviceId;
     if (!state.socket?.connected) throw Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'));
+    let editCredential='';
+    try { editCredential=localStorage.getItem(`webZipEditCredential:${deviceId}:${sessionId}:${messageId}`)||''; } catch (_) {}
     const response=await new Promise((resolve,reject)=>state.socket.timeout(10000).emit('web-zip-edit-credential', {
-        sessionId,messageId,fileId:fileInfo.id
+        sessionId,messageId,fileId:fileInfo.id,editCredential
     },(error,result)=>error?reject(Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'))):resolve(result)));
-    if (!response?.ok || !response.credential || state.sessionId!==sessionId || state.deviceId!==deviceId) throw Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'));
+    if (!response?.ok) {
+        const errors={WEB_ZIP_SOURCE_UNVERIFIED:'原网页关联尚未核验，请保留当前草稿并核对原记录或编辑凭据。',WEB_ZIP_EDIT_CREDENTIAL_INVALID:'网页编辑凭据已失效，请重新向创建者申请编辑权限。',WEB_ZIP_EDIT_DENIED:'网页编辑权限已变化，请重新向创建者申请编辑权限。'};
+        throw Error(formatWebZipText(errors[response?.error]||'网页编辑凭据未能取得，请检查连接后重试'));
+    }
+    if (!response.credential || state.sessionId!==sessionId || state.deviceId!==deviceId) throw Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'));
     rememberWebZipEditCredential(response.credential,sessionId,messageId,deviceId);
     return response.credential;
 }
@@ -4973,7 +4984,7 @@ function showWebZipEditDialog(fileInfo, context = {}) {
     document.body.append(dialog);
     const close = () => dialog.remove(); dialog.querySelector('.web-zip-dialog-close').onclick = close;
     dialog.addEventListener('click', event => { if (event.target === dialog) close(); });
-    dialog.querySelector('[data-web-zip-action="request"]')?.addEventListener('click', async () => { try { await requestWebZipEditPermission(fileInfo); close(); } catch (error) { alert(error.message); } });
+    dialog.querySelector('[data-web-zip-action="request"]')?.addEventListener('click', async () => { try { await requestWebZipEditPermission(fileInfo); close(); } catch (error) { (window.TunnelI18n?.alert || alert)(error.message); } });
     for (const action of ['edit', 'copy']) dialog.querySelector(`[data-web-zip-action="${action}"]`)?.addEventListener('click', async event => {
         const button = event.currentTarget, text = button.textContent;
         button.disabled = true; button.textContent = '正在导入…';
@@ -4986,7 +4997,7 @@ function showWebZipEditDialog(fileInfo, context = {}) {
             if (!dialog.isConnected) return;
             const draft = await window.WebWorkshop.importPackage(fileInfo, blob, { ...context, revealEditor: true }, action === 'edit' ? 'update' : 'copy');
             if (draft) close();
-        } catch (error) { alert(`网页 ZIP 导入失败：${error.message}`); }
+        } catch (error) { (window.TunnelI18n?.alert || alert)(`网页 ZIP 导入失败：${error.message}`); }
         finally { button.disabled = false; button.textContent = text; }
     });
 }
@@ -5662,7 +5673,7 @@ async function sendClipboardImagesToTunnel() {
         });
     } catch (err) {
         historyLog('clipboard-images-send-failed', { count:files.length, error:err.message });
-        alert(`粘贴图片发送失败：${err.message}`);
+        (window.TunnelI18n?.alert || alert)(`粘贴图片发送失败：${err.message}`);
     } finally {
         clipboardImageSendInProgress = false;
         renderClipboardImagePasteArea();
@@ -6016,8 +6027,8 @@ function showHistoryBackupDialog() {
         const button = event.target.closest('[data-action]');
         if (!button && event.target !== overlay) return;
         overlay.remove();
-        if (button?.dataset.action === 'metadata') exportTransferHistory(false).catch(err => alert(`导出失败：${err.message}`));
-        if (button?.dataset.action === 'full') exportTransferHistory(true).catch(err => alert(`导出失败：${err.message}`));
+        if (button?.dataset.action === 'metadata') exportTransferHistory(false).catch(err => (window.TunnelI18n?.alert || alert)(`导出失败：${err.message}`));
+        if (button?.dataset.action === 'full') exportTransferHistory(true).catch(err => (window.TunnelI18n?.alert || alert)(`导出失败：${err.message}`));
         if (button?.dataset.action === 'import') document.getElementById('historyBackupInput')?.click();
     });
     document.body.appendChild(overlay);
@@ -6123,7 +6134,7 @@ async function handleFileOffer(data) {
                 showProgress(fileInfo.id, fileInfo.name, 0);
             } else {
                 console.error('Data channel not ready after timeout');
-                alert('连接超时，无法接收文件');
+                (window.TunnelI18n?.alert || alert)('连接超时，无法接收文件');
                 state.socket.emit('file-answer', {
                     sessionId: state.sessionId,
                     to: from,
@@ -6209,12 +6220,12 @@ async function handleFileAnswer(data) {
             await sendFileViaDataChannel(from, transfer.file, transfer.fileInfo);
         } else {
             console.error('Data channel not ready, cannot send file');
-            alert('连接超时，文件传输失败');
+            (window.TunnelI18n?.alert || alert)('连接超时，文件传输失败');
             hideProgress(fileId);
         }
     } else {
         fileTransfers.delete(fileId);
-        alert(`对方拒绝了文件: ${transfer.fileInfo.name}`);
+        (window.TunnelI18n?.alert || alert)(`对方拒绝了文件: ${transfer.fileInfo.name}`);
     }
 }
 
@@ -6223,7 +6234,7 @@ async function sendFileViaDataChannel(deviceId, file, fileInfo) {
     if (!channel || channel.readyState !== 'open') {
         console.error('Data channel not ready for device:', deviceId);
         console.log('Available channels:', Array.from(state.dataChannels.keys()));
-        alert('数据传输通道未就绪');
+        (window.TunnelI18n?.alert || alert)('数据传输通道未就绪');
         return;
     }
 
@@ -6253,7 +6264,7 @@ async function sendFileViaDataChannel(deviceId, file, fileInfo) {
             // 检查channel状态
             if (channel.readyState !== 'open') {
                 console.error('Data channel closed during transfer');
-                alert('传输中断：数据通道已关闭');
+                (window.TunnelI18n?.alert || alert)('传输中断：数据通道已关闭');
                 hideProgress(fileInfo.id);
                 return;
             }
@@ -6313,7 +6324,7 @@ async function sendFileViaDataChannel(deviceId, file, fileInfo) {
         }
     } catch (err) {
         console.error('Error sending file:', err);
-        alert('文件传输失败: ' + err.message);
+        (window.TunnelI18n?.alert || alert)('文件传输失败: ' + err.message);
         hideProgress(fileInfo.id);
     }
 }
@@ -6848,7 +6859,7 @@ async function requestMissingFileAssetCache(message, reason) {
     await fileAssetTransfer.request(
         fileInfo.id,
         fileInfo.ownerDeviceId || message.sender,
-        fileInfo
+        { ...fileInfo, recordMessageId: message.id }
     );
     historyLog('file-asset-cache-backfill-requested', {
         reason,
@@ -6870,7 +6881,7 @@ async function requestMissingCollectionAssetCaches(message, reason) {
         await fileAssetTransfer.request(
             fileInfo.id,
             fileInfo.ownerDeviceId || message.sender,
-            fileInfo
+            { ...fileInfo, recordMessageId: message.id }
         ).catch(err => historyLog('collection-asset-cache-request-failed', {
             reason,
             messageId: message?.id,
@@ -8312,13 +8323,13 @@ function renderMessageRecordActions(messageEl, message) {
     if (!message.snsMarkdownProgress) menuItems.push(createRecordActionButton('⧉', '复制文本', '复制记录中的正文、备注和文件名', () => copyTransferRecordText(message.id).catch(error => showAppToast(error.message))));
     menuItems.push(createRecordActionButton(message.favorite ? '★' : '☆', message.favorite ? '取消收藏' : '收藏', message.favorite ? '从已收藏中移除此记录' : '将此传输记录加入已收藏', () => {
         toggleTransferRecordFavorite(message.id).catch(err => {
-            alert(`收藏状态保存失败：${err.message}`);
+            (window.TunnelI18n?.alert || alert)(`收藏状态保存失败：${err.message}`);
         });
     }));
     if (message.type === 'file' || message.type === 'collection') {
         menuItems.push(createRecordActionButton('✎', '备注', '添加或修改这条文件记录的备注', () => {
             editTransferRecordRemark(message.id).catch(err => {
-                alert(`备注保存失败：${err.message}`);
+                (window.TunnelI18n?.alert || alert)(`备注保存失败：${err.message}`);
             });
         }));
     }
@@ -8327,14 +8338,14 @@ function renderMessageRecordActions(messageEl, message) {
     if (message.type === 'file' || message.type === 'collection') {
         menuItems.push(createRecordActionButton('✴↗', '使用光媒分享', message.type === 'collection' ? '将整个合辑作为可恢复光媒任务分享' : '将当前文件通过动态二维码分享', () => {
             shareHistoryMessageViaLight(message.id).catch(err => {
-                alert(`光媒分享失败：${err.message}`);
+                (window.TunnelI18n?.alert || alert)(`光媒分享失败：${err.message}`);
                 historyLog('light-share-record-failed', { messageId: message.id, error: err.message });
             });
         }));
     }
     if (!message.snsMarkdownProgress) menuItems.push(createRecordActionButton('⎇', message.type === 'markdown' ? '发送到其他隧道' : '发到其他隧道', '将这条传输记录转发到另一个隧道', () => {
-        forwardHistoryMessage(message.id).catch(err => {
-            alert(`转发失败：${err.message}`);
+        (async () => { const scope = state.sessionId; const target = await chooseForwardTargetSession(); if (target) { if (state.sessionId !== scope) throw Error('当前隧道已变化，请重新选择转发目标'); await forwardHistoryMessages([message], target); } })().catch(err => {
+            (window.TunnelI18n?.alert || alert)(`转发失败：${err.message}`);
             historyLog('history-message-forward-failed', { messageId: message.id, error: err.message });
         });
     }));
@@ -8343,11 +8354,11 @@ function renderMessageRecordActions(messageEl, message) {
     }
     if (message.type === 'markdown' && !message.snsMarkdownProgress) {
         menuItems.push(createRecordActionButton('☁', '保存到网盘', '将 Markdown 保存到自己的 Telegram 网盘', () => {
-            window.TunnelMarkdown.save(message).catch(error => alert(`资源准备失败：${error.message}`));
+            window.TunnelMarkdown.save(message).catch(error => (window.TunnelI18n?.alert || alert)(`资源准备失败：${error.message}`));
         }));
     } else if (message.type === 'file' || message.type === 'collection') {
         menuItems.push(createRecordActionButton('☁', '保存到网盘', '将本机完整缓存的文件保存到自己的 Telegram 网盘', () => {
-            saveMessageToTelegramDrive(message).catch(error => alert(`保存到 Telegram 网盘失败：${error.message}`));
+            saveMessageToTelegramDrive(message).catch(error => (window.TunnelI18n?.alert || alert)(`保存到 Telegram 网盘失败：${error.message}`));
         }));
     }
     menuItems.push(createRecordActionButton('🗑', '删除', '从会话中删除此记录', () => {
@@ -8389,7 +8400,7 @@ function initHistoryRecordSelection() {
     if (!chat || !toolbar || toolbar.dataset.bound) return;
     toolbar.dataset.bound = '1';
     const panel = toolbar.parentElement;
-    let choosing = false, busy = false, gesture, heldTouch, suppressClick = 0;
+    let choosing = false, busy = false, gesture, heldTouch, suppressClick = 0, selectionAnchor = '';
     let closingHistory = false;
     const historyKey = 'tunnelHistorySelection';
     const t = text => window.TunnelI18n?.t(text) || text;
@@ -8432,6 +8443,7 @@ function initHistoryRecordSelection() {
     function exit({ fromHistory = false } = {}) {
         retainPosition(() => {
             choosing = false;
+            selectionAnchor = '';
             selectedHistoryIds.clear();
             rows().forEach(markSelectedHistoryRow);
             panel.classList.remove('history-selection-active');
@@ -8463,10 +8475,8 @@ function initHistoryRecordSelection() {
         action('发送到其他隧道', async (records, scope) => {
             const target = await chooseForwardTargetSession();
             if (!target) return;
-            for (const record of records) {
-                if (state.sessionId !== scope) throw Error(t('当前隧道已变化'));
-                await forwardHistoryMessage(record.id, target);
-            }
+            if (state.sessionId !== scope) throw Error(t('当前隧道已变化'));
+            await forwardHistoryMessages(records, target);
         }),
         action('创建串流台', records => window.StreamingConsole.importRecords(records, true)),
         action('添加到串流台', records => window.StreamingConsole.importRecords(records)),
@@ -8486,11 +8496,19 @@ function initHistoryRecordSelection() {
         for (const button of toolbar.querySelectorAll('button')) if (button !== cancel) button.disabled = !selected.length || unfinished && Boolean(button.dataset.requiresCompleteRecord);
         count.textContent = selected.length + ' ✓';
     }
-    function toggle(row) {
+    function toggle(row, range = false) {
         const id = row.dataset.messageId;
-        if (selectedHistoryIds.has(id)) selectedHistoryIds.delete(id);
-        else selectedHistoryIds.add(id);
-        markSelectedHistoryRow(row);
+        const currentRows = rows(), from = currentRows.findIndex(item => item.dataset.messageId === selectionAnchor), to = currentRows.indexOf(row);
+        if (range && from >= 0 && to >= 0) {
+            for (const item of currentRows.slice(Math.min(from,to),Math.max(from,to)+1)) {
+                selectedHistoryIds.add(item.dataset.messageId); markSelectedHistoryRow(item);
+            }
+        } else {
+            if (selectedHistoryIds.has(id)) selectedHistoryIds.delete(id);
+            else selectedHistoryIds.add(id);
+            selectionAnchor = id;
+            markSelectedHistoryRow(row);
+        }
         update();
     }
     function activate(row, target, anchor) {
@@ -8545,7 +8563,7 @@ function initHistoryRecordSelection() {
         clearGesture();
     }, true);
     chat.addEventListener('selectstart', event => {
-        if (gesture || Date.now() < suppressClick) event.preventDefault();
+        if (choosing || gesture || Date.now() < suppressClick) event.preventDefault();
     }, true);
     chat.addEventListener('click', event => {
         if (Date.now() >= suppressClick && !choosing) return;
@@ -8553,8 +8571,12 @@ function initHistoryRecordSelection() {
         if (!row) return;
         event.preventDefault();
         event.stopImmediatePropagation();
-        if (choosing && Date.now() >= suppressClick) toggle(row);
+        if (choosing && Date.now() >= suppressClick) toggle(row, event.shiftKey);
     }, true);
+    document.addEventListener('keydown', event => {
+        if (event.key !== 'Escape' || !choosing || event.defaultPrevented || document.querySelector('dialog[open],.modal-overlay.active')) return;
+        event.preventDefault(); event.stopPropagation(); exit();
+    });
     new MutationObserver(() => { if (choosing) update(); }).observe(chat, { childList: true });
 }
 
@@ -8942,6 +8964,42 @@ async function chooseForwardTargetSession() {
     });
 }
 
+function showForwardHistoryProgress(records, done) {
+    const t = source => window.TunnelI18n?.t(source) || source;
+    const overlay = document.createElement('div'); overlay.className = 'send-mode-overlay history-forward-results';
+    const dialog = document.createElement('section'); dialog.className = 'send-mode-dialog history-forward-dialog';
+    dialog.setAttribute('role','dialog'); dialog.setAttribute('aria-modal','true'); dialog.setAttribute('aria-label',t('转发传输记录'));
+    const header = document.createElement('header'), title = document.createElement('h3'); title.textContent = t('转发传输记录');
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'btn btn-secondary'; close.textContent = t('关闭');
+    const list = document.createElement('div'); list.className = 'history-forward-list';
+    const summary = document.createElement('p'); summary.className = 'history-forward-summary'; summary.setAttribute('role','status');
+    const rows = new Map();
+    for (const record of records) {
+        const row = document.createElement('div'); row.className = 'history-forward-row'; row.dataset.recordId = record.id;
+        const content = document.createElement('div'), excerpt = document.createElement('div'); excerpt.className = 'history-forward-excerpt'; excerpt.dataset.i18nRaw = '';
+        excerpt.textContent = record.fileInfo?.name || record.collection?.name || (typeof recordTextPayload === 'function' ? recordTextPayload(record).text : record.text) || record.id;
+        excerpt.title = excerpt.textContent;
+        const id = document.createElement('small'); id.className = 'history-forward-id'; id.dataset.i18nRaw = ''; id.textContent = record.id;
+        const status = document.createElement('span'); status.className = 'history-forward-status';
+        content.append(excerpt,id); row.append(content,status); list.append(row); rows.set(record.id,{row,status});
+    }
+    const setState = (id, state, detail = '') => {
+        const entry = rows.get(id); if (!entry) return;
+        entry.row.dataset.state = state;
+        entry.status.classList.toggle('history-forward-spinner', ['waiting','sending','unconfirmed'].includes(state));
+        const label = ({waiting:'等待发送',sending:'正在发送',confirmed:'发送成功',failed:'发送失败',unsent:'尚未发送',unconfirmed:'转发结果尚未确认'})[state];
+        entry.status.textContent = state === 'confirmed' ? '✓' : ['failed','unsent'].includes(state) ? '✕' : '';
+        entry.status.setAttribute('aria-label',t(label)); entry.status.title = t(label) + (detail ? ': ' + t(detail) : '');
+    };
+    for (const record of records) setState(record.id,done.has(record.id)?'confirmed':'waiting');
+    const previousFocus = document.activeElement;
+    const finishClose = () => { document.removeEventListener('keydown',key,true); overlay.remove(); if(previousFocus?.isConnected)previousFocus.focus({preventScroll:true}); };
+    const key = event => { if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();finishClose();} };
+    close.onclick = finishClose; header.append(title,close); dialog.append(header,list,summary); overlay.append(dialog); document.body.append(overlay);
+    document.addEventListener('keydown',key,true); close.focus({preventScroll:true});
+    return {setState,finish(text){summary.textContent=text;}};
+}
+
 async function cloneForwardFileInfo(fileInfo, targetSessionId) {
     const nextId = generateId();
     const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
@@ -8968,7 +9026,7 @@ async function cloneForwardFileInfo(fileInfo, targetSessionId) {
     };
 }
 
-async function forwardHistoryMessage(messageId, targetSessionId) {
+async function forwardHistoryMessage(messageId, targetSessionId, options = {}) {
     const sourceSessionId = state.sessionId, socket = state.socket, sender = state.deviceId;
     const checkContext = () => { if (sourceSessionId !== state.sessionId || socket !== state.socket || sender !== state.deviceId) throw new Error('当前隧道已变化，请重新选择转发目标'); };
     const source = await getFromStore('messages', messageId);
@@ -8977,7 +9035,11 @@ async function forwardHistoryMessage(messageId, targetSessionId) {
     if (!targetSessionId) return;
     checkContext();
     localStorage.setItem(LAST_FORWARD_SESSION_STORAGE_KEY, targetSessionId);
-    const message = {
+    const pending = forwardHistoryMessage.pending ||= new Map();
+    const key = JSON.stringify([sourceSessionId,sender,messageId,targetSessionId]);
+    const previous = pending.get(key);
+    if (!previous && pending.size >= 50) throw new Error('未确认的转发过多，请先核对目标隧道记录');
+    const message = previous || {
         ...source,
         id: generateId(),
         sessionId: targetSessionId,
@@ -8986,13 +9048,13 @@ async function forwardHistoryMessage(messageId, targetSessionId) {
         senderName: state.deviceName,
         forwardedFrom: { sessionId: state.sessionId, messageId: source.id }
     };
-    if (source.type === 'markdown') {
+    if (!previous && source.type === 'markdown') {
         message.markdownVersion = 1;
         delete message.markdownHistory; delete message.updatedAt; delete message.updatedBy;
     }
-    if (source.type === 'file' && source.fileInfo?.id) {
+    if (!previous && source.type === 'file' && source.fileInfo?.id) {
         message.fileInfo = await cloneForwardFileInfo(source.fileInfo, targetSessionId);
-    } else if (source.type === 'collection') {
+    } else if (!previous && source.type === 'collection') {
         const files = [];
         for (const fileInfo of getCollectionFiles(source)) files.push(await cloneForwardFileInfo(fileInfo, targetSessionId));
         message.collection = {
@@ -9004,21 +9066,63 @@ async function forwardHistoryMessage(messageId, targetSessionId) {
         };
     }
     checkContext();
+    pending.set(key,message);
     const response = await new Promise((resolve, reject) => {
         socket.timeout(10000).emit('forward-message', { targetSessionId, message, targetDeviceId: tunnelDeviceId(targetSessionId), targetAccessGrant: savedTunnelGrant(targetSessionId) }, (err, response) => {
-            if (err) return reject(new Error('服务器响应超时'));
+            if (err) {
+                // A timeout is an unknown outcome. Reconcile this exact message
+                // rather than creating another record or claiming it failed.
+                socket.timeout(5000).emit('forward-message-status', {
+                    targetSessionId,targetMessageId:message.id,sourceMessageId:messageId,
+                    targetDeviceId:tunnelDeviceId(targetSessionId),targetAccessGrant:savedTunnelGrant(targetSessionId)
+                }, (statusError,status) => {
+                    if (!statusError && status?.ok && status.confirmed) return resolve({ok:true,message:status.message});
+                    reject(Object.assign(new Error('服务器未及时确认转发结果，请核对目标隧道；在本页重试将沿用同一条记录。'),{unconfirmed:true}));
+                });
+                return;
+            }
             const failures = { 'target-tunnel-access-required':'目标隧道访问凭据无效，请重新加入后再试', 'permission-denied':'当前设备没有转发所需的隧道权限', 'forward-file-cache-required':'转发文件缓存尚未准备完成，请重试', 'forward-record-not-stored':'转发记录未保存，请检查目标隧道后重试', 'markdown-attachment-missing':'Markdown 引用的附件缺少可用副本，未转发' };
             if (!response?.ok) {
+                if (previous || response?.error === 'forward-record-not-confirmed') return reject(Object.assign(new Error('服务端尚未确认转发记录已保存，请核对目标隧道；在本页重试将沿用同一条记录。'),{unconfirmed:true}));
+                pending.delete(key);
                 const text = failures[response?.error] || response?.error || '服务器拒绝转发';
                 return reject(new Error(window.TunnelI18n?.t(text) || text));
             }
             resolve(response);
         });
     });
+    pending.delete(key);
     if (response.message) Object.assign(message, response.message);
     await saveToStore('messages', message);
-    showAppToast('已转发到所选隧道');
+    if (!options.silent) showAppToast('已转发到所选隧道');
     historyLog('history-message-forwarded', { messageId, targetMessageId: message.id, targetSessionId });
+}
+
+async function forwardHistoryMessages(records, targetSessionId) {
+    const scope = state.sessionId, failures = [];
+    const text = (source,...values) => window.TunnelI18n?.format ? window.TunnelI18n.format(source,...values) : source.replace(/\{(\d+)\}/g,(_all,index)=>String(values[Number(index)] ?? _all));
+    const batches = forwardHistoryMessages.pending ||= new Map();
+    const batchKey = JSON.stringify([scope,state.deviceId,targetSessionId,records.map(record=>record.id)]);
+    const done = batches.get(batchKey) || new Set();
+    if (!batches.has(batchKey) && batches.size >= 10) throw new Error('未完成的转发批次过多，请先核对目标隧道记录');
+    batches.set(batchKey,done);
+    const progress = showForwardHistoryProgress(records, done);
+    let confirmed = done.size, processed = 0;
+    try {
+        for (const record of records) {
+            if (state.sessionId !== scope) break;
+            if (done.has(record.id)) { processed++; continue; }
+            progress.setState(record.id,'sending');
+            try { await forwardHistoryMessage(record.id,targetSessionId,{silent:true}); done.add(record.id); confirmed++; progress.setState(record.id,'confirmed'); }
+            catch (error) { failures.push({id:record.id,error:error.message,unconfirmed:error.unconfirmed===true}); progress.setState(record.id,error.unconfirmed?'unconfirmed':'failed',error.message); if (error.unconfirmed) { processed++; break; } }
+            processed++;
+        }
+    } finally { for (const record of records.slice(processed)) if(!done.has(record.id)) progress.setState(record.id,'unsent'); }
+    if (confirmed === records.length) batches.delete(batchKey);
+    const summary = text('已确认转发 {0} / {1} 条记录',confirmed,records.length);
+    progress.finish(summary + (processed<records.length?' · '+text('尚未发送 {0} 条记录',records.length-processed):'') + (failures.some(item=>item.unconfirmed)?' · '+text('转发结果尚未确认'):''));
+    if (!failures.length && processed === records.length) showAppToast(summary);
+    return {confirmed,failures,unsent:records.length-processed};
 }
 
 async function downloadFileFromMessage(messageId) {
@@ -9034,11 +9138,11 @@ async function downloadFileFromMessage(messageId) {
 
     if (fileInfo.isAsset || fileInfo.isServerAsset) {
         await restoreFileCache(messageId);
-        alert('文件缓存正在还原，完成后请再次点击下载。');
+        (window.TunnelI18n?.alert || alert)('文件缓存正在还原，完成后请再次点击下载。');
         return;
     }
 
-    alert('文件尚未缓存到本机，且没有可用的远程文件来源。');
+    (window.TunnelI18n?.alert || alert)('文件尚未缓存到本机，且没有可用的远程文件来源。');
 }
 
 async function copyTextToClipboard(text) {
@@ -9114,7 +9218,7 @@ async function shareFileMagnet(messageId) {
     }
 
     const copied = await copyTextToClipboard(result.url).catch(() => false);
-    alert(copied ? `磁链已复制:\n${result.url}` : `磁链已生成，请手动复制:\n${result.url}`);
+    (window.TunnelI18n?.alert || alert)(copied ? `磁链已复制:\n${result.url}` : `磁链已生成，请手动复制:\n${result.url}`);
     historyLog('file-magnet-shared', {
         messageId,
         fileId: fileInfo.id,
@@ -9672,7 +9776,11 @@ function openRemotePreviewDeviceModal() {
         remotePreviewSelection.devices.set(deviceId, entry);
         beginRemotePreviewCacheCheck(entry);
     });
-    document.getElementById('remotePreviewFileName').textContent = `文件：${fileInfo.name}`;
+    const fileLabel = document.getElementById('remotePreviewFileName');
+    fileLabel.dataset.i18nUi = 'true';
+    const caption = document.createElement('span'); caption.textContent = '文件：';
+    const filename = document.createElement('span'); filename.dataset.i18nRaw = 'true'; filename.textContent = fileInfo.name;
+    fileLabel.replaceChildren(caption, filename);
     renderRemotePreviewDeviceList();
     showRemotePreviewDeviceModal();
     historyLog('remote-preview-device-picker-opened', { fileId:fileInfo.id, candidateCount:devices.size });
@@ -10277,6 +10385,7 @@ async function cancelClearedCollectionDownloadsExcept(collectionMessageId, allow
 }
 
 async function downloadFileByInfo(fileInfo, ownerDeviceId = '', options = {}) {
+    fileInfo = { ...fileInfo, recordMessageId: options.messageId || options.collectionMessageId || fileInfo?.recordMessageId };
     let storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
     if (storedFile?.externalFileHandle) {
         storedFile = await materializeExternalFileRecord(storedFile, { requestPermission: true });
@@ -10295,7 +10404,7 @@ async function downloadFileByInfo(fileInfo, ownerDeviceId = '', options = {}) {
             await downloadFile(fileInfo.id);
             return;
         }
-        alert('文件尚未缓存到本机，已尝试拉取缓存，完成后请再次下载。');
+        (window.TunnelI18n?.alert || alert)('文件尚未缓存到本机，已尝试拉取缓存，完成后请再次下载。');
         return;
     }
     if (fileInfo.isAsset && fileAssetTransfer) {
@@ -10315,19 +10424,20 @@ async function downloadFileByInfo(fileInfo, ownerDeviceId = '', options = {}) {
         });
         await refreshCollectionPreviewCardForFile(fileInfo.id, options.collectionMessageId || activeCollectionPreviewMessageId || '');
         await refreshActiveFilePreviewForFile(fileInfo.id);
-        await fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, 'manual-download');
+        await fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, 'manual-download', fileInfo);
         await fileAssetTransfer.request(fileInfo.id, ownerDeviceId || fileInfo.ownerDeviceId || null, fileInfo, { priority: true, force: true })
             .catch(err => historyLog('file-download-cache-request-failed', {
                 fileId: fileInfo.id,
                 error: err.message
             }));
-        alert('文件尚未缓存到本机，已尝试拉取缓存，完成后请再次下载。');
+        (window.TunnelI18n?.alert || alert)('文件尚未缓存到本机，已尝试拉取缓存，完成后请再次下载。');
         return;
     }
-    alert('文件尚未缓存到本机，且没有可用的远程文件来源。');
+    (window.TunnelI18n?.alert || alert)('文件尚未缓存到本机，且没有可用的远程文件来源。');
 }
 
 async function restoreFileCacheByInfo(fileInfo, ownerDeviceId = '', messageId = '', options = {}) {
+    fileInfo = { ...fileInfo, recordMessageId: messageId || options.collectionMessageId || fileInfo?.recordMessageId };
     if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
         await requestServerAssetWithPeerPreference(
             fileInfo,
@@ -10346,7 +10456,7 @@ async function restoreFileCacheByInfo(fileInfo, ownerDeviceId = '', messageId = 
     }
     if (options.force && shouldBlockForceRestore(fileInfo.id)) {
         const progressState = getFileReceiveProgressState(fileInfo.id);
-        alert(`文件正在拉取中，当前约 ${progressState.progress}%，且最近仍在推进。暂不强制重拉，避免浪费已完成的传输。`);
+        (window.TunnelI18n?.alert || alert)(`文件正在拉取中，当前约 ${progressState.progress}%，且最近仍在推进。暂不强制重拉，避免浪费已完成的传输。`);
         return;
     }
     if (options.force) {
@@ -10386,7 +10496,7 @@ async function restoreFileCacheByInfo(fileInfo, ownerDeviceId = '', messageId = 
     showFileMessagePlaceholder(fileInfo.id, '正在请求还原', true, true);
     await refreshCollectionPreviewCardForFile(fileInfo.id, options.collectionMessageId || activeCollectionPreviewMessageId || '');
     await refreshActiveFilePreviewForFile(fileInfo.id);
-    await fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, options.force ? 'manual-force-restore' : 'manual-restore');
+    await fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, options.force ? 'manual-force-restore' : 'manual-restore', fileInfo);
     await fileAssetTransfer.request(fileInfo.id, ownerDeviceId || fileInfo.ownerDeviceId || null, fileInfo, {
         force: Boolean(options.force),
         priority: true
@@ -10413,12 +10523,12 @@ async function clearFileCacheByInfo(fileInfo, ownerDeviceId, messageId = '', opt
         }
     }
     if (state.devices.size === 0) {
-        const ok = confirm('请确认这个文件在其它设备已缓存，否则将无法恢复。继续清除本机缓存吗？');
+        const ok = (window.TunnelI18n?.confirm || confirm)('请确认这个文件在其它设备已缓存，否则将无法恢复。继续清除本机缓存吗？');
         if (!ok) return;
     }
     fileAssetTransfer?.cancel(fileInfo.id);
     if (storedFile?.externalFileHandle && storedFile.hasSafetyCopy && storedFile.safetyCopyState !== 'replicated') {
-        alert('此文件绑定了本机原文件句柄，但安全副本尚未确认被其它设备完整缓存。为避免原文件移动或权限失效后无法恢复，暂不释放空间。');
+        (window.TunnelI18n?.alert || alert)('此文件绑定了本机原文件句柄，但安全副本尚未确认被其它设备完整缓存。为避免原文件移动或权限失效后无法恢复，暂不释放空间。');
         return;
     }
     if (storedFile?.externalFileHandle && !getBinaryDataSize(storedFile.data) && !storedFile.cacheStoreRef) {
@@ -10502,7 +10612,7 @@ async function shareFileMagnetForInfo(fileInfo, ownerDeviceId, messageId = '') {
             if (err?.name !== 'AbortError') historyLog('file-magnet-system-share-failed', { fileId: fileInfo.id, error: err.message });
         });
     }
-    alert(copied ? `磁链已复制，可继续使用系统分享面板发送给朋友\n${result.url}` : `磁链已生成，请手动复制\n${result.url}`);
+    (window.TunnelI18n?.alert || alert)(copied ? `磁链已复制，可继续使用系统分享面板发送给朋友\n${result.url}` : `磁链已生成，请手动复制\n${result.url}`);
     historyLog('file-magnet-shared', { messageId, fileId: fileInfo.id, magnetId: result.id, copied });
     return result;
 }
@@ -10534,7 +10644,7 @@ async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDevice
             toggleSingleFileFavorite(fileInfo)
                 .then(() => renderSingleFilePreviewActions({ messageId, fileInfo, ownerDeviceId, collectionMessageId, hasLocalData, cacheCleared, restoreRequested, handleSourceOnly, handleReadable, isCurrent }))
                 .catch(err => {
-                    alert(`收藏状态保存失败: ${err.message}`);
+                    (window.TunnelI18n?.alert || alert)(`收藏状态保存失败: ${err.message}`);
                     historyLog('file-favorite-toggle-failed', { messageId, collectionMessageId, fileId: fileInfo.id, error: err.message });
                 });
         }),
@@ -10545,13 +10655,13 @@ async function renderSingleFilePreviewActions({ messageId, fileInfo, ownerDevice
         createFileActionButton('⇩', '下载此文件', () => downloadFileByInfo(fileInfo, ownerDeviceId, { collectionMessageId })),
         createFileActionButton('🧲🔗', '生成可分享的磁力下载链接', () => {
             shareFileMagnetForInfo(fileInfo, ownerDeviceId, messageId).catch(err => {
-                alert(`磁链生成失败: ${err.message}`);
+                (window.TunnelI18n?.alert || alert)(`磁链生成失败: ${err.message}`);
                 historyLog('file-magnet-share-failed', { messageId, fileId: fileInfo.id, error: err.message });
             });
         }),
         createFileActionButton('存到网盘', '选择 Telegram 网盘目录保存此文件', () => {
             window.DiskTunnelAdapter.saveFiles(collectionMessageId || messageId, [fileInfo]).catch(error => {
-                if (error?.message !== 'OPERATION_CANCELLED') alert(`保存到 Telegram 网盘失败：${error.message}`);
+                if (error?.message !== 'OPERATION_CANCELLED') (window.TunnelI18n?.alert || alert)(`保存到 Telegram 网盘失败：${error.message}`);
             });
         }),
         cacheAction,
@@ -10676,7 +10786,7 @@ function showBlockingProgressPanel(title, detail = '') {
         <div class="send-mode-dialog" role="alertdialog" aria-modal="true" style="min-width:min(360px,88vw);text-align:center;">
             <div style="font-size:18px;font-weight:800;margin-bottom:10px;">${escapeHtml(title)}</div>
             <div class="blocking-progress-spinner" aria-hidden="true" style="width:38px;height:38px;border:4px solid rgba(102,126,234,.18);border-top-color:#667eea;border-radius:50%;margin:8px auto 12px;animation:blocking-progress-spin .85s linear infinite;"></div>
-            <div class="blocking-progress-detail" style="font-size:14px;color:#526079;line-height:1.55;">${escapeHtml(detail || '正在处理，请稍候...')}</div>
+            <div class="blocking-progress-detail" style="font-size:14px;line-height:1.55;">${escapeHtml(detail || '正在处理，请稍候...')}</div>
             <div style="height:7px;background:#edf1fa;border-radius:999px;overflow:hidden;margin-top:14px;">
                 <div class="blocking-progress-fill" style="height:100%;width:0%;background:#667eea;transition:width .16s ease;"></div>
             </div>
@@ -11592,7 +11702,7 @@ function renderMusicPlayerActions() {
             label: '分享',
             title: '生成并分享磁力链接',
             handler: () => shareCurrentMusicFile().catch(err => {
-                alert(`磁链生成失败: ${err.message}`);
+                (window.TunnelI18n?.alert || alert)(`磁链生成失败: ${err.message}`);
                 historyLog('music-share-failed', { fileId: track.id, error: err.message });
             })
         },
@@ -11600,7 +11710,7 @@ function renderMusicPlayerActions() {
             label: '下载',
             title: '下载当前歌曲',
             handler: () => downloadFileByInfo(track.fileInfo || track, track.fileInfo?.ownerDeviceId || track.ownerDeviceId || state.deviceId).catch(err => {
-                alert(`下载失败: ${err.message}`);
+                (window.TunnelI18n?.alert || alert)(`下载失败: ${err.message}`);
                 historyLog('music-download-failed', { fileId: track.id, error: err.message });
             })
         }
@@ -13016,7 +13126,7 @@ async function openActivePreviewFullscreen(options = {}) {
     };
     const type = String(fileInfo.type || '').toLowerCase();
     if (!storedFile || !hasCompleteFileCache(storedFile, fileInfo) || !isFullscreenPreviewableType(type)) {
-        if (!options.focusedOnly) alert('当前文件尚未缓存到本机，不能全屏预览。');
+        if (!options.focusedOnly) (window.TunnelI18n?.alert || alert)('当前文件尚未缓存到本机，不能全屏预览。');
         return false;
     }
     const overlay = document.getElementById('mediaFullscreenViewer');
@@ -13129,25 +13239,28 @@ async function showFileDetailsForInfo(fileInfo, message = {}) {
     const hasLocalData = hasCompleteFileCache(storedFile, fileInfo);
     activeFileDetailsMessageId = message.messageId || message.id || '';
     activeFileDetailsFileId = fileInfo.id;
+    const displayName = getFileDisplayName(fileInfo);
+    const rawName = String(fileInfo.name || '');
+    const extensionIndex = rawName.lastIndexOf('.');
     const details = [
-        ['文件名', getFileDisplayName(fileInfo) || '未知文件'],
-        ['扩展名', getFileExtension(fileInfo.name)],
-        ['MIME 类型', fileInfo.type || 'application/octet-stream'],
-        ['文件大小', formatFileSize(Number(fileInfo.size) || 0)],
-        ['上传时间', formatDateTime(message.timestamp || fileInfo.timestamp || Date.now())],
-        ['最初上传设备', message.senderName || fileInfo.senderName || '未知设备'],
-        ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知'],
-        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')],
-        ['提示', isLikelyTouchDevice() ? '手指长按文件旁边的空白处，即可查看详情' : '在文件旁边的空白处点击右键即可查看详情']
+        ['文件名', displayName || '未知文件', Boolean(displayName)],
+        ['扩展名', getFileExtension(fileInfo.name), extensionIndex > 0 && extensionIndex < rawName.length - 1],
+        ['MIME 类型', fileInfo.type || 'application/octet-stream', true],
+        ['文件大小', formatFileSize(Number(fileInfo.size) || 0), true],
+        ['上传时间', formatDateTime(message.timestamp || fileInfo.timestamp || Date.now()), true],
+        ['最初上传设备', message.senderName || fileInfo.senderName || '未知设备', Boolean(message.senderName || fileInfo.senderName)],
+        ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知', Boolean(fileInfo.ownerDeviceId || message.sender)],
+        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')]
     ];
     const list = document.getElementById('fileDetailsList');
     list.replaceChildren();
-    details.forEach(([label, value]) => {
+    details.forEach(([label, value, raw]) => {
         const row = document.createElement('div');
         row.className = 'file-details-row';
         const term = document.createElement('dt');
         term.textContent = label;
         const description = document.createElement('dd');
+        if (raw) description.dataset.i18nRaw = 'true';
         description.textContent = value;
         description.title = value;
         row.append(term, description);
@@ -13184,8 +13297,7 @@ async function showFileDetails(messageId) {
         ['上传时间', formatDateTime(message.timestamp)],
         ['最初上传设备', message.senderName || '未知设备'],
         ['设备 ID', fileInfo.ownerDeviceId || message.sender || '未知'],
-        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')],
-        ['提示', isLikelyTouchDevice() ? '手指长按文件旁边的空白处，即可查看详情' : '在文件旁边的空白处点击右键即可查看详情']
+        ['本机状态', hasLocalData ? '已缓存，可下载或预览' : (storedFile?.cacheCleared ? '缓存已清理' : '本机未缓存')]
     ];
     const list = document.getElementById('fileDetailsList');
     list.replaceChildren();
@@ -13415,10 +13527,11 @@ function downloadBlob(blob, fileName) {
     setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-async function requestMissingCollectionFiles(files) {
+async function requestMissingCollectionFiles(files, messageId = '') {
     if (!fileAssetTransfer) return 0;
     let requested = 0;
-    for (const fileInfo of files) {
+    for (const item of files) {
+        const fileInfo = { ...item, recordMessageId: messageId || item.recordMessageId };
         const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
         if (hasCompleteFileCache(storedFile, fileInfo) || !fileInfo.isAsset) continue;
         await saveToStore('files', {
@@ -13435,7 +13548,7 @@ async function requestMissingCollectionFiles(files) {
             transferInterrupted: false,
             isPartial: false
         });
-        fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, 'collection-download');
+        fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, 'collection-download', fileInfo);
         fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || null, fileInfo, { priority: true, force: true })
             .catch(err => historyLog('collection-download-cache-request-failed', {
                 fileId: fileInfo.id,
@@ -13514,7 +13627,7 @@ async function restoreMissingCollectionFiles(files, collectionMessageId = '') {
 
 async function downloadCollectionFiles(files, collectionMessageId = '') {
     if (!window.FolderArchive?.createZip) {
-        alert('当前页面缺少 ZIP 打包模块，无法下载合辑压缩包。');
+        (window.TunnelI18n?.alert || alert)('当前页面缺少 ZIP 打包模块，无法下载合辑压缩包。');
         return;
     }
     const initialEntries = await getCachedCollectionEntries(files);
@@ -13524,7 +13637,7 @@ async function downloadCollectionFiles(files, collectionMessageId = '') {
     if (missingCount > 0) {
         dialog = createCollectionDownloadDialog(files.length, missingCount);
         dialog.update(entries.length);
-        await requestMissingCollectionFiles(files);
+        await requestMissingCollectionFiles(files, collectionMessageId);
         const startedAt = Date.now();
         const maxWaitMs = 2 * 60 * 1000;
         while (!dialog.skipRequested && !dialog.cancelRequested && Date.now() - startedAt < maxWaitMs) {
@@ -13547,7 +13660,7 @@ async function downloadCollectionFiles(files, collectionMessageId = '') {
     }
     if (!entries.length) {
         dialog?.close();
-        alert('当前没有任何已缓存文件可打包下载。');
+        (window.TunnelI18n?.alert || alert)('当前没有任何已缓存文件可打包下载。');
         return;
     }
     dialog?.setPacking();
@@ -13556,7 +13669,7 @@ async function downloadCollectionFiles(files, collectionMessageId = '') {
     const suffix = entries.length === files.length ? '' : `-部分${entries.length}of${files.length}`;
     downloadBlob(zipBlob, `合辑-${collectionMessageId || Date.now()}${suffix}.zip`);
     if (entries.length < files.length) {
-        alert(`已打包下载 ${entries.length} 个已缓存文件，另有 ${files.length - entries.length} 个文件仍未完成缓存。`);
+        (window.TunnelI18n?.alert || alert)(`已打包下载 ${entries.length} 个已缓存文件，另有 ${files.length - entries.length} 个文件仍未完成缓存。`);
     }
     historyLog('collection-zip-downloaded', { messageId: collectionMessageId, totalCount: files.length, zippedCount: entries.length });
 }
@@ -13617,7 +13730,7 @@ function setCollectionPreviewActions(files, messageId) {
             button.disabled = true;
             restoreMissingCollectionFiles(files, messageId)
                 .catch(err => {
-                    alert(`合辑还原失败: ${err.message}`);
+                    (window.TunnelI18n?.alert || alert)(`合辑还原失败: ${err.message}`);
                     historyLog('collection-restore-missing-failed', { messageId, error: err.message });
                 })
                 .finally(() => {
@@ -13626,7 +13739,7 @@ function setCollectionPreviewActions(files, messageId) {
         }),
         createFileActionButton('下载全部', '拉取缺失缓存后打包下载整个合辑 ZIP', () => {
             downloadCollectionFiles(files, messageId).catch(err => {
-                alert(`合辑下载失败: ${err.message}`);
+                (window.TunnelI18n?.alert || alert)(`合辑下载失败: ${err.message}`);
                 historyLog('collection-download-failed', { messageId, error: err.message });
             });
         })
@@ -13786,7 +13899,7 @@ async function clearFileCache(messageId) {
     if (!fileInfo?.id) return;
 
     if (state.devices.size === 0) {
-        const ok = confirm('请确认这个文件在其它设备已缓存，否则将无法恢复。继续清除本机缓存吗？');
+        const ok = (window.TunnelI18n?.confirm || confirm)('请确认这个文件在其它设备已缓存，否则将无法恢复。继续清除本机缓存吗？');
         if (!ok) return;
     }
 
@@ -13802,7 +13915,7 @@ async function clearFileCache(messageId) {
     }
     fileAssetTransfer?.cancel(fileInfo.id);
     if (storedFile?.externalFileHandle && storedFile.hasSafetyCopy && storedFile.safetyCopyState !== 'replicated') {
-        alert('此文件绑定了本机原文件句柄，但安全副本尚未确认被其它设备完整缓存。为避免原文件移动或权限失效后无法恢复，暂不释放空间。');
+        (window.TunnelI18n?.alert || alert)('此文件绑定了本机原文件句柄，但安全副本尚未确认被其它设备完整缓存。为避免原文件移动或权限失效后无法恢复，暂不释放空间。');
         return;
     }
     await deleteCacheStoreReference(storedFile, 'clear-file-cache');
@@ -13833,7 +13946,7 @@ async function clearFileCache(messageId) {
 
 async function restoreFileCache(messageId, options = {}) {
     const message = await getFromStore('messages', messageId);
-    const fileInfo = message?.fileInfo;
+    const fileInfo = message?.fileInfo && { ...message.fileInfo, recordMessageId: messageId };
     if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
         await requestServerAssetWithPeerPreference(
             fileInfo,
@@ -13846,13 +13959,13 @@ async function restoreFileCache(messageId, options = {}) {
         return;
     }
     if (!fileInfo?.id || !fileInfo.isAsset) {
-        alert('此历史文件没有可用的远程文件来源，无法还原。');
+        (window.TunnelI18n?.alert || alert)('此历史文件没有可用的远程文件来源，无法还原。');
         return;
     }
 
     if (options.force && shouldBlockForceRestore(fileInfo.id)) {
         const progressState = getFileReceiveProgressState(fileInfo.id);
-        alert(`文件正在拉取中，当前约 ${progressState.progress}%，且最近仍在推进。暂不强制重拉，避免浪费已完成的传输。`);
+        (window.TunnelI18n?.alert || alert)(`文件正在拉取中，当前约 ${progressState.progress}%，且最近仍在推进。暂不强制重拉，避免浪费已完成的传输。`);
         historyLog('file-cache-force-restore-blocked', {
             messageId,
             fileId: fileInfo.id,
@@ -13896,7 +14009,7 @@ async function restoreFileCache(messageId, options = {}) {
         transferInterrupted: false
     });
     showFileMessagePlaceholder(fileInfo.id, '正在请求还原', true, true);
-    await fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, options.force ? 'message-force-restore' : 'message-restore');
+    await fileAssetTransfer.requestProviderDiscovery?.(fileInfo.id, options.force ? 'message-force-restore' : 'message-restore', fileInfo);
     await fileAssetTransfer.request(fileInfo.id, fileInfo.ownerDeviceId || message.sender || null, fileInfo, {
         force: Boolean(options.force),
         priority: true
@@ -13908,11 +14021,11 @@ async function deleteHistoryMessage(messageIds) {
     if (!requireTunnelPermission('delete')) return;
     const { socket, sessionId } = state;
     if (!socket?.connected) {
-        alert('当前未连接到会话，无法同步删除记录。');
+        (window.TunnelI18n?.alert || alert)('当前未连接到会话，无法同步删除记录。');
         return;
     }
     const ids = Array.isArray(messageIds) ? messageIds : [messageIds];
-    if (!confirm(ids.length === 1 ? '删除会同步移除所有设备中的这条传输记录，并清理其文件缓存。此操作不可撤销，继续吗？'
+    if (!(window.TunnelI18n?.confirm || confirm)(ids.length === 1 ? '删除会同步移除所有设备中的这条传输记录，并清理其文件缓存。此操作不可撤销，继续吗？'
         : `删除会同步移除所有设备中的 ${ids.length} 条传输记录，并清理相关文件缓存。此操作不可撤销，继续吗？`)) return;
     for (const messageId of ids) {
         if (state.sessionId !== sessionId || state.socket !== socket) throw Error('当前隧道已变化');
@@ -14116,7 +14229,7 @@ async function deleteFileFromCollection(collectionMessageId, fileId) {
     const files = getCollectionFiles(message);
     const removedFile = files.find(file => file.id === fileId);
     if (!message || !removedFile) return;
-    if (!confirm('删除会同步移除所有设备中合辑里的这个文件，并清理其文件缓存。继续吗？')) return;
+    if (!(window.TunnelI18n?.confirm || confirm)('删除会同步移除所有设备中合辑里的这个文件，并清理其文件缓存。继续吗？')) return;
 
     const nextFiles = files.filter(file => file.id !== fileId);
     if (!nextFiles.length) {
@@ -14274,8 +14387,8 @@ async function findReferencedFileIds(fileIds, excludingMessageId = null) {
     const referenced = new Set();
     if (!targets.size) return referenced;
     const [messages, editorContent] = await Promise.all([
-        getAllFromStore('messages').catch(() => []),
-        getFromStore('editorContent', 'current').catch(() => null)
+        getAllFromStore('messages'),
+        getFromStore('editorContent', 'current')
     ]);
     const markContentReferences = content => {
         const contentIds = new Set([...extractAssetIds(content), ...extractFileRefIds(content)]);
@@ -14315,7 +14428,7 @@ function extractFileRefIds(content) {
 
 async function isFileReferencedOutsideSession(fileId, currentSessionId) {
     if (!fileId) return false;
-    const messages = await getAllFromStore('messages').catch(() => []);
+    const messages = await getAllFromStore('messages');
     return messages.some(message => {
         if (!message || message.sessionId === currentSessionId) return false;
         if (message.fileInfo?.id === fileId) return true;
@@ -14328,9 +14441,7 @@ async function isFileReferencedOutsideSession(fileId, currentSessionId) {
 async function findGarbageFileCaches() {
     const [messages, files, editorContent] = await Promise.all([
         getCurrentSessionMessages(),
-        typeof IDBKeyRange !== 'undefined'
-            ? getAllFromStore('files', 'sessionId', IDBKeyRange.only(state.sessionId))
-            : getAllFromStore('files').then(items => items.filter(item => item.sessionId === state.sessionId)),
+        getCurrentSessionFileInventory(),
         getFromStore('editorContent', 'current')
     ]);
     const referenced = new Set(), markdownAttachments = new Set();
@@ -14353,11 +14464,15 @@ async function findGarbageFileCaches() {
 }
 
 async function clearGarbageFileCaches(files) {
-    const possibleAttachments = files.filter(file => file.markdownOwnerId);
-    if (possibleAttachments.length) {
-        const owned = await findReferencedFileIds(new Set(possibleAttachments.map(file => file.id)));
-        files = files.filter(file => !owned.has(file.id));
-    }
+    // The dialog's inventory can be stale, and a cache may also belong to a
+    // different tunnel. Recheck every candidate; failed reads must stop deletion.
+    const owned = await findReferencedFileIds(new Set(files.filter(file => !file.streamingCacheKey).map(file => file.id)));
+    const latest = new Map((files.some(file => !file.streamingCacheKey) ? await getCurrentSessionFileInventory() : []).map(file => [file.id,file]));
+    files = files.map(candidate => {
+        if (candidate.streamingCacheKey) return candidate;
+        const current = latest.get(candidate.id);
+        return current && (!candidate.sessionId || candidate.sessionId === current.sessionId) ? current : null;
+    }).filter(file => file && (file.streamingCacheKey || !owned.has(file.id) || file.isPartial || file.transferInterrupted));
     const streaming = files.filter(file => file.streamingCacheKey);
     if (streaming.length) {
         await window.StreamingCache?.clearViewer(streaming.map(file => file.streamingCacheKey));
@@ -14388,7 +14503,13 @@ async function showGarbageCleanupDialog() {
     dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
 
     await new Promise(resolve => requestAnimationFrame(resolve));
-    const [regular, streaming] = await Promise.all([findGarbageFileCaches(), window.StreamingCache?.garbage() || []]);
+    let regular, streaming;
+    const failure = error => {
+        historyLog('garbage-file-cache-operation-failed', { error:error.message });
+        return (window.TunnelI18n?.t('缓存检查或清理未完成，请重试：{0}') || '缓存检查或清理未完成，请重试：{0}').replace('{0}',error.message);
+    };
+    try { [regular, streaming] = await Promise.all([findGarbageFileCaches(), window.StreamingCache?.garbage() || []]); }
+    catch (error) { dialog.querySelector('p').textContent = failure(error); return; }
     const files = [...regular, ...streaming.map(entry => ({ id:entry.key, name:entry.name || entry.itemId || entry.stationId, size:entry.cachedBytes || 0, streamingCacheKey:entry.key }))];
     if (!files.length) {
         dialog.querySelector('.modal').innerHTML = `
@@ -14421,9 +14542,10 @@ async function showGarbageCleanupDialog() {
     `;
     document.body.appendChild(dialog);
     dialog.querySelector('#cancelGarbageCleanup').addEventListener('click', () => dialog.remove());
-    dialog.querySelector('#confirmGarbageCleanup').addEventListener('click', async () => {
-        await clearGarbageFileCaches(files);
-        dialog.remove();
+    dialog.querySelector('#confirmGarbageCleanup').addEventListener('click', async event => {
+        const button = event.currentTarget; button.disabled = true;
+        try { await clearGarbageFileCaches(files); dialog.remove(); }
+        catch (error) { showAppToast(failure(error)); button.disabled = false; }
     });
 }
 
@@ -14549,6 +14671,9 @@ async function getSessionResourceInventory() {
         if (Number.isFinite(Number(candidate.size)) && Number(candidate.size) >= 0) resource.size = Number(candidate.size);
         if (candidate.ownerDeviceId) resource.ownerDeviceId = candidate.ownerDeviceId;
         if (candidate.sourceFileId) resource.sourceFileId = candidate.sourceFileId;
+        for (const field of ['backupSourceSessionId','forwardedToSessionId','forwardedSourceGrant']) {
+            if (candidate[field]) resource[field] = candidate[field];
+        }
         resource.isEditorAsset = resource.isEditorAsset || candidate.isEditorAsset === true;
         resource.isFileAsset = resource.isFileAsset || candidate.isFileAsset === true || candidate.isAsset === true;
         resource.isFileFavorite = resource.isFileFavorite || candidate.mediaFavorite === true || favoriteMusicIds.has(id);
@@ -14913,7 +15038,7 @@ function initResourceBrowserCapsuleDrag(layer, header) {
 async function clearResourceCache(resource) {
     const file = await getFromStore('files', resource.id);
     if (!file || !hasCompleteFileCache(file, resource)) return;
-    if (!confirm(`仅清除此设备保存的“${resource.name}”内容吗？引用与传输记录会保留。`)) return;
+    if (!(window.TunnelI18n?.confirm || confirm)(`仅清除此设备保存的“${resource.name}”内容吗？引用与传输记录会保留。`)) return;
 
     fileAssetTransfer?.cancel(resource.id);
     await deleteCacheStoreReference(file, 'resource-cache-clear');
@@ -14991,11 +15116,15 @@ async function performResourceCacheRestore(resource, sessionId, options) {
         size: resource.size,
         sessionId,
         ownerDeviceId: resource.ownerDeviceId,
+        recordMessageId: resource.references?.find(reference => reference.kind === 'chat-file' || reference.kind === 'collection-file')?.messageId || file?.recordMessageId,
         serverAssetUrl: resource.serverAssetUrl || file?.serverAssetUrl,
         isServerAsset: Boolean(resource.serverAssetUrl || file?.serverAssetUrl),
         cacheCleared: true,
         restoreRequested: true
     };
+    for (const field of ['backupSourceSessionId','forwardedToSessionId','forwardedSourceGrant']) {
+        if (resource[field]) metadata[field] = resource[field];
+    }
     await saveToStore('files', metadata);
     if (state.sessionId !== sessionId) return 'stopped';
 
@@ -15068,11 +15197,11 @@ function formatResourceCacheRestoreSummary(stats) {
 }
 
 async function deleteUnreferencedResource(resource) {
-    if (resource.references.length > 0) {
-        alert('该资源仍有引用，不能从资源浏览器删除。请先删除引用位置，或只清除本机缓存。');
+    if (resource.references.length > 0 || (await findReferencedFileIds(new Set([resource.id]))).has(resource.id)) {
+        (window.TunnelI18n?.alert || alert)('该资源仍有引用，不能从资源浏览器删除。请先删除引用位置，或只清除本机缓存。');
         return;
     }
-    if (!confirm(`从本设备移除未引用资源“${resource.name}”吗？此操作不会删除其它设备的缓存。`)) return;
+    if (!(window.TunnelI18n?.confirm || confirm)(`从本设备移除未引用资源“${resource.name}”吗？此操作不会删除其它设备的缓存。`)) return;
 
     fileAssetTransfer?.cancel(resource.id);
     await deleteFromStore('files', resource.id);
@@ -15217,7 +15346,7 @@ async function renderMountsInResourceBrowser(container) {
         row.className = 'resource-browser-mount-row';
         row.innerHTML = `<span>🖴 本机目录 · ${escapeHtml(mount.displayName)}</span>`;
         row.append(
-            createResourceBrowserButton('发布到隧道', '按需读取目录文件并以合辑发布', () => publishMountedDirectory(mount).catch(err => alert(err.message))),
+            createResourceBrowserButton('发布到隧道', '按需读取目录文件并以合辑发布', () => publishMountedDirectory(mount).catch(err => (window.TunnelI18n?.alert || alert)(err.message))),
             createResourceBrowserButton('解除挂载', '只解除映射，不删除真实文件', async () => {
                 await deleteFromStore('mounts', mount.id);
                 await showResourceBrowser();
@@ -15424,11 +15553,11 @@ async function showResourceBrowser(options = {}) {
 
     const controls = document.createElement('div');
     controls.className = 'resource-browser-controls';
-    const mountDirectoryButton = createResourceBrowserButton('挂载本机目录', '只读映射用户授权的真实目录', () => mountLocalDirectory().catch(err => alert(err.message)));
-    const mountFileButton = createResourceBrowserButton('关联本机文件', '不复制文件内容，远端请求时再读取', () => mountLocalFiles().catch(err => alert(err.message)));
+    const mountDirectoryButton = createResourceBrowserButton('挂载本机目录', '只读映射用户授权的真实目录', () => mountLocalDirectory().catch(err => (window.TunnelI18n?.alert || alert)(err.message)));
+    const mountFileButton = createResourceBrowserButton('关联本机文件', '不复制文件内容，远端请求时再读取', () => mountLocalFiles().catch(err => (window.TunnelI18n?.alert || alert)(err.message)));
     const telegramRepairButton = createResourceBrowserButton('Telegram 文件防失联检测及修复', '主动验证并迁移旧 public 来源；检测 file_id，在有缓存来源时修复', () => {
         telegramRepairButton.disabled = true;
-        runTelegramFileContinuityRepair().catch(err => alert(`Telegram 文件检测失败：${err.message}`)).finally(() => { telegramRepairButton.disabled = false; });
+        runTelegramFileContinuityRepair().catch(err => (window.TunnelI18n?.alert || alert)(`Telegram 文件检测失败：${err.message}`)).finally(() => { telegramRepairButton.disabled = false; });
     });
     const restoreMissingButton = createResourceBrowserButton('一键获取缺失缓存', '向其它设备请求当前会话中缺失的文件缓存，已有任务不重复请求', async () => {
         if (restoreMissingButton.disabled) return;
@@ -15620,8 +15749,8 @@ async function showResourceBrowser(options = {}) {
         }
     };
 
-    searchInput.addEventListener('input', () => render().catch(err => alert(`加载资源失败: ${err.message}`)));
-    filter.addEventListener('change', () => render().catch(err => alert(`加载资源失败: ${err.message}`)));
+    searchInput.addEventListener('input', () => render().catch(err => (window.TunnelI18n?.alert || alert)(`加载资源失败: ${err.message}`)));
+    filter.addEventListener('change', () => render().catch(err => (window.TunnelI18n?.alert || alert)(`加载资源失败: ${err.message}`)));
     refreshButton.addEventListener('click', async () => {
         if (refreshButton.disabled) return;
         refreshButton.disabled = true;
@@ -15631,7 +15760,7 @@ async function showResourceBrowser(options = {}) {
             await render({ reload: true, preserveScroll: true });
             showAppToast('资源列表已刷新');
         } catch (err) {
-            alert(`刷新资源失败: ${err.message}`);
+            (window.TunnelI18n?.alert || alert)(`刷新资源失败: ${err.message}`);
         } finally {
             refreshButton.disabled = false;
             refreshButton.textContent = '↻ 刷新';
@@ -16032,7 +16161,7 @@ function openEditorFileReferenceDialog(files, savedRange, insertEditorHtml, edit
             await insertEditorReferencedFile(selectedFile, savedRange, insertEditorHtml, editor, syncEditorNow);
             dialog.remove();
         } catch (err) {
-            alert(err.message);
+            (window.TunnelI18n?.alert || alert)(err.message);
         }
     });
     actions.append(cancel, confirm);
@@ -16118,7 +16247,7 @@ function attachRichEditorEnhancedTools(layer, editor) {
             try {
                 await insertRichEditorImageFile(editor, file, savedRange);
             } catch (err) {
-                alert(`图片无法插入: ${err.message}`);
+                (window.TunnelI18n?.alert || alert)(`图片无法插入: ${err.message}`);
             }
         };
         input.click();
@@ -16128,7 +16257,7 @@ function attachRichEditorEnhancedTools(layer, editor) {
         editor.focus();
         const savedRange = getEditableSelectionRange(editor);
         const referenceFiles = await getReferenceableSessionFiles();
-        if (!referenceFiles.length) return alert('暂无文件可引用');
+        if (!referenceFiles.length) return (window.TunnelI18n?.alert || alert)('暂无文件可引用');
         openEditorFileReferenceDialog(referenceFiles, savedRange, (html, range) => insertHtmlIntoEditable(editor, html, range), editor, async () => {
             await hydrateEditorAssets(editor);
             return { emitted: false };
@@ -16137,7 +16266,7 @@ function attachRichEditorEnhancedTools(layer, editor) {
     layer.querySelector('[data-rich-insert-link]')?.addEventListener('click', event => {
         event.preventDefault();
         editor.focus();
-        const url = prompt('请输入链接地址（https://...）');
+        const url = (window.TunnelI18n?.prompt || prompt)('请输入链接地址（https://...）');
         if (!url) return;
         const safeUrl = escapeHtml(url.trim());
         const selectedText = String(window.getSelection?.()?.toString() || '').trim();
@@ -16169,7 +16298,7 @@ function attachRichEditorEnhancedTools(layer, editor) {
         try {
             await insertRichEditorImageFile(editor, imageFile, getEditableDropRange(editor, event));
         } catch (err) {
-            alert(`图片无法插入: ${err.message}`);
+            (window.TunnelI18n?.alert || alert)(`图片无法插入: ${err.message}`);
         }
     });
 }
@@ -16279,7 +16408,7 @@ function initEditor() {
                 try {
                     await insertEditorImageFile(file, savedRange, 'image-inserted');
                 } catch (err) {
-                    alert(`图片无法插入: ${err.message}`);
+                    (window.TunnelI18n?.alert || alert)(`图片无法插入: ${err.message}`);
                     historyLog('editor-image-rejected', {
                         fileName: file.name,
                         fileSize: file.size,
@@ -16309,7 +16438,7 @@ function initEditor() {
         try {
             await insertEditorImageFile(imageFile, dropRange, 'image-dropped');
         } catch (err) {
-            alert(`图片无法插入: ${err.message}`);
+            (window.TunnelI18n?.alert || alert)(`图片无法插入: ${err.message}`);
             historyLog('editor-image-drop-rejected', {
                 fileName: imageFile.name,
                 fileSize: imageFile.size,
@@ -16324,7 +16453,7 @@ function initEditor() {
         const savedRange = getEditorSelectionRange();
         const referenceFiles = await getReferenceableSessionFiles();
         if (referenceFiles.length === 0) {
-            alert('暂无文件可引用');
+            (window.TunnelI18n?.alert || alert)('暂无文件可引用');
             return;
         }
         openEditorFileReferenceDialog(referenceFiles, savedRange, insertEditorHtml, editor, syncEditorNow);
@@ -16353,7 +16482,7 @@ function initEditor() {
             .filter((file, index, list) => list.findIndex(item => item.id === file.id) === index);
 
         if (files.length === 0) {
-            alert('暂无文件可引用');
+            (window.TunnelI18n?.alert || alert)('暂无文件可引用');
             return;
         }
 
@@ -16389,7 +16518,7 @@ function initEditor() {
                         const asset = await createEditorAssetFromStoredFile(file);
                         refHtml = createEditorAssetHtml(asset);
                     } catch (err) {
-                        alert(`图片无法引用: ${err.message}`);
+                        (window.TunnelI18n?.alert || alert)(`图片无法引用: ${err.message}`);
                         return;
                     }
                 } else {
@@ -16397,7 +16526,7 @@ function initEditor() {
                 }
 
                 if (getEditorContentSize(editor.innerHTML + refHtml) > MAX_EDITOR_CONTENT_SIZE) {
-                    alert('引用的内容过大，无法同步到其他设备');
+                    (window.TunnelI18n?.alert || alert)('引用的内容过大，无法同步到其他设备');
                     historyLog('editor-file-reference-rejected', {
                         reason: 'content-too-large',
                         fileId,
@@ -16433,7 +16562,7 @@ function initEditor() {
         if (!requireTunnelPermission('sendRich')) return;
         const content = serializeEditorContent(editor.innerHTML);
         if (isEditorContentEmpty(content)) {
-            alert('请输入内容');
+            (window.TunnelI18n?.alert || alert)('请输入内容');
             return;
         }
 
@@ -16829,7 +16958,7 @@ async function startIntercomWithDevice(device) {
             await mediaController.startIntercom([device.deviceId]);
         }
     } catch (err) {
-        alert(`无法启动对讲机: ${err.message}`);
+        (window.TunnelI18n?.alert || alert)(`无法启动对讲机: ${err.message}`);
         historyLog('intercom-start-failed', { peerDeviceId: device?.deviceId, error: err.message });
     }
 }
@@ -16852,7 +16981,11 @@ function renderDeviceRow(device, options = {}) {
     `;
     const name = el.querySelector('.name');
     const localRemark = isSelf ? '' : getLocalDeviceRemark(normalized.deviceId)?.remark;
-    name.textContent = `${getDeviceDisplayName(normalized, { isSelf })}${isSelf ? ' (我)' : ''}`;
+    const displayName = document.createElement('span');
+    displayName.dataset.i18nRaw = 'true';
+    displayName.textContent = getDeviceDisplayName(normalized, { isSelf });
+    name.append(displayName);
+    if (isSelf) name.append(document.createTextNode(' (我)'));
     if (localRemark) name.title = `设备原名：${normalized.name || normalized.deviceId}`;
     makeDeviceNameInteractive(name, normalized);
     const status = el.querySelector('.status');
@@ -16975,7 +17108,7 @@ function showDeviceProfile(device, options = {}) {
         remarkButton.textContent = '设置备注';
         remarkButton.onclick = async () => {
             const current = getLocalDeviceRemark(profile.deviceId)?.remark || '';
-            const next = prompt('设置仅自己可见的设备备注（留空即删除）', current);
+            const next = (window.TunnelI18n?.prompt || prompt)('设置仅自己可见的设备备注（留空即删除）', current);
             if (next === null) return;
             await setLocalDeviceRemark(profile.deviceId, next);
             closeDeviceProfile();
@@ -16996,7 +17129,7 @@ async function startContactVoiceCall(contact) {
     try {
         await mediaController.startContactCall(contact);
     } catch (err) {
-        alert(`无法发起语音通话: ${err.message}`);
+        (window.TunnelI18n?.alert || alert)(`无法发起语音通话: ${err.message}`);
         historyLog('contact-call-start-failed', { contactDeviceId: contact.deviceId, error: err.message });
     }
 }
@@ -17072,7 +17205,7 @@ function updateContactCallOverlay(call) {
         setContactCallActions([
             makeCallButton('拒接', 'btn btn-secondary', () => mediaController.rejectContactCall(call, 'rejected')),
             makeCallButton('接听', 'btn btn-primary', () => mediaController.acceptContactCall(call).catch(err => {
-                alert(`无法接听: ${err.message}`);
+                (window.TunnelI18n?.alert || alert)(`无法接听: ${err.message}`);
             }))
         ]);
         return;
@@ -17273,7 +17406,7 @@ function showDeviceTunnelInvitePrompt(invite) {
 function promptDeviceTunnelInvite(invite) {
     return showDeviceTunnelInvitePrompt(invite);
     const name = getDeviceTunnelInviteSenderName(invite);
-    const accepted = confirm(`${name} 邀请你开始一个传输隧道，是否进入？`);
+    const accepted = (window.TunnelI18n?.confirm || confirm)(`${name} 邀请你开始一个传输隧道，是否进入？`);
     if (accepted) acceptDeviceTunnelInvite(invite);
     else {
         pendingDeviceTunnelInvites.delete(invite.invitationId);
@@ -17606,7 +17739,7 @@ async function focusTransferRecordById(messageId, options = {}) {
             showAppToast('无法确认原记录所属隧道；原记录可能已被清理。'); return false;
         }
         if (sessionId !== state.sessionId) {
-            if (hasActiveTransferTasks() && !confirm('当前隧道仍有数据传输正在进行。切换隧道将重新加载页面，可能中断这些传输。是否继续切换到原记录所在隧道？')) return false;
+            if (hasActiveTransferTasks() && !(window.TunnelI18n?.confirm || confirm)('当前隧道仍有数据传输正在进行。切换隧道将重新加载页面，可能中断这些传输。是否继续切换到原记录所在隧道？')) return false;
             window.location.assign(getTransferRecordAnchorUrl(messageId, sessionId));
             return true;
         }
@@ -17852,9 +17985,130 @@ function initWorkspaceSwipeNavigation() {
 }
 
 function normalizeControlCenterOrder(saved) {
-    const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'workshop', 'notifications', 'disk', 'music', 'streaming', 'tunnels'];
+    const ids = ['refresh', 'magnet', 'theme', 'settings', 'leave', 'scan', 'light', 'resources', 'workshop', 'notifications', 'disk', 'music', 'streaming', 'account', 'tunnels'];
     return [...new Set([...(Array.isArray(saved) ? saved.filter(id => ids.includes(id)) : []), ...ids])];
 }
+function initControlCenterShortcuts() {
+    let lastTap = 0, ctrlOnly = false;
+    const open = () => {
+        if (!state.sessionId || state.isExitingTunnel) return;
+        showJoinedSessionSwitcher().catch(error => historyLog('control-center-open-failed', { error:error.message }));
+    };
+    document.addEventListener('keydown', event => {
+        if (event.key !== 'Control') { ctrlOnly = false; lastTap = 0; return; }
+        if (!event.repeat) ctrlOnly = !event.altKey && !event.metaKey && !event.shiftKey;
+    });
+    document.addEventListener('keyup', event => {
+        if (event.key !== 'Control' || !ctrlOnly) return;
+        ctrlOnly = false;
+        const now = Date.now();
+        if (lastTap && now-lastTap <= 400) { lastTap = 0; open(); }
+        else lastTap = now;
+    });
+    window.addEventListener('blur', () => { ctrlOnly = false; lastTap = 0; });
+    for (const id of ['leaveTunnelBtn','leaveTunnelPanelBtn']) {
+        const button = document.getElementById(id);
+        if (!button) continue;
+        let press = null, consumedTouchId = null, suppressUntil = 0, touchMenuUntil = 0;
+        const cancel = () => { if (press) clearTimeout(press.timer); press = null; };
+        const consumeTouch = () => {
+            consumedTouchId = press.id; clearTimeout(press.timer); suppressUntil = Infinity;
+            document.body.classList.add('control-center-touch-opening');
+            window.getSelection?.()?.removeAllRanges(); open();
+        };
+        document.addEventListener('selectstart', event => {
+            if (consumedTouchId !== null || Date.now() < touchMenuUntil) event.preventDefault();
+        }, true);
+        document.addEventListener('contextmenu', event => {
+            if (consumedTouchId === null && Date.now() >= touchMenuUntil) return;
+            event.preventDefault(); event.stopPropagation();
+        }, true);
+        button.addEventListener('contextmenu', event => {
+            event.preventDefault(); event.stopPropagation();
+            if (press) consumeTouch();
+            else { suppressUntil = Date.now()+800; open(); }
+        });
+        button.addEventListener('pointerdown', event => {
+            if (event.pointerType !== 'touch' || !event.isPrimary || event.button !== 0) { cancel(); return; }
+            cancel();
+            press = { id:event.pointerId, x:event.clientX, y:event.clientY };
+            press.timer = setTimeout(consumeTouch, 500);
+        });
+        document.addEventListener('pointerdown', event => { if (press && event.pointerId !== press.id) cancel(); }, true);
+        window.addEventListener('pointermove', event => {
+            if (press?.id === event.pointerId && Math.hypot(event.clientX-press.x,event.clientY-press.y)>10) cancel();
+        }, { passive:true });
+        const finish = event => {
+            if (consumedTouchId !== null && (event.type === 'blur' || event.pointerId === consumedTouchId)) {
+                consumedTouchId = null; suppressUntil = touchMenuUntil = Date.now()+800;
+                setTimeout(() => { if (consumedTouchId === null) document.body.classList.remove('control-center-touch-opening'); },800);
+            }
+            if (event.type === 'blur' || event.pointerId === press?.id) cancel();
+        };
+        window.addEventListener('pointerup', finish, true); window.addEventListener('pointercancel', finish, true); window.addEventListener('blur', finish);
+        button.addEventListener('click', event => {
+            if (Date.now() >= suppressUntil) return;
+            event.preventDefault(); event.stopImmediatePropagation();
+        }, true);
+    }
+}
+
+function initControlCenterLivePanels(dialog) {
+    const wide = window.matchMedia('(min-width: 1024px)');
+    const list = dialog.querySelector('[data-control-progress-list]');
+    const source = document.getElementById('progressList');
+    const summary = dialog.querySelector('[data-control-progress-summary]');
+    const t = text => window.TunnelI18n?.t(text) || text;
+    let frame = 0;
+    const render = () => {
+        frame = 0;
+        if (!wide.matches || !dialog.isConnected) return;
+        updateProgressDrawerSummary();
+        summary.textContent = document.getElementById('progressDrawerSummary')?.textContent || t('暂无传输任务');
+        const scrollTop = list.scrollTop;
+        const existing = new Map([...list.children].map(node => [node.dataset.progressKey,node]));
+        const keys = new Set();
+        let index = 0;
+        for (const item of source?.children || []) {
+            const key = item.dataset.progressKey; keys.add(key);
+            let row = existing.get(key);
+            if (!row) {
+                row = document.createElement('button'); row.type='button'; row.className='progress-item';
+                row.dataset.progressKey=key;
+                row.onclick = () => { dialog.remove(); locateProgressFile(key); };
+            }
+            if (row.controlProgressMarkup !== item.innerHTML) {
+                row.controlProgressMarkup = item.innerHTML;
+                row.innerHTML = item.innerHTML;
+                row.querySelectorAll('[id]').forEach(node => node.removeAttribute('id'));
+            }
+            row.title=item.title;
+            if (list.children[index] !== row) list.insertBefore(row,list.children[index] || null);
+            index++;
+        }
+        for (const [key,row] of existing) if (!keys.has(key)) row.remove();
+        list.scrollTop = scrollTop;
+    };
+    const schedule = () => { if (!frame && wide.matches) frame=requestAnimationFrame(render); };
+    const progressObserver = new MutationObserver(schedule);
+    if (source) progressObserver.observe(source, { childList:true, subtree:true, attributes:true, characterData:true });
+    const unmount = window.NotificationCenter?.mountUnread?.(dialog.querySelector('[data-control-unread-list]'));
+    dialog.querySelector('[data-control-notifications-open]').onclick = () => { dialog.remove(); window.NotificationCenter?.open(); };
+    const escape = event => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault(); event.stopImmediatePropagation(); dialog.remove();
+    };
+    document.addEventListener('keydown', escape, true);
+    wide.addEventListener('change', schedule);
+    const timer = setInterval(() => { if (!document.hidden) render(); },1000);
+    const lifecycle = new MutationObserver(() => {
+        if (dialog.isConnected) return;
+        progressObserver.disconnect(); lifecycle.disconnect(); clearInterval(timer); cancelAnimationFrame(frame);
+        wide.removeEventListener('change',schedule); document.removeEventListener('keydown',escape,true); unmount?.();
+    });
+    lifecycle.observe(document.body, { childList:true }); render();
+}
+
 function initTunnelControlCenter(dialog) {
     const actions = [
         ['refresh', '↻', '强制刷新页面', 'mobileForceRefreshBtn'],
@@ -17869,12 +18123,15 @@ function initTunnelControlCenter(dialog) {
         ['notifications', '🔔', '通知中心', 'notificationCenterBtn'],
         ['disk', '▤', 'Telegram网盘', 'telegramDriveBtn'],
         ['music', '♪', '全屏音乐播放器', 'topbarMusicBtn'],
-        ['streaming', '', '串流控制台', 'streamingConsoleBtn']
+        ['streaming', '', '串流控制台', 'streamingConsoleBtn'],
+        ['account', '👤', '登录 / 移除账号', null]
     ];
     let saved; try { saved = JSON.parse(localStorage.getItem('tunnelControlCenterOrder')); } catch (_) {}
     let order = normalizeControlCenterOrder(saved), drag = null, suppressUntil = 0;
     const tiles = new Map(), panel = dialog.querySelector('[data-control-panel]');
     const before = dialog.querySelector('[data-control-side="before"]'), after = dialog.querySelector('[data-control-side="after"]');
+    const wide = window.matchMedia('(min-width: 1024px)');
+    const animations = new Map(), slots = new Map();
     const label = document.createElement('div'); label.className = 'control-center-drag-label'; label.hidden = true; dialog.append(label);
     for (const [id, icon, title, target] of actions) {
         const tile = document.createElement('button'); tile.type = 'button'; tile.className = 'control-center-tile';
@@ -17882,6 +18139,10 @@ function initTunnelControlCenter(dialog) {
         if (id === 'leave') tile.innerHTML = '<span class="leave-tunnel-panel-icon" aria-hidden="true"><span></span></span>';
         else if (id === 'streaming') { const image = document.createElement('img'); image.src = '/client/icons/streaming.png'; image.alt = ''; image.style.cssText = 'width:32px;height:32px;object-fit:contain'; tile.append(image); }
         else tile.textContent = icon;
+        if (id === 'notifications') {
+            const badge = document.createElement('span'); badge.className = 'control-center-unread-badge';
+            badge.dataset.notificationCount = ''; badge.hidden = true; tile.append(badge);
+        }
         tile.onclick = event => {
             if (Date.now() < suppressUntil) { event.preventDefault(); return; }
             if (id === 'theme') {
@@ -17889,18 +18150,29 @@ function initTunnelControlCenter(dialog) {
                 return;
             }
             dialog.remove();
+            if (id === 'account') { window.DiskUI?.manageAccounts(); return; }
             document.getElementById(target)?.click();
         };
         tiles.set(id, tile);
     }
     const render = () => {
+        const rects = new Map([...tiles.values()].map(tile => [tile, tile.getBoundingClientRect()]));
+        for (const animation of animations.values()) animation.cancel();
+        animations.clear();
         const divider = order.indexOf('tunnels');
-        before.replaceChildren(...order.slice(0, divider).map(id => tiles.get(id)));
-        after.replaceChildren(...order.slice(divider + 1).map(id => tiles.get(id)));
+        before.replaceChildren(...(wide.matches ? order.filter(id => id !== 'tunnels') : order.slice(0, divider)).map(id => tiles.get(id)));
+        after.replaceChildren(...(wide.matches ? [] : order.slice(divider + 1)).map(id => tiles.get(id)));
+        for (const tile of tiles.values()) slots.set(tile, tile.getBoundingClientRect());
+        if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) for (const [tile, old] of rects) {
+            if (!old.width || tile === drag?.tile) continue;
+            const next = slots.get(tile), x = old.left - next.left, y = old.top - next.top;
+            if (x || y) animations.set(tile, tile.animate([{ transform:`translate(${x}px,${y}px)` }, { transform:'translate(0,0)' }], { duration:180, easing:'ease-out' }));
+        }
     };
     const reset = () => {
         if (!drag) return;
         clearTimeout(drag.timer); drag.tile.classList.remove('is-dragging');
+        drag.ghost?.remove();
         if (drag.tile.hasPointerCapture?.(drag.id)) drag.tile.releasePointerCapture(drag.id);
         if (drag.moved || (drag.touch && (drag.active || drag.scrolling))) suppressUntil = Date.now() + 700;
         if (drag.moved) { try { localStorage.setItem('tunnelControlCenterOrder', JSON.stringify(order)); } catch (_) {} }
@@ -17909,13 +18181,24 @@ function initTunnelControlCenter(dialog) {
     const activate = () => {
         if (!drag) return;
         drag.active = true; drag.tile.classList.add('is-dragging');
+        const rect = drag.tile.getBoundingClientRect();
+        drag.rect = rect;
+        drag.ghost = drag.tile.cloneNode(true);
+        drag.ghost.classList.add('control-center-drag-ghost');
+        drag.ghost.dataset.controlIcon = drag.tile.dataset.controlTile;
+        drag.ghost.removeAttribute('data-control-tile');
+        drag.ghost.setAttribute('aria-hidden', 'true');
+        drag.ghost.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${rect.width}px;height:${rect.height}px;pointer-events:none;margin:0;z-index:3`;
+        const appearance = getComputedStyle(drag.tile);
+        for (const property of ['font','whiteSpace','backgroundColor','color','border','borderRadius','outline']) drag.ghost.style[property] = appearance[property];
+        dialog.append(drag.ghost);
         label.textContent = '当前选中：' + drag.tile.title; label.hidden = false;
     };
     for (const tile of tiles.values()) {
         tile.addEventListener('contextmenu', event => event.preventDefault());
         tile.addEventListener('pointerdown', event => {
             if (event.button > 0 || !event.isPrimary) { reset(); return; }
-            drag = { tile, id: event.pointerId, x: event.clientX, y: event.clientY, active: false, touch: event.pointerType === 'touch', scroll: dialog.querySelector('.control-center').scrollTop };
+            drag = { tile, id: event.pointerId, x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, active: false, touch: event.pointerType === 'touch', scroll: dialog.querySelector('.control-center').scrollTop };
             try { tile.setPointerCapture(event.pointerId); } catch (_) {}
             if (drag.touch) drag.timer = setTimeout(activate, 500); else activate();
         });
@@ -17930,22 +18213,49 @@ function initTunnelControlCenter(dialog) {
             event.preventDefault();
             if (distance < 8) return;
             drag.moved = true;
-            const hovered = document.elementFromPoint(event.clientX, event.clientY)?.closest('[data-control-tile]');
+            const bounds = before.getBoundingClientRect();
+            const left = wide.matches ? Math.min(bounds.right-drag.rect.width, Math.max(bounds.left,drag.rect.left+event.clientX-drag.x)) : drag.rect.left+event.clientX-drag.x;
+            const top = wide.matches ? Math.min(bounds.bottom-drag.rect.height, Math.max(bounds.top,drag.rect.top+event.clientY-drag.y)) : drag.rect.top+event.clientY-drag.y;
+            drag.ghost.style.left = `${left}px`; drag.ghost.style.top = `${top}px`;
+            let hovered;
+            if (wide.matches) {
+                // Use layout slots rather than animated rectangles so a tile
+                // gives way just before contact, without chasing its animation.
+                const dx = event.clientX-drag.lastX, dy = event.clientY-drag.lastY;
+                const cx = left+drag.rect.width/2, cy = top+drag.rect.height/2;
+                if (!drag.reorderedAt || Math.hypot(event.clientX-drag.reorderedAt.x,event.clientY-drag.reorderedAt.y) >= 8) {
+                    let nearest = Infinity;
+                    for (const [candidate, rect] of slots) {
+                        if (candidate === tile) continue;
+                        const x = rect.left+rect.width/2, y = rect.top+rect.height/2;
+                        const contact = Math.abs(dx) >= Math.abs(dy)
+                            ? dx*(x-cx)>0 && Math.abs(y-cy)<rect.height/2 && left+drag.rect.width+4>=rect.left && left-4<=rect.right
+                            : dy*(y-cy)>0 && Math.abs(x-cx)<rect.width/2 && top+drag.rect.height+4>=rect.top && top-4<=rect.bottom;
+                        const distance = Math.hypot(x-cx,y-cy);
+                        if (contact && distance < nearest) { nearest = distance; hovered = candidate; }
+                    }
+                }
+                drag.lastX = event.clientX; drag.lastY = event.clientY;
+            } else hovered = document.elementFromPoint(left+drag.rect.width/2, top+drag.rect.height/2)?.closest('[data-control-tile]');
             let targetId, insertAfter = false;
             if (hovered && hovered !== drag.tile) {
-                targetId = hovered.dataset.controlTile; const rect = hovered.getBoundingClientRect();
-                insertAfter = event.clientX > rect.left + rect.width / 2;
+                targetId = hovered.dataset.controlTile;
+                insertAfter = order.indexOf(hovered.dataset.controlTile) > order.indexOf(drag.tile.dataset.controlTile);
             } else {
                 const rect = panel.getBoundingClientRect();
-                if (event.clientY >= rect.top && event.clientY <= rect.bottom) { targetId = 'tunnels'; insertAfter = event.clientY > rect.top + rect.height / 2; }
-                else if (event.clientY < rect.top && !hovered) targetId = 'tunnels';
-                else if (event.clientY > rect.bottom && !hovered) { targetId = 'tunnels'; insertAfter = true; }
+                if (!wide.matches) {
+                    if (event.clientY >= rect.top && event.clientY <= rect.bottom) { targetId = 'tunnels'; insertAfter = event.clientY > rect.top + rect.height / 2; }
+                    else if (event.clientY < rect.top && !hovered) targetId = 'tunnels';
+                    else if (event.clientY > rect.bottom && !hovered) { targetId = 'tunnels'; insertAfter = true; }
+                }
             }
             if (targetId) {
                 const next = order.filter(id => id !== drag.tile.dataset.controlTile), index = next.indexOf(targetId);
-                next.splice(index + (insertAfter ? 1 : 0), 0, drag.tile.dataset.controlTile); order = next; render();
+                next.splice(index + (insertAfter ? 1 : 0), 0, drag.tile.dataset.controlTile); order = next;
+                drag.reorderedAt = { x:event.clientX, y:event.clientY }; render();
             }
             const scroller = dialog.querySelector('.control-center'), rect = scroller.getBoundingClientRect();
+            if (wide.matches) return;
             if (event.clientY < rect.top + 40) scroller.scrollTop -= 12;
             else if (event.clientY > rect.bottom - 40) scroller.scrollTop += 12;
         };
@@ -17959,13 +18269,24 @@ function initTunnelControlCenter(dialog) {
         observer.observe(document.body, { childList: true });
     }
     dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { reset(); dialog.remove(); } });
+    const reflow = () => { reset(); render(); };
+    wide.addEventListener('change', reflow);
+    const cleanup = new MutationObserver(() => {
+        if (dialog.isConnected) return;
+        wide.removeEventListener('change', reflow);
+        for (const animation of animations.values()) animation.cancel();
+        cleanup.disconnect();
+    });
+    cleanup.observe(document.body, { childList:true });
     render();
 }
 
 async function showJoinedSessionSwitcher() {
+    if (document.querySelector('.control-center-overlay')) return;
     const sessions = (await getAllFromStore('sessions').catch(() => []))
         .filter(session => session?.sessionId)
         .sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId), undefined, { numeric: true }));
+    if (document.querySelector('.control-center-overlay')) return;
     const dialog = document.createElement('div');
     dialog.className = 'modal-overlay active control-center-overlay';
     const list = sessions.length
@@ -17975,28 +18296,37 @@ async function showJoinedSessionSwitcher() {
             const currentClass = session.sessionId === state.sessionId ? ' is-current' : '';
             const remark = escapeHtml(String(session.remark || '').trim());
             const code = escapeHtml(normalizeLocalShortCode(session.shortCode) || '-----');
-            return `<button class="session-tool session-switch-item${currentClass}" data-session-id="${id}" style="width:100%;justify-content:flex-start;margin:6px 0;"><strong>${code}${remark ? ` · ${remark}` : ''}</strong><br><small>${time}</small></button>`;
+            return `<button class="session-tool session-switch-item${currentClass}" data-session-id="${id}"><strong>${code}${remark ? ` · ${remark}` : ''}</strong><br><small>${time}</small></button>`;
         }).join('')
         : '<p>本设备还没有加入过其它隧道。</p>';
     dialog.innerHTML = `
-        <div class="control-center">
+        <div class="control-center" id="tunnelControlCenter">
+            <header class="control-center-heading"><strong>控制中心</strong><button class="session-switcher-close" id="closeSessionSwitcher" type="button" aria-label="关闭">×</button></header>
+            <div class="control-center-columns">
+            <aside class="control-center-live">
+                <section class="control-center-progress"><h3>传输进度</h3><p data-control-progress-summary></p><div data-control-progress-list></div></section>
+                <section class="control-center-notifications"><header><h3>未读消息 <span data-notification-count hidden></span></h3><button type="button" data-control-notifications-open>打开通知中心 ›</button></header><div data-control-unread-list></div></section>
+            </aside>
+            <div class="control-center-tools">
             <div class="control-center-tiles" data-control-side="before"></div>
             <div class="modal session-switcher-modal" data-control-panel>
-            <button class="session-switcher-close" id="closeSessionSwitcher" type="button" aria-label="关闭">×</button>
             <h3>切换隧道</h3>
             <button class="session-switch-scroll" type="button" data-scroll="-1" aria-label="向上滚动">⌃</button>
             <div class="session-switcher-list" id="sessionSwitcherList">${list}</div>
             <button class="session-switch-scroll" type="button" data-scroll="1" aria-label="向下滚动">⌄</button>
             </div>
             <div class="control-center-tiles" data-control-side="after"></div>
+            </div></div>
         </div>
     `;
     document.body.appendChild(dialog);
     initTunnelControlCenter(dialog);
+    initControlCenterLivePanels(dialog);
     dialog.addEventListener('click', event => {
-        if (!event.target.closest('.control-center-tile, [data-control-panel], .control-center-drag-label') && !event.defaultPrevented) dialog.remove();
+        if (event.target === dialog && !event.defaultPrevented) dialog.remove();
     });
     dialog.querySelector('#closeSessionSwitcher').addEventListener('click', () => dialog.remove());
+    dialog.querySelector('#closeSessionSwitcher').focus({ preventScroll:true });
     const scroller = dialog.querySelector('#sessionSwitcherList');
     const updateScrollButtons = () => {
         if (!scroller) return;
@@ -18018,13 +18348,19 @@ async function showJoinedSessionSwitcher() {
         scroller.scrollTop += current.getBoundingClientRect().top - scroller.getBoundingClientRect().top - (scroller.clientHeight - current.offsetHeight) / 2;
         requestAnimationFrame(updateScrollButtons);
     });
-    window.addEventListener('resize', updateScrollButtons, { once: true });
+    const scrollSize = new ResizeObserver(updateScrollButtons);
+    scrollSize.observe(scroller);
+    const scrollLifecycle = new MutationObserver(() => {
+        if (dialog.isConnected) return;
+        scrollSize.disconnect(); scrollLifecycle.disconnect();
+    });
+    scrollLifecycle.observe(document.body, { childList:true });
     dialog.querySelectorAll('[data-session-id]').forEach(button => {
         button.addEventListener('click', () => {
             const sessionId = button.dataset.sessionId;
             if (sessionId && sessionId !== state.sessionId) {
                 if (hasActiveTransferTasks()) {
-                    const ok = confirm('切换到别的隧道，将停止当前正在进行的数据传输任务，是否切换？');
+                    const ok = (window.TunnelI18n?.confirm || confirm)('切换到别的隧道，将停止当前正在进行的数据传输任务，是否切换？');
                     if (!ok) return;
                 }
                 window.location.href = `${window.location.origin}/#${sessionId}`;
@@ -18311,7 +18647,7 @@ function closeDownloadCacheOverlay() {
 }
 
 async function exitTunnelAndClearCache() {
-    const ok = confirm('退出当前隧道，将清理这个隧道的所有缓存数据。\n如需再进此隧道，将重新拉取全部远程文件。\n确定退出吗？');
+    const ok = (window.TunnelI18n?.confirm || confirm)('退出当前隧道，将清理这个隧道的所有缓存数据。\n如需再进此隧道，将重新拉取全部远程文件。\n确定退出吗？');
     if (!ok) return;
     const progress = showBlockingProgressPanel('正在退出隧道', '正在清理本机缓存与传输记录...');
     try {
@@ -18330,7 +18666,7 @@ async function exitTunnelAndClearCache() {
         progress.close();
         state.isExitingTunnel = false;
         historyLog('exit-tunnel-clear-failed', { error: err.message });
-        alert(`退出隧道失败：${err.message}`);
+        (window.TunnelI18n?.alert || alert)(`退出隧道失败：${err.message}`);
     }
 }
 
@@ -18764,13 +19100,14 @@ function initTunnelSettings() {
         updateLanP2pPermissionUi();
         refreshCallRingtoneSettingsUi();
         layer.hidden = false;
+        requestAnimationFrame(() => window.TunnelI18n?.offerSystemLanguage?.());
     };
     const close = () => { layer.hidden = true; };
     settingsToolGrid?.addEventListener('click', event => {
         if (event.target.closest('button')) close();
     }, true);
     document.getElementById('tunnelSettingsBtn')?.addEventListener('click', open);
-    const rotate=document.createElement('button');rotate.type='button';rotate.className='btn btn-secondary';rotate.textContent='修改隧道短码';rotate.onclick=()=>{if(state.sessionOwnerDeviceId!==state.deviceId){showAppToast('仅隧道创建者或后台管理员可修改短码');return;}const shortCode=prompt('输入新的 5 位短码。旧短码将失效，已加入设备不受影响。',state.shortCode||'');if(shortCode===null)return;state.socket?.emit('session-short-code-update',{shortCode},result=>{if(!result?.ok)alert(result?.error||'短码修改失败');else showAppToast('短码已更新，旧短码不再允许加入');});};settingsToolGrid?.append(rotate);
+    const rotate=document.createElement('button');rotate.type='button';rotate.className='btn btn-secondary';rotate.textContent='修改隧道短码';rotate.onclick=()=>{if(state.sessionOwnerDeviceId!==state.deviceId){showAppToast('仅隧道创建者或后台管理员可修改短码');return;}const shortCode=(window.TunnelI18n?.prompt || prompt)('输入新的 5 位短码。旧短码将失效，已加入设备不受影响。',state.shortCode||'');if(shortCode===null)return;state.socket?.emit('session-short-code-update',{shortCode},result=>{if(!result?.ok)(window.TunnelI18n?.alert || alert)(result?.error||'短码修改失败');else showAppToast('短码已更新，旧短码不再允许加入');});};settingsToolGrid?.append(rotate);
     document.getElementById('grantLanP2pPermissionBtn')?.addEventListener('click', grantLanP2pPermission);
     document.getElementById('closeTunnelSettingsBtn')?.addEventListener('click', close);
     layer?.addEventListener('click', event => {
@@ -18900,7 +19237,7 @@ function initUI() {
         sessionId: () => state.sessionId,
         focusMessage: (messageId, source = {}) => focusTransferRecordById(messageId, { timeoutMs:8000, behavior:'smooth', allowTunnelSwitch:true, sessionId:source.sessionId }),
         toast: showAppToast,
-        requestEdit: fileInfo => requestWebZipEditPermission(fileInfo).catch(error => alert(error.message))
+        requestEdit: fileInfo => requestWebZipEditPermission(fileInfo).catch(error => (window.TunnelI18n?.alert || alert)(error.message))
     });
     initTopbarOverflowScroll();
     window.addEventListener('beforeunload', persistMusicPlayerStateNow);
@@ -18923,6 +19260,7 @@ function initUI() {
     document.getElementById('tunnelTopbar').addEventListener('click', handleTopbarAdminTap);
     document.getElementById('leaveTunnelBtn').addEventListener('click', leaveTunnel);
     document.getElementById('leaveTunnelPanelBtn')?.addEventListener('click', leaveTunnel);
+    initControlCenterShortcuts();
     document.getElementById('mobileForceRefreshBtn').addEventListener('click', forceMobileRefresh);
     document.getElementById('magnetCacheBtn').addEventListener('click', openDownloadCacheOverlay);
     document.getElementById('closeDownloadCacheOverlayBtn')?.addEventListener('click', closeDownloadCacheOverlay);
@@ -18955,12 +19293,12 @@ function initUI() {
     document.getElementById('scanTunnelCodeBtn')?.addEventListener('click', () => {
         const menu = document.getElementById('connectionHeaderMenu');
         if (menu) menu.hidden = true;
-        openTunnelCodeScanner().catch(err => alert(`无法扫描隧道码：${err.message}`));
+        openTunnelCodeScanner().catch(err => (window.TunnelI18n?.alert || alert)(`无法扫描隧道码：${err.message}`));
     });
     document.getElementById('receiveLightBtn')?.addEventListener('click', () => {
         const menu = document.getElementById('connectionHeaderMenu');
         if (menu) menu.hidden = true;
-        getLightTransferApi()?.openReceiver().catch(err => alert(`无法开始光媒接收：${err.message}`));
+        getLightTransferApi()?.openReceiver().catch(err => (window.TunnelI18n?.alert || alert)(`无法开始光媒接收：${err.message}`));
     });
     document.getElementById('notificationCenterBtn')?.addEventListener('click', () => {
         document.getElementById('connectionHeaderMenu').hidden = true;
@@ -18998,7 +19336,7 @@ function initUI() {
     });
     document.getElementById('telegramDriveBtn')?.addEventListener('click', () => {
         document.getElementById('connectionHeaderMenu').hidden = true;
-        window.DiskUI.open().catch(error => alert(error.message));
+        window.DiskUI.open().catch(error => (window.TunnelI18n?.alert || alert)(error.message));
     });
     document.addEventListener('click', event => {
         if (!event.target.closest?.('.connection-header-menu-wrap')) document.getElementById('connectionHeaderMenu').hidden = true;
@@ -19016,7 +19354,7 @@ function initUI() {
         if (menu) menu.hidden = true;
         showResourceBrowser({ restoreIfMinimized: true }).catch(err => {
             historyLog('resource-browser-open-failed', { error: err.message });
-            alert(`无法打开资源浏览器: ${err.message}`);
+            (window.TunnelI18n?.alert || alert)(`无法打开资源浏览器: ${err.message}`);
         });
     };
     document.getElementById('resourceBrowserBtn').addEventListener('click', openResourceBrowserFromButton);
@@ -19025,7 +19363,7 @@ function initUI() {
     document.getElementById('historyBackupInput')?.addEventListener('change', event => {
         const file = event.target.files?.[0];
         event.target.value = '';
-        if (file) importTransferHistoryBackup(file).catch(err => alert(`导入失败：${err.message}`));
+        if (file) importTransferHistoryBackup(file).catch(err => (window.TunnelI18n?.alert || alert)(`导入失败：${err.message}`));
     });
     document.getElementById('folderUploadBtn').addEventListener('click', () => document.getElementById('folderInput').click());
     document.getElementById('folderInput').addEventListener('change', async event => {
@@ -19034,7 +19372,7 @@ function initUI() {
         try {
             await sendFolder(files);
         } catch (err) {
-            alert(`文件夹发送失败：${err.message}`);
+            (window.TunnelI18n?.alert || alert)(`文件夹发送失败：${err.message}`);
             historyLog('folder-archive-failed', { error: err.message });
         } finally {
             event.target.value = '';
@@ -19048,10 +19386,10 @@ function initUI() {
                 mediaController.stopCamera();
                 return;
             }
-            if (mediaController.cameraBroadcast && !confirm('发起新的摄像头广播会中止其它正在进行的广播。是否继续？')) return;
+            if (mediaController.cameraBroadcast && !(window.TunnelI18n?.confirm || confirm)('发起新的摄像头广播会中止其它正在进行的广播。是否继续？')) return;
             await mediaController.startCamera();
         } catch (err) {
-            alert(`无法启动摄像头: ${err.message}`);
+            (window.TunnelI18n?.alert || alert)(`无法启动摄像头: ${err.message}`);
             historyLog('camera-start-failed', { error: err.message });
         }
     });
@@ -19062,7 +19400,7 @@ function initUI() {
             if (mediaController.voice) mediaController.leaveVoice();
             else await mediaController.joinVoice();
         } catch (err) {
-            alert(`无法加入语音聊天: ${err.message}`);
+            (window.TunnelI18n?.alert || alert)(`无法加入语音聊天: ${err.message}`);
             historyLog('voice-join-failed', { error: err.message });
         }
     });
@@ -19081,7 +19419,7 @@ function initUI() {
                 await mediaController.startIntercom(recipients);
             }
         } catch (err) {
-            alert(`无法启动对讲机: ${err.message}`);
+            (window.TunnelI18n?.alert || alert)(`无法启动对讲机: ${err.message}`);
             historyLog('intercom-start-failed', { error: err.message });
         }
     });
@@ -19098,7 +19436,7 @@ function initUI() {
         if (!hasTunnelPermission('sendFile') && !requireTunnelPermission('sendWebZip')) return;
         pickFilesForSending().catch(err => {
             historyLog('file-picker-send-failed', { error: err.message });
-            alert(`选择文件失败：${err.message}`);
+            (window.TunnelI18n?.alert || alert)(`选择文件失败：${err.message}`);
         });
     });
 
@@ -19128,7 +19466,7 @@ function initUI() {
     document.getElementById('closeFilePreviewBtn').addEventListener('click', closeFilePreview);
     document.getElementById('filePreviewLightShareBtn')?.addEventListener('click', () => {
         shareCurrentPreviewViaLight().catch(err => {
-            alert(`光媒分享失败：${err.message}`);
+            (window.TunnelI18n?.alert || alert)(`光媒分享失败：${err.message}`);
             historyLog('light-share-preview-failed', { fileId: activeFilePreviewFileId, error: err.message });
         });
     });
@@ -19573,6 +19911,7 @@ function updateProgressDrawerSummary() {
     if (stalled) parts.push(`${stalled} 个停滞`);
     if (starting) parts.push(`${starting} 个准备传输`);
     if (queued) parts.push(`${queued} 个等待`);
+    if (summary.textContent === parts.join(' · ')) return;
     summary.replaceChildren(...parts.flatMap((part, index) => [
         ...(index ? [document.createTextNode(' · ')] : []),
         document.createTextNode(part)
@@ -19744,6 +20083,16 @@ async function announceKnownSessionCodes() {
     if (state.sessionId && state.shortCode && !entries.some(entry => entry.sessionId === state.sessionId)) {
         entries.push({ sessionId: state.sessionId, shortCode: state.shortCode });
     }
+    // A saved admission is independent of a cached directory entry or its old
+    // join code. Let the server verify it without joining that tunnel.
+    try {
+        for (let index=0;index<localStorage.length;index++) {
+            const key=localStorage.key(index);
+            if (!key?.startsWith('tunnel-authorization:')) continue;
+            const sessionId=key.slice('tunnel-authorization:'.length);
+            if (/^[a-zA-Z0-9_-]{8,64}$/.test(sessionId) && !entries.some(entry=>entry.sessionId===sessionId) && savedTunnelGrant(sessionId)) entries.push({sessionId,shortCode:''});
+        }
+    } catch (error) { historyLog('session-access-directory-read-failed',{error:error.message}); }
     socket.emit('register-session-codes', { deviceId:state.deviceId,entries:entries.map(entry=>({...entry,deviceId:tunnelDeviceId(entry.sessionId),accessGrant:savedTunnelGrant(entry.sessionId)})) });
     historyLog('session-code-directory-announced', { entryCount: entries.length });
 }
@@ -19752,10 +20101,10 @@ async function joinByShortCode() {
     const input = document.getElementById('shortCodeInput');
     const shortCode = input.value.trim().toUpperCase();
     if (!/^[A-Z0-9]{5}$/.test(shortCode)) {
-        alert('请输入 5 位字母或数字组成的隧道暗号。');
+        (window.TunnelI18n?.alert || alert)('请输入 5 位字母或数字组成的隧道暗号。');
         return;
     }
-    try { await selectTunnelByShortCode(shortCode); } catch(error) { alert(error.message); }
+    try { await selectTunnelByShortCode(shortCode); } catch(error) { (window.TunnelI18n?.alert || alert)(error.message); }
 }
 
 async function pollClipboard() {
@@ -19781,7 +20130,7 @@ async function toggleClipboardShare() {
         return;
     }
     if (!window.isSecureContext || !navigator.clipboard?.readText) {
-        alert('粘贴板共享需要 HTTPS（或 localhost）以及浏览器粘贴板权限。');
+        (window.TunnelI18n?.alert || alert)('粘贴板共享需要 HTTPS（或 localhost）以及浏览器粘贴板权限。');
         return;
     }
     state.clipboardShareEnabled = true;
@@ -19806,7 +20155,7 @@ async function copySharedClipboard() {
     try {
         await navigator.clipboard.writeText(state.remoteClipboardText);
     } catch (err) {
-        alert(state.remoteClipboardText);
+        (window.TunnelI18n?.alert || alert)(state.remoteClipboardText);
     }
 }
 
@@ -19855,7 +20204,7 @@ async function startDirectoryMirror() {
         return;
     }
     if (!window.showDirectoryPicker || !window.FolderArchive) {
-        alert('目录镜像需要 Chromium 的 File System Access API。Firefox 和移动浏览器请使用“发送文件夹”。');
+        (window.TunnelI18n?.alert || alert)('目录镜像需要 Chromium 的 File System Access API。Firefox 和移动浏览器请使用“发送文件夹”。');
         return;
     }
     directoryMirror.handle = await window.showDirectoryPicker({ mode: 'readwrite' });
@@ -20449,7 +20798,7 @@ async function downloadFile(fileId) {
         file = await materializeExternalFileRecord(file, { requestPermission: true });
     }
     if (!hasCompleteFileCache(file)) {
-        alert('文件不存在');
+        (window.TunnelI18n?.alert || alert)('文件不存在');
         return;
     }
 

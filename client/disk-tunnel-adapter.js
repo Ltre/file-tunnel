@@ -35,7 +35,7 @@
         if (target === null) return;
         const folderPath = target.path, transportContext = target.transportContext;
         if (window.DiskUploadNames) {
-            files = await window.DiskUploadNames.prepare(files, folderPath, text => confirm(text), (file, name) => ({ ...file, name }));
+            files = await window.DiskUploadNames.prepare(files, folderPath, text => (window.TunnelI18n?.confirm || confirm)(text), (file, name) => ({ ...file, name }));
             if (!files) return;
         }
         const navigationVersion = window.DiskUI.navigationVersion;
@@ -90,7 +90,7 @@
         const empty = items.filter(item => Number(item.size) === 0);
         if (empty.length) {
             const message = '所选文件中存在 0 B 空文件，请取消勾选后重试：';
-            alert((window.TunnelI18n?.t(message) || message) + '\n' + empty.map(item => item.name).join('\n'));
+            (window.TunnelI18n?.alert || alert)((window.TunnelI18n?.t(message) || message) + '\n' + empty.map(item => item.name).join('\n'));
             return;
         }
         const target = await chooseTarget();
@@ -132,7 +132,7 @@
             await host.send(files);
         } catch (error) {
             sessionStorage.setItem(PENDING, JSON.stringify(pending));
-            alert(error.message);
+            (window.TunnelI18n?.alert || alert)(error.message);
         }
     }
 })();

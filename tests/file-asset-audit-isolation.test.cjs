@@ -67,6 +67,23 @@ function createAssetRecord(asset, providerId = 'provider-one') {
     };
 }
 
+test('explicit P2P abandonment is forwarded only by the assigned provider for its current request and exact attempt', () => {
+    for (const [provider, requestId, abandonedAttemptId, expected] of [
+        ['provider-one', 'req-current', 'req-current-p2p-full', true],
+        ['provider-one', 'req-current', 'req-other-p2p-full', false],
+        ['provider-one', 'req-old', 'req-old-p2p-full', false],
+        ['unrelated-provider', 'req-current', 'req-current-p2p-full', false]
+    ]) {
+        const asset = createAsset(), record = createAssetRecord(asset), target = createSocket(), socket = createSocket();
+        record.assignments.set(asset.id + ':receiver:full', 'provider-one'); record.assignmentMeta.set(asset.id + ':receiver:full', { providerId: 'provider-one', requestId: 'req-current' });
+        const handlers = registerHarness({ socket, sessionId: 'session', session: { devices: new Map(), fileAssets: new Map([[asset.id, record]]) }, currentDeviceId: provider, deviceSockets: new Map([['receiver', target]]) });
+        handlers.get('file-asset-transfer-status')({ sessionId: 'session', assetId: asset.id, to: 'receiver', status: 'failed', requestId, abandonedAttemptId });
+        const notice = target.emitted.find(item => item.event === 'file-asset-transfer-status');
+        assert.equal(Boolean(notice?.payload.abandonedAttemptId), expected);
+        if (expected) assert.equal(notice.payload.abandonedAttemptId, abandonedAttemptId);
+    }
+});
+
 test('availability broadcasts before queued metadata audit and repeated presence is audit-idempotent', () => {
     const sessionId = 'session-available';
     const providerId = 'provider-one';

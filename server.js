@@ -1470,6 +1470,8 @@ app.get('/youtube-premium-dl', (req, res) => {
     res.sendFile(path.join(__dirname, 'pages', 'youtube-premium-dl.html'));
 });
 
+app.use('/api/admin-forms', adminAuth.requireAuth, require('./server/admin-form-cache').createAdminFormRouter({ dataDir: SERVER_DATA_DIR }));
+
 app.get(['/sns-dl', '/sns-dl.html'], (req, res) => {
     if (!adminAuth.isAuthenticated(req)) return adminAuth.requireAuth(req, res, () => {});
     res.sendFile(path.join(__dirname, 'pages', 'sns-dl.html'));
@@ -2387,10 +2389,10 @@ function sendTelegramOidcPopupCompletion(res, openerOrigin, result, error = '', 
     const success = result === 'success';
     res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
     res.status(200).type('html').send(`<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram 登录${success ? '完成' : '失败'}</title></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Telegram 登录${success ? '完成' : '失败'}</title><script defer src="/client/i18n-bootstrap.js"></script><script defer src="/client/i18n.js"></script></head>
 <body style="font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:#f5f7fb;color:#26324d">
-<main style="max-width:420px;padding:28px;text-align:center"><h1 style="font-size:1.25rem">Telegram 登录${success ? '成功' : '未完成'}</h1><p id="telegramOidcPopupStatus">正在通知原页面，本窗口将自动关闭…</p><button type="button" onclick="window.close()">关闭窗口</button></main>
-<script>(()=>{const payload=${serializeTelegramOidcInlineValue(payload)};const targetOrigin=${serializeTelegramOidcInlineValue(openerOrigin)};try{if(window.opener&&!window.opener.closed)window.opener.postMessage(payload,targetOrigin);}finally{setTimeout(()=>window.close(),60);setTimeout(()=>{document.getElementById('telegramOidcPopupStatus').textContent='已通知原页面；如果窗口没有自动关闭，请手动关闭。';},500);}})();</script>
+<main style="max-width:420px;padding:28px;text-align:center"><h1 style="font-size:1.25rem">Telegram 登录${success ? '成功' : '未完成'}</h1><p id="telegramOidcPopupStatus">${success ? '登录凭据已保存，请返回原页面确认登录状态。' : '本次登录未完成，请返回原页面重试。'}</p><button id="telegramOidcClose" type="button">关闭窗口</button> <a id="telegramOidcReturn" href="/">返回首页</a></main>
+<script>(()=>{const payload=${serializeTelegramOidcInlineValue(payload)};const targetOrigin=${serializeTelegramOidcInlineValue(openerOrigin)};let sent=false;try{if(window.opener&&!window.opener.closed){window.opener.postMessage(payload,targetOrigin);sent=true;}}catch(_){}document.getElementById('telegramOidcReturn').href=targetOrigin+'/';const status=document.getElementById('telegramOidcPopupStatus');const close=manual=>{try{window.close();}catch(_){}setTimeout(()=>{status.textContent=manual?'浏览器无法关闭此页，请手动返回原页面或关闭此页。':payload.result!=='success'?'本次登录未完成，请返回原页面重试。':sent?'已发送登录结果，请返回原页面确认；此页可手动关闭。':'登录凭据已保存，请返回原页面确认登录状态。';},150);};document.getElementById('telegramOidcClose').onclick=()=>close(true);setTimeout(()=>close(false),60);})();</script>
 </body></html>`);
 }
 
@@ -3975,10 +3977,19 @@ function canUseTunnelCapability(session, deviceId, capability) {
     return (permissions[capability] ?? permissions[legacy]) !== false;
 }
 
-function canReadForwardedFile(targetSessionId, deviceId, sourceSessionId, fileId) {
+function canReadForwardedFile(targetSessionId, deviceId, sourceSessionId, fileId, recordMessageId = '') {
     const target = sessions.get(targetSessionId);
     if (!target?.devices?.has(deviceId) || !canUseTunnelCapability(target, deviceId, 'read')) return false;
-    return target.history?.some(entry => {
+    let entries = target.history || [];
+    // The live history is bounded. A destination record outside that window
+    // still owns its exact copied files; load only the requested anchor.
+    if (typeof recordMessageId === 'string' && recordMessageId.length > 0 && recordMessageId.length <= 100 && !entries.some(entry => entry.message?.id === recordMessageId)) {
+        try {
+            const message = infraStore?.getHistoryMessage?.(targetSessionId, recordMessageId);
+            if (message) entries = [...entries, { message }];
+        } catch (_) { return false; }
+    }
+    return entries.some(entry => {
         const message = entry.message;
         if (Array.isArray(target.deletedMessageIds) ? target.deletedMessageIds.includes(message?.id) : target.deletedMessageIds?.has?.(message?.id)) return false;
         const files = message?.type === 'file' ? [message.fileInfo] : message?.type === 'collection' ? message.collection?.files || [] : [];
@@ -9360,19 +9371,63 @@ function writeWebZipRecord(sessionId, previous, next, options = {}) {
     });
 }
 
-function canSyncWebZipSource(deviceId, sourceSessionId) {
-    const source = sessions.get(sourceSessionId);
+function canSyncWebZipSource(deviceId, sourceSessionId, editingSessionId) {
+    let source = sessions.get(sourceSessionId);
+    if (!source) {
+        const stored = infraStore?.getTunnel?.(sourceSessionId);
+        if (stored) source = { devices:new Map(), ownerDeviceId:stored.owner_device_id || '', ...parseStoredTunnelAccess(stored.permissions_json) };
+    }
+    if (!source) return false;
     const online = id => { const member = source?.devices?.get(id), peer = io.sockets.sockets.get(member?.socketId); return Boolean(peer?.connected && peer.data?.deviceId === id && canUseTunnelCapability(source,id,'read')); };
-    if (online(deviceId)) return true;
-    const visible = new Set(getNearbyCandidates(deviceId).map(value => value.deviceId));
-    for (const session of sessions.values()) {
-        const member = session.devices.get(deviceId), peer = io.sockets.sockets.get(member?.socketId);
-        if (peer?.connected && peer.data?.deviceId === deviceId && canUseTunnelCapability(session,deviceId,'read')) for (const [id, other] of session.devices) {
-            const socket = io.sockets.sockets.get(other.socketId);
-            if (socket?.connected && socket.data?.deviceId === id) visible.add(id);
+    const hasSourceAccess = peer => {
+        const proof = peer?.data?.webZipSyncAccessGrants?.get(sourceSessionId);
+        return Boolean(peer?.connected && proof && tunnelAccess.verify(proof.grant,sourceSessionId,proof.deviceId) && canUseTunnelCapability(source,proof.deviceId,'read'));
+    };
+    // A browser can hold a different identity in each tunnel. Only proofs
+    // verified on that live socket connect those identities for visibility;
+    // they do not merge roles, editing permissions or tunnel memberships.
+    const actors = new Set([deviceId]);
+    const editingMember = sessions.get(editingSessionId)?.devices?.get(deviceId);
+    const editingPeer = io.sockets.sockets.get(editingMember?.socketId);
+    if (editingPeer?.data?.deviceId === deviceId && hasSourceAccess(editingPeer)) return true;
+    if (editingSessionId) for (const peer of io.sockets.sockets.values()) {
+        if (peer.connected && peer.data?.webZipSyncIdentities?.get(editingSessionId) === deviceId) {
+            actors.add(peer.data.deviceId);
+            if (hasSourceAccess(peer)) return true;
         }
     }
-    return [...visible].some(id => online(id));
+    if ([...actors].some(online)) return true;
+    const visible = new Set(), nearby = new Set(), visibleMembers = new Map();
+    for (const actor of actors) {
+        for (const value of getNearbyCandidates(actor)) { visible.add(value.deviceId); nearby.add(value.deviceId); }
+        for (const [sessionId, session] of sessions) {
+            const member = session.devices.get(actor), peer = io.sockets.sockets.get(member?.socketId);
+            if (!peer?.connected || peer.data?.deviceId !== actor || !canUseTunnelCapability(session,actor,'read')) continue;
+            const members = visibleMembers.get(sessionId) || new Set();
+            for (const [id, other] of session.devices) {
+                const socket = io.sockets.sockets.get(other.socketId);
+                if (socket?.connected && socket.data?.deviceId === id) { visible.add(id); members.add(id); }
+            }
+            visibleMembers.set(sessionId,members);
+        }
+    }
+    // Source membership is proven by the signed grant, not by keeping a page
+    // in that tunnel. A visible peer may prove the same access while elsewhere.
+    for (const peer of io.sockets.sockets.values()) {
+        if (!hasSourceAccess(peer)) continue;
+        if (visible.has(peer.data.deviceId)) return true;
+        const identities = peer.data.webZipSyncIdentities;
+        if (identities && [...identities.values()].some(identity => nearby.has(identity))) return true;
+        for (const [sessionId,members] of visibleMembers) if (members.has(identities?.get(sessionId))) return true;
+    }
+    for (const [id, member] of source?.devices || []) {
+        if (!online(id)) continue;
+        if (visible.has(id)) return true;
+        const identities = io.sockets.sockets.get(member.socketId)?.data?.webZipSyncIdentities;
+        if (identities && [...identities.values()].some(identity => nearby.has(identity))) return true;
+        for (const [sessionId,members] of visibleMembers) if (members.has(identities?.get(sessionId))) return true;
+    }
+    return false;
 }
 
 const webZipSync = require('./server/web-zip-sync').createWebZipSync({
@@ -9414,8 +9469,24 @@ io.on('connection', (socket) => {
     socket.use(([event,data],next)=>{
         if (['file-asset-request','file-asset-discovery'].includes(event) && data?.sourceSessionId && data.sourceSessionId !== currentSession && !trustedInternalClient) {
             const fileId = data.assetId || data.fileId;
-            const forwarded = canReadForwardedFile(currentSession, currentDevice, data.sourceSessionId, fileId);
-            if (!forwarded && !tunnelAccess.verify(data.sourceAccessGrant, data.sourceSessionId, currentDevice)) return emitSocketError('permission-denied','来源隧道尚未获得访问权');
+            const forwarded = canReadForwardedFile(currentSession, currentDevice, data.sourceSessionId, fileId, data.recordMessageId);
+            // Tunnel grants bind the identity saved for that tunnel, which can
+            // differ from the active receiver's identity. The signed grant is
+            // still required; a claimed source device ID alone grants nothing.
+            const sourceDeviceId = data.sourceDeviceId || currentDevice;
+            if (!forwarded && !tunnelAccess.verify(data.sourceAccessGrant, data.sourceSessionId, sourceDeviceId)) return emitSocketError('permission-denied','来源隧道尚未获得访问权');
+            // A forwarder may now be in the destination while its copied bytes
+            // remain indexed under the source in IndexedDB. Discover that exact
+            // destination-owned file locally as well, after verifying ownership.
+            if (forwarded && sessions.get(currentSession)?.devices?.has(currentDevice) && !sessions.get(currentSession)?.fileAssets?.get(fileId)?.providers?.size) {
+                const recent = socket.data.forwardedFileDiscoveries ||= new Map();
+                const key = JSON.stringify([currentSession,fileId]), now = Date.now();
+                if (!recent.has(key) || now - recent.get(key) >= 2000) {
+                    recent.set(key,now);
+                    if (recent.size > 256) recent.delete(recent.keys().next().value);
+                    socket.to(currentSession).emit('file-asset-discovery', {assetId:fileId,from:currentDevice,reason:'forwarded-destination-cache'});
+                }
+            }
             // A forwarded record grants this file, independently of volatile
             // provider announcements. Prefer caches already in the destination.
             if (forwarded && sessions.get(currentSession)?.fileAssets?.get(fileId)?.providers?.size) data.sourceSessionId = currentSession;
@@ -9473,6 +9544,8 @@ io.on('connection', (socket) => {
     let messageCount = 0;
     const MESSAGE_LIMIT = 100; // 每分钟最多100条消息
     let messageResetTime = Date.now() + 60000;
+    let signalCount = 0;
+    let signalResetTime = Date.now() + 60000;
     
     // 消息速率检查
     function checkMessageRate() {
@@ -9483,6 +9556,15 @@ io.on('connection', (socket) => {
         }
         messageCount++;
         return messageCount <= MESSAGE_LIMIT;
+    }
+
+    // Chat/editor/forward activity must not consume the budget needed to
+    // establish the file DataChannel. Keep the same bounded signal allowance.
+    function checkSignalRate() {
+        const now = Date.now();
+        if (now > signalResetTime) { signalCount = 0; signalResetTime = now + 60000; }
+        signalCount++;
+        return signalCount <= MESSAGE_LIMIT;
     }
 
     socket.on('register-profile-device', (data, ack) => {
@@ -9577,9 +9659,9 @@ io.on('connection', (socket) => {
         try {
             if (data?.sessionId !== currentSession || !sessions.get(currentSession)?.devices.has(currentDevice)) return ack({ok:false,error:'invalid-session'});
             if (!checkMessageRate()) return ack({ok:false,error:'rate-limited'});
-            const credential=webZipSync.issueCredential({sessionId:currentSession,messageId:data.messageId,fileId:data.fileId,deviceId:currentDevice});
+            const credential=webZipSync.issueCredential({sessionId:currentSession,messageId:data.messageId,fileId:data.fileId,deviceId:currentDevice,editCredential:data.editCredential});
             ack({ok:true,credential});
-        } catch (_) { ack({ok:false,error:'WEB_ZIP_EDIT_DENIED'}); }
+        } catch (error) { ack({ok:false,error:['WEB_ZIP_SOURCE_UNVERIFIED','WEB_ZIP_EDIT_CREDENTIAL_INVALID'].includes(error.message)?error.message:'WEB_ZIP_EDIT_DENIED'}); }
     });
 
     socket.on('web-zip-edit-request', (data, ack) => {
@@ -10135,18 +10217,31 @@ io.on('connection', (socket) => {
     socket.on('register-session-codes', data => {
         try {
             const entries = Array.isArray(data?.entries) ? data.entries.slice(0, 200) : [];
+            const identities = new Map();
+            socket.data.webZipSyncIdentities = identities;
+            const accessGrants = new Map();
+            socket.data.webZipSyncAccessGrants = accessGrants;
             let acceptedCount = 0;
             let rejectedCount = 0;
             for (const entry of entries) {
                 const sessionId = entry && entry.sessionId;
                 const shortCode = normalizeShortCode(entry && entry.shortCode);
-                if (!isValidSessionId(sessionId) || !shortCode) {
+                if (!isValidSessionId(sessionId)) {
                     rejectedCount++;
                     continue;
                 }
                 const session = sessions.get(sessionId);
                 const storedCode=infraStore?.findShortCodeForSession(sessionId);
-                if (!tunnelAccess.verify(entry.accessGrant,sessionId,entry.deviceId||data?.deviceId||currentDevice||profileDevice)||(storedCode&&storedCode!==shortCode)||(session?.shortCode && session.shortCode !== shortCode)) {
+                const deviceId = entry.deviceId||data?.deviceId||currentDevice||profileDevice;
+                if (!tunnelAccess.verify(entry.accessGrant,sessionId,deviceId)) {
+                    rejectedCount++;
+                    continue;
+                }
+                identities.set(sessionId,deviceId);
+                accessGrants.set(sessionId,{deviceId,grant:entry.accessGrant});
+                // Rotating a join code does not revoke an admitted device. Keep
+                // its verified access without re-registering an obsolete code.
+                if (!shortCode || (storedCode&&storedCode!==shortCode) || (session?.shortCode&&session.shortCode!==shortCode)) {
                     rejectedCount++;
                     continue;
                 }
@@ -10160,6 +10255,7 @@ io.on('connection', (socket) => {
                 }
                 acceptedCount++;
             }
+            if (accessGrants.size) webZipSync.topologyChanged();
             historyLog('session-codes-registered', {
                 sessionId: currentSession,
                 deviceId: currentDevice,
@@ -10167,7 +10263,8 @@ io.on('connection', (socket) => {
                 clientIp,
                 submittedCount: entries.length,
                 acceptedCount,
-                rejectedCount
+                rejectedCount,
+                verifiedAccessCount:accessGrants.size
             });
         } catch (err) {
             console.error('register-session-codes error:', err);
@@ -10258,7 +10355,8 @@ io.on('connection', (socket) => {
     });
 
     socket.on('signal', (data) => {
-        if (!checkMessageRate()) {
+        if (!checkSignalRate()) {
+            if (signalCount === MESSAGE_LIMIT + 1) historyLog('p2p-signal-rate-limited', {sessionId:currentSession,deviceId:currentDevice,socketId:socket.id});
             return emitSocketError('error', '消息发送过于频繁');
         }
         
@@ -10372,7 +10470,8 @@ io.on('connection', (socket) => {
     });
 
     socket.on('forward-message', async (data, ack) => {
-        let pendingGroup;
+        const forwardSourceSession = currentSession, forwardSourceDevice = currentDevice;
+        let pendingGroup, forwardFlight;
         try {
             const targetSessionId = sanitizeString(data?.targetSessionId, 80);
             const message = data?.message;
@@ -10382,33 +10481,46 @@ io.on('connection', (socket) => {
             if (!infraStore?.getTunnel(targetSessionId)) {
                 return typeof ack === 'function' && ack({ ok: false, error: 'target-tunnel-not-found' });
             }
-            const sourceSession = sessions.get(currentSession);
-            if (!sourceSession?.devices?.has(currentDevice)) {
+            const sourceSession = sessions.get(forwardSourceSession);
+            if (!sourceSession?.devices?.has(forwardSourceDevice)) {
                 return typeof ack === 'function' && ack({ ok: false, error: 'source-device-not-joined' });
             }
-            if (message.sender !== currentDevice || JSON.stringify(message).length > MAX_MESSAGE_SIZE) {
+            if (message.sender !== forwardSourceDevice || JSON.stringify(message).length > MAX_MESSAGE_SIZE) {
                 return typeof ack === 'function' && ack({ ok: false, error: 'invalid-forward-message' });
             }
             const targetSession = getOrCreateTelegramSession(
                 targetSessionId,
                 infraStore.findShortCodeForSession(targetSessionId)
             );
-            let targetSenderId = currentDevice;
+            const flights = targetSession.pendingForwards ||= new Map();
+            const flightKey = JSON.stringify([forwardSourceSession,forwardSourceDevice,message.id]);
+            const fingerprint = JSON.stringify(message), active = flights.get(flightKey);
+            if (active) {
+                if (!tunnelAccess.verify(data.targetAccessGrant,targetSessionId,data.targetDeviceId) || !canUseTunnelCapability(targetSession,data.targetDeviceId,'read')) return ack?.({ok:false,error:'permission-denied'});
+                if (active.fingerprint !== fingerprint) return ack?.({ok:false,error:'invalid-forward-message'});
+                return ack?.(await active.result);
+            }
+            let resolveResult;
+            const flight = {fingerprint,result:new Promise(resolve=>{resolveResult=resolve;})};
+            flights.set(flightKey,flight); forwardFlight={flights,flightKey,flight,resolveResult};
+            const respond = ack;
+            ack = result => { resolveResult(result); respond?.(result); };
+            let targetSenderId = forwardSourceDevice;
             const forwardingFiles = data.fileSource === 'disk-cache' || ['file', 'collection'].includes(message.type);
             if (forwardingFiles) {
                 const targetDeviceId = sanitizeString(data.targetDeviceId, 80);
                 if (!tunnelAccess.verify(data.targetAccessGrant, targetSessionId, targetDeviceId)) return typeof ack === 'function' && ack({ ok:false, error:'target-tunnel-access-required' });
                 targetSenderId = targetDeviceId;
-                if (!canUseTunnelCapability(sourceSession,currentDevice,'read') || tunnelMessageCapabilities(message).some(capability => !canUseTunnelCapability(targetSession,targetDeviceId,capability))) return typeof ack === 'function' && ack({ ok:false,error:'permission-denied' });
+                if (!canUseTunnelCapability(sourceSession,forwardSourceDevice,'read') || tunnelMessageCapabilities(message).some(capability => !canUseTunnelCapability(targetSession,targetDeviceId,capability))) return typeof ack === 'function' && ack({ ok:false,error:'permission-denied' });
                 const files = message.type === 'file' ? [message.fileInfo] : message.type === 'collection' ? message.collection?.files || [] : [];
-                if (!isValidDeviceId(message.id) || !files.length || files.some(file => !sourceSession.fileAssets?.get(file?.id)?.providers?.has(currentDevice))) return typeof ack === 'function' && ack({ok:false,error:'forward-file-cache-required'});
+                if (!isValidDeviceId(message.id) || !files.length || files.some(file => !sourceSession.fileAssets?.get(file?.id)?.providers?.has(forwardSourceDevice))) return typeof ack === 'function' && ack({ok:false,error:'forward-file-cache-required'});
                 for (const file of files) {
-                    file.backupSourceSessionId = currentSession;
+                    file.backupSourceSessionId = forwardSourceSession;
                     file.forwardedToSessionId = targetSessionId;
                     delete file.forwardedSourceGrant;
                 }
                 message.sessionId = targetSessionId;
-                if (message.forwardedFrom) message.forwardedFrom = { ...message.forwardedFrom, sessionId: currentSession };
+                if (message.forwardedFrom) message.forwardedFrom = { ...message.forwardedFrom, sessionId: forwardSourceSession };
             }
             const sourceId = message.forwardedFrom?.messageId;
             const sourceRecord = message.type === 'markdown' && sourceId && getHistoryMessageEntry(sourceSession, sourceId)?.message;
@@ -10422,15 +10534,15 @@ io.on('connection', (socket) => {
                     return ack?.({ ok: false, error: 'target-tunnel-access-required' });
                 }
                 targetSenderId = targetDeviceId;
-                const sourceSessionId = currentSession;
+                const sourceSessionId = forwardSourceSession;
                 const existing = getHistoryMessageEntry(targetSession, message.id)?.message;
-                const permitted = () => sessions.get(sourceSessionId) === sourceSession && currentSession === sourceSessionId &&
+                const permitted = () => sessions.get(sourceSessionId) === sourceSession && forwardSourceSession === sourceSessionId &&
                     tunnelAccess.verify(data.targetAccessGrant, targetSessionId, targetDeviceId) &&
-                    sourceSession.devices.has(currentDevice) && getHistoryMessageEntry(sourceSession, sourceId)?.message === sourceRecord &&
-                    canUseTunnelCapability(sourceSession, currentDevice, 'read') &&
+                    sourceSession.devices.has(forwardSourceDevice) && getHistoryMessageEntry(sourceSession, sourceId)?.message === sourceRecord &&
+                    canUseTunnelCapability(sourceSession, forwardSourceDevice, 'read') &&
                     ['sendMarkdown', 'sendFile'].every(capability => canUseTunnelCapability(targetSession, targetDeviceId, capability));
                 if (!permitted()) return ack?.({ ok: false, error: 'permission-denied' });
-                if (existing?.sender === currentDevice && existing.forwardedFrom?.sessionId === sourceSessionId &&
+                if (existing?.sender === forwardSourceDevice && existing.forwardedFrom?.sessionId === sourceSessionId &&
                     existing.forwardedFrom?.messageId === sourceId) return ack?.({ ok: true, stored: false, message: existing });
                 message.sessionId = targetSessionId;
                 message.forwardedFrom = { sessionId: sourceSessionId, messageId: sourceId };
@@ -10443,7 +10555,7 @@ io.on('connection', (socket) => {
                 return typeof ack === 'function' && ack({ ok: false, error: 'permission-denied' });
             }
             const historyResult = addToSessionHistory(targetSessionId, targetSession, message, {
-                fromDeviceId: currentDevice,
+                fromDeviceId: forwardSourceDevice,
                 socketId: socket.id,
                 clientIp,
                 source: 'cross-tunnel-forward',
@@ -10452,8 +10564,13 @@ io.on('connection', (socket) => {
             const grouped = Boolean(pendingGroup);
             if (grouped && !historyResult.stored) return ack?.({ ok: false, error: 'forward-record-not-stored' });
             pendingGroup = null;
-            if (forwardingFiles && historyResult.stored) targetSession.history.find(entry => entry.message.id === message.id).forwardedSourceSessionId = currentSession;
+            if (forwardingFiles && historyResult.stored) targetSession.history.find(entry => entry.message.id === message.id).forwardedSourceSessionId = forwardSourceSession;
             if (forwardingFiles && !historyResult.stored && !['duplicate','duplicate-file'].includes(historyResult.reason)) return typeof ack === 'function' && ack({ok:false,error:'forward-record-not-stored',reason:historyResult.reason || ''});
+            if (infraStore?.getHistoryMessage && infraStore?.flush) await new Promise((resolve,reject) => {
+                enqueueInfraAudit(() => {
+                    if (!infraStore.getHistoryMessage(targetSessionId,message.id) || infraStore.flush() === false) throw Error('forward-record-not-confirmed');
+                }, '', {onSuccess:resolve,onFinalFailure:()=>reject(Error('forward-record-not-confirmed'))});
+            });
             emitToReadableSessionDevices(targetSession, 'message', { message });
             scheduleSessionHistoryBroadcast(targetSessionId, 'cross-tunnel-forward');
             if (typeof ack === 'function') ack({ ok: true, stored: Boolean(historyResult.stored), reason:historyResult.reason || '', ...(forwardingFiles || grouped ? {message} : {}) });
@@ -10462,13 +10579,34 @@ io.on('connection', (socket) => {
                 return ack?.({ ok: false, error: 'markdown-attachment-missing' });
             }
             console.error('forward-message error:', err);
-            if (typeof ack === 'function') ack({ ok: false, error: 'forward-failed' });
+            if (typeof ack === 'function') ack({ ok: false, error: err.message==='forward-record-not-confirmed'?'forward-record-not-confirmed':'forward-failed' });
         } finally {
+            if (forwardFlight) {
+                const {flights,flightKey,flight,resolveResult}=forwardFlight;
+                resolveResult({ok:false,error:'forward-failed'});
+                if (flights.get(flightKey)===flight) flights.delete(flightKey);
+            }
             if (pendingGroup) {
                 try { removeMarkdownAttachmentAssets(pendingGroup.sessionId, pendingGroup.message.id, pendingGroup.message.markdownAttachments); }
                 catch (error) { console.warn('Markdown forward cleanup failed:', error.code || error.message); }
             }
         }
+    });
+
+    socket.on('forward-message-status', (data, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+            const targetSessionId = data?.targetSessionId, targetMessageId = data?.targetMessageId;
+            if (!isValidSessionId(targetSessionId) || !isValidDeviceId(targetMessageId) || !isValidDeviceId(data?.sourceMessageId)) return respond({ok:false,error:'invalid-forward'});
+            const source = sessions.get(currentSession), target = sessions.get(targetSessionId) || (infraStore?.getTunnel(targetSessionId) ? getOrCreateTelegramSession(targetSessionId) : null);
+            if (!source?.devices?.has(currentDevice) || !canUseTunnelCapability(source,currentDevice,'read') || !target ||
+                !tunnelAccess.verify(data.targetAccessGrant,targetSessionId,data.targetDeviceId) || !canUseTunnelCapability(target,data.targetDeviceId,'read')) return respond({ok:false,error:'permission-denied'});
+            const message = infraStore?.getHistoryMessage ? infraStore.getHistoryMessage(targetSessionId,targetMessageId) : getHistoryMessageEntry(target,targetMessageId)?.message;
+            if (!message) return respond({ok:true,confirmed:false,pending:Boolean(target.pendingForwards?.has(JSON.stringify([currentSession,currentDevice,targetMessageId])))});
+            if (message.sender !== currentDevice || message.forwardedFrom?.sessionId !== currentSession || message.forwardedFrom?.messageId !== data.sourceMessageId) return respond({ok:false,error:'permission-denied'});
+            if (infraStore?.flush?.() === false) return respond({ok:true,confirmed:false,pending:true});
+            respond({ok:true,confirmed:true,message});
+        } catch (_) { respond({ok:false,error:'forward-status-unavailable'}); }
     });
 
     socket.on('clipboard-update', data => {
@@ -10633,7 +10771,7 @@ io.on('connection', (socket) => {
                 incomingFile.webZipEditors = editors;
                 incomingFile.webZipRootId = previousFile.webZipRootId || previousFile.id;
                 if (incomingFile.id !== previousFile.id) incomingFile.replacesFileId = previousFile.id;
-                for (const field of ['webZipPendingSync','webZipSourceVersion','webZipRevision','webZipUpdatedAt','backupSourceSessionId','forwardedToSessionId','forwardedSourceGrant','ownerDeviceId']) {
+                for (const field of ['webZipPendingSync','webZipSourceVersion','webZipSourceProof','webZipRevision','webZipUpdatedAt','backupSourceSessionId','forwardedToSessionId','forwardedSourceGrant','ownerDeviceId']) {
                     if (previousFile[field] === undefined) delete incomingFile[field]; else incomingFile[field] = JSON.parse(JSON.stringify(previousFile[field]));
                 }
                 if (existingMessage.forwardedFrom) message.forwardedFrom = { ...existingMessage.forwardedFrom }; else delete message.forwardedFrom;

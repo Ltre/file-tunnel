@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v131-content-v8-route-web-zip-261106-3';
+const CACHE_NAME = 'instant-tunnel-v140-content-v8-ui-i18n-cloud-261109-2-final';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -79,7 +79,7 @@ const APP_SHELL = [
     '/client/telegram-content.js',
     '/client/telegram-content.css',
     '/client/media.js',
-    '/client/i18n-catalog.js',
+    '/client/i18n-bootstrap.js',
     '/client/i18n.js',
     '/client/localization-runtime.js',
     '/client/light-transfer.js',
@@ -88,7 +88,7 @@ const APP_SHELL = [
     '/tunnel-icon.svg',
     '/prompts/resources/icons/fileview.png'
 ];
-const PRECACHE_CORE = ['/index.html', '/tunnel-entry.html', '/client/tunnel-entry.css', '/client/tunnel-landing.css', '/client/tunnel-entry.js', '/client/i18n-catalog.js', '/client/i18n.js', '/manifest.webmanifest', '/tunnel-icon.svg'];
+const PRECACHE_CORE = ['/index.html', '/tunnel-entry.html', '/client/tunnel-entry.css', '/client/tunnel-landing.css', '/client/tunnel-entry.js', '/client/i18n-bootstrap.js', '/client/i18n.js', '/manifest.webmanifest', '/tunnel-icon.svg'];
 
 async function precacheAppShell() {
     const cache = await caches.open(CACHE_NAME);
@@ -108,7 +108,7 @@ self.addEventListener('install', event => {
 self.addEventListener('activate', event => {
     event.waitUntil(
         caches.keys()
-            .then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))))
+            .then(keys => Promise.all(keys.filter(key => key.startsWith('instant-tunnel-') && key !== CACHE_NAME).map(key => caches.delete(key))))
             .then(() => self.clients.claim())
     );
 });

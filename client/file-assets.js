@@ -181,7 +181,25 @@
             return `req-${String(assetId || '').slice(0, 8)}-${Date.now().toString(36)}-${random}`;
         }
 
-        sourceAccessGrant(assetId){try{return global.localStorage?.getItem('tunnel-access:'+this.sourceSessionId(assetId))||'';}catch(_){return '';}}
+        sourceAuthorization(assetId) {
+            const sourceSessionId = this.sourceSessionId(assetId);
+            if (!sourceSessionId) return {};
+            let authorization;
+            try {
+                authorization = this.deps.getTunnelAuthorization
+                    ? this.deps.getTunnelAuthorization(sourceSessionId)
+                    : JSON.parse(global.localStorage?.getItem('tunnel-authorization:' + sourceSessionId) || 'null') || {
+                        deviceId: global.localStorage?.getItem('deviceId'),
+                        grant: global.localStorage?.getItem('tunnel-access:' + sourceSessionId)
+                    };
+            } catch (_) { /* An unreadable identity must not borrow an unrelated legacy grant. */ }
+            return {
+                sourceSessionId,
+                recordMessageId: this.requestedMetadata.get(assetId)?.recordMessageId,
+                sourceDeviceId: typeof authorization?.deviceId === 'string' ? authorization.deviceId : undefined,
+                sourceAccessGrant: typeof authorization?.grant === 'string' ? authorization.grant : ''
+            };
+        }
         sourceSessionId(assetId) {
             const sourceSessionId = this.requestedMetadata.get(assetId)?.backupSourceSessionId;
             return typeof sourceSessionId === 'string' && sourceSessionId && sourceSessionId !== this.deps.getSessionId()
@@ -413,8 +431,7 @@
                 const needsManifest = Number(metadata?.size) > MULTI_SOURCE_THRESHOLD;
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
-                    sourceSessionId: this.sourceSessionId(assetId),
-                    sourceAccessGrant: this.sourceAccessGrant(assetId),
+                    ...this.sourceAuthorization(assetId),
                     assetId,
                     mode: needsManifest ? 'manifest' : undefined,
                     preferredProviderId: this.desiredAssets.get(assetId),
@@ -464,7 +481,8 @@
             }
         }
 
-        requestProviderDiscovery(assetId, reason = 'provider-discovery') {
+        requestProviderDiscovery(assetId, reason = 'provider-discovery', metadata = null) {
+            if (metadata) this.requestedMetadata.set(assetId, { ...this.requestedMetadata.get(assetId), ...metadata });
             const socket = this.socket();
             if (!socket?.connected || !assetId) return false;
             const now = Date.now();
@@ -473,8 +491,7 @@
             this.discoveryRequests.set(assetId, now);
             socket.emit('file-asset-discovery', {
                 sessionId: this.deps.getSessionId(),
-                sourceSessionId: this.sourceSessionId(assetId),
-                    sourceAccessGrant: this.sourceAccessGrant(assetId),
+                ...this.sourceAuthorization(assetId),
                 assetId,
                 reason
             });
@@ -512,7 +529,7 @@
         }
 
         async handleTransferStatus(data) {
-            const { assetId, from, status, transferId, requestId } = data || {};
+            const { assetId, from, status, transferId, requestId, abandonedAttemptId } = data || {};
             if (!assetId || !this.desiredAssets.has(assetId)) return;
             const currentRequestId = this.requestIds.get(assetId);
             if (!transferId && requestId && currentRequestId && requestId !== currentRequestId) {
@@ -535,6 +552,15 @@
             this.providerTransfers.delete(assetId);
             if (status === 'failed') {
                 this.log('provider-transfer-failed', { assetId, peerDeviceId: from, transferId, requestId });
+                const active = transferId ? this.multiSourceTransfers.get(assetId)?.ranges.get(transferId) : this.transfers.get(assetId);
+                if (abandonedAttemptId && active?.transport === 'p2p' && active.from === from &&
+                    active.attemptId === abandonedAttemptId && !active.completed) {
+                    // An explicit, matching abandonment stops this attempt. A
+                    // generic failure must still not interrupt an active path.
+                    if (transferId) this.retryMultiSourceRange(assetId, transferId, from, 'provider-p2p-abandoned');
+                    else this.retryDownload(assetId, from, 'provider-p2p-abandoned');
+                    return;
+                }
                 if (transferId && this.multiSourceTransfers.has(assetId)) {
                     const range = this.multiSourceTransfers.get(assetId)?.ranges.get(transferId);
                     if (range?.completed || range?.from) {
@@ -603,8 +629,7 @@
             const selectedProviderId = providers[0];
             socket.emit('file-asset-request', {
                 sessionId: this.deps.getSessionId(),
-                sourceSessionId: this.sourceSessionId(asset.id),
-                    sourceAccessGrant: this.sourceAccessGrant(asset.id),
+                ...this.sourceAuthorization(asset.id),
                 assetId: asset.id,
                 preferredProviderId: selectedProviderId,
                 force: forced,
@@ -718,8 +743,7 @@
                 const forced = Boolean(transfer.forceRequestId || range.retryCount > 0);
                 socket.emit('file-asset-request', {
                     sessionId: this.deps.getSessionId(),
-                    sourceSessionId: this.sourceSessionId(assetId),
-                    sourceAccessGrant: this.sourceAccessGrant(assetId),
+                    ...this.sourceAuthorization(assetId),
                     assetId,
                     preferredProviderId,
                     transferId,
@@ -1033,7 +1057,9 @@
                     .catch(err => this.log('safety-copy-replica-mark-failed', { assetId: asset.id, error: err.message }));
             }
             if (!asset || !asset.id || !this.desiredAssets.has(asset.id)) return;
-            this.requestedMetadata.set(asset.id, asset);
+            // Presence contains transport metadata, not the destination record's
+            // cross-tunnel provenance. Keep that context for later queued work.
+            this.requestedMetadata.set(asset.id, { ...this.requestedMetadata.get(asset.id), ...asset });
             this.retryCounts.delete(asset.id);
             const multiSource = this.multiSourceTransfers.get(asset.id);
             if (multiSource) {
@@ -1374,7 +1400,16 @@
                 const routeId = transfer?.transferId ? `${from}:${transfer.transferId}` : from;
                 const abandonedTransport = transfer ? `sending-multi-source:${routeId}` : `sending:${routeId}`;
                 this.deps.onProgress(asset.id, asset.name, 100, abandonedTransport);
-                if (/send queue is full|backpressure/i.test(err.message || '')) {
+                if (/send queue is full|backpressure/i.test(err.message || '') || err.message === 'File asset channel drain timeout') {
+                    let abandonedAttemptId;
+                    if (/^File asset channel backpressure (?:stalled|timeout)(?::|$)/.test(err.message || '') || err.message === 'File asset channel drain timeout') {
+                        // The existing bounded buffer wait has already failed.
+                        // Stop this file channel before retrying; retain the
+                        // shared peer and the existing five-second cooldown.
+                        this.p2pUnavailablePeers.set(from, Date.now() + 5000);
+                        abandonedAttemptId = this.transferAttemptId(requestId, 'p2p', transfer);
+                        channel?.close();
+                    }
                     this.routeLog('p2p-backpressure-failed-without-relay', {
                         assetId: asset.id,
                         peerDeviceId: from,
@@ -1385,7 +1420,7 @@
                         bufferedAmount: channel?.bufferedAmount || 0,
                         peer: this.peerSnapshot(this.deps.getPeer(from))
                     });
-                    this.emitTransferStatus(asset.id, from, 'failed', transfer?.transferId, requestId);
+                    this.emitTransferStatus(asset.id, from, 'failed', transfer?.transferId, requestId, abandonedAttemptId);
                     return false;
                 }
                 if (/\b(failed|closed|timed out)\b/i.test(err.message || '')) {
@@ -1430,11 +1465,12 @@
             }
         }
 
-        emitTransferStatus(assetId, to, status, transferId, requestId = '') {
+        emitTransferStatus(assetId, to, status, transferId, requestId = '', abandonedAttemptId) {
             const socket = this.socket();
             if (!socket?.connected) return;
             socket.emit('file-asset-transfer-status', {
-                sessionId: this.deps.getSessionId(), assetId, to, status, transferId, requestId
+                sessionId: this.deps.getSessionId(), assetId, to, status, transferId, requestId,
+                ...(abandonedAttemptId ? { abandonedAttemptId } : {})
             });
         }
 

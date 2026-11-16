@@ -15,7 +15,7 @@
         if (!spaces.length) throw new Error('尚无可用网盘分区');
         const spaceLabel = document.createElement('label'); spaceLabel.textContent = '目标网盘分区';
         const space = document.createElement('select');
-        for (const item of spaces) { const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; space.append(option); }
+        for (const item of spaces) { const option = document.createElement('option'); option.value = item.id; option.dataset.i18nRaw = 'true'; option.textContent = item.name; space.append(option); }
         spaceLabel.append(space);
         let reloadTree = null;
         space.onchange = () => reloadTree?.().catch(error => { const output = document.querySelector('.disk-copy-error'); if (output) output.textContent = error.message; });

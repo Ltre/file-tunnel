@@ -1,0 +1,21 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),os=require('node:os'),path=require('node:path');
+const {createInfraStore}=require('../server/infra-store');
+test('a persisted forwarded record outside live history grants exactly its copied file, without source admission',async t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'persisted-forward-'));
+    const infraStore=await createInfraStore({dataDir:dir});t.after(()=>{infraStore.close();fs.rmSync(dir,{recursive:true,force:true});});
+    const file={id:'copy-file',name:'one.txt',type:'text/plain',size:3,backupSourceSessionId:'A',forwardedToSessionId:'B'};
+    const message={id:'older-record',sender:'sender',type:'file',fileInfo:file,forwardedFrom:{sessionId:'A',messageId:'original'}};
+    infraStore.recordHistoryMessage('B',message,{source:'cross-tunnel-forward'});
+    let readable=true;const target={devices:new Map([['viewer',{}]]),history:[],fileAssets:new Map()};
+    const context={sessions:new Map([['B',target]]),infraStore,tunnelAccess:{verifyFileForward:()=>false},canUseTunnelCapability:()=>readable};
+    const source=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');
+    vm.runInNewContext(source.slice(source.indexOf('function canReadForwardedFile('),source.indexOf('function getSessionPermissionPayload(')),context);
+    const allowed=(record='older-record',fileId='copy-file',session='A',device='viewer')=>context.canReadForwardedFile('B',device,session,fileId,record);
+    assert.equal(allowed(''),false,'no arbitrary database scan or broader source membership');
+    assert.equal(allowed(),true,'the real persisted destination record remains readable');
+    assert.equal(allowed('other'),false);assert.equal(allowed(undefined,'private-file'),false);assert.equal(allowed(undefined,undefined,'other-source'),false);assert.equal(allowed(undefined,undefined,undefined,'outsider'),false);
+    readable=false;assert.equal(allowed(),false);readable=true;
+    infraStore.recordHistoryMessage('B',{...message,id:'claimed'},{source:'history-reconcile'});assert.equal(allowed('claimed'),false,'client metadata cannot fabricate a forwarding operation');
+    infraStore.markHistoryDeleted('B',message.id);assert.equal(allowed(),false,'a deleted record cannot regain read access');
+});

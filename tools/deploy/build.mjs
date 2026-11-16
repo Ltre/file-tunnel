@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import i18nPacks from '../build-i18n-packs.cjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DEFAULT_OUT_DIR = 'dist';
@@ -86,7 +87,7 @@ const SCRIPT_SOURCES = [
   'client/vendor/web-markdown/marked-18.0.14.umd.js',
   'client/vendor/web-markdown/purify-3.4.16.min.js',
   'client/audio-track-repair.js',
-  'client/i18n-catalog.js',
+  'client/i18n-bootstrap.js',
   'client/i18n.js',
   'client/localization-runtime.js',
   'client/youtube-premium-cache.js'
@@ -541,6 +542,7 @@ async function writeJson(filePath, value) {
 }
 
 async function main() {
+  i18nPacks.generate({ check: true });
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
     console.log(usage());
@@ -554,7 +556,6 @@ async function main() {
   const minifierState = {};
   const stats = [];
 
-  await copyFileRelative('server.js', outRoot);
   await copyFileRelative('package.json', outRoot);
   if (await pathExists(path.join(ROOT, 'package-lock.json'))) await copyFileRelative('package-lock.json', outRoot);
   await copyFileRelative('tunnel-icon.svg', outRoot);
@@ -564,6 +565,7 @@ async function main() {
   await copyFileRelative('client/disk-error-messages.js', outRoot);
   await copyFileRelative('client/disk-operation-order.js', outRoot);
   await copyDirRelative('client/vendor/web-markdown', outRoot);
+  await copyDirRelative('client/i18n', outRoot);
   await copyFileRelative('client/icons/streaming.png', outRoot);
   await copyFileRelative('client/icons/quit-fullscreen.png', outRoot);
   await copyFileRelative('docs/setup/telegram-chat-dictionary.md', outRoot);
@@ -583,6 +585,12 @@ async function main() {
   if (await pathExists(path.join(ROOT, 'prompts', 'resources'))) await copyDirRelative('prompts/resources', outRoot);
 
   const scriptResult = await buildScripts(outRoot, minifierState);
+  // Server-generated HTML (OIDC callbacks) uses the same published assets as
+  // file-based pages. Restrict rewriting to HTML script tags so Express routes
+  // and other server-side string literals keep their public compatibility URLs.
+  const serverSource = await fs.readFile(path.join(ROOT, 'server.js'), 'utf8');
+  await fs.writeFile(path.join(outRoot, 'server.js'), serverSource.replace(/<script\b[^>]*\bsrc=["'][^"']+["'][^>]*><\/script>/g,
+    tag => replaceScriptReferences(tag, scriptResult.assets)));
   stats.push(...scriptResult.stats);
   const pageResult = await buildPages(outRoot, scriptResult.assets, buildId, minifierState);
   stats.push(...pageResult.stats);

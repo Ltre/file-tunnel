@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
+const { StringDecoder } = require('string_decoder');
 
 const SYSTEM_FIELDS = new Set(['INPUT_FILE', 'ORIGINAL_INPUT_FILE', 'OUTPUT_FILE']);
 const FIELD_TYPES = new Set(['text', 'number', 'duration', 'scale', 'select', 'boolean']);
@@ -62,6 +63,42 @@ function validateParams(profile,input={}) {
 function interpolate(token,values){return token.replace(/\$\{([A-Z0-9_]+)\}/g,(_,name)=>String(values[name]??''));}
 function buildArgs(step,values){const args=[];for(const item of step.args){if(typeof item==='string')args.push(interpolate(item,values));else if(values[item.when])args.push(...item.values.map(token=>interpolate(token,values)));}return args;}
 
+// FFmpeg rewrites its status line with CR, even when stderr is a pipe.
+// Keep bounded complete lines and derive progress from measured output time.
+function captureTranscodeOutput(task, args, step, stepCount) {
+    const seconds = value => {
+        const parts=String(value || '').split(':').map(Number);
+        return parts.every(Number.isFinite) ? parts.reduce((sum,part)=>sum*60+part,0) : NaN;
+    };
+    const argument = (name, from=0) => {const index=args.indexOf(name,from);return index>=0?seconds(args[index+1]):NaN;};
+    const decoder=new StringDecoder('utf8');let pending='',duration=NaN;
+    const line = value => {
+        if(!value.trim())return;
+        task.logs.push(value);task.logs=task.logs.slice(-80);task.updatedAt=Date.now();
+        const length=value.match(/\bDuration:\s*(\d+:\d+:\d+(?:\.\d+)?)/);
+        if(length&&!Number.isFinite(duration)) {
+            const input=args.indexOf('-i'),seek=args.indexOf('-ss');
+            const inputSeek=seek>=0&&seek<input?argument('-ss'):0;
+            const outputSeek=seek>input?argument('-ss'):0;
+            duration=seconds(length[1])-inputSeek-outputSeek;
+            const limit=argument('-t'),end=argument('-to');
+            if(Number.isFinite(limit))duration=Math.min(duration,limit);
+            else if(Number.isFinite(end))duration=Math.min(duration,end-outputSeek);
+        }
+        const position=value.match(/\btime=\s*(\d+:\d+:\d+(?:\.\d+)?)/);
+        if(position&&duration>0) {
+            const fraction=Math.min(1,Math.max(0,seconds(position[1])/duration));
+            task.progress=Math.max(task.progress||0,Math.min(99,Math.floor((step+fraction)/stepCount*100)));
+        }
+    };
+    const consume = text => {
+        pending+=text;const lines=pending.split(/[\r\n]/);pending=lines.pop()||'';lines.forEach(line);
+        // A broken encoder must not grow an unbounded unterminated log line.
+        if(pending.length>16384){line(pending.slice(0,16384));pending=pending.slice(-16384);}
+    };
+    return {write:chunk=>consume(decoder.write(chunk)),end:()=>{consume(decoder.end());line(pending);pending='';}};
+}
+
 function createVideoTranscodeService({ dataDir, ffmpegCommand='ffmpeg', spawnProcess=spawn }={}) {
     const root=path.join(dataDir,'.video-transcode');
     const profileFile=path.join(dataDir,'video-transcode-profiles.json'), taskFile=path.join(dataDir,'video-transcode-tasks.json');
@@ -96,7 +133,7 @@ function createVideoTranscodeService({ dataDir, ffmpegCommand='ffmpeg', spawnPro
     function startTask(id){const task=getTask(id);if(!task||task.status!=='uploading'||!fs.existsSync(task.inputPath))throw new Error('TASK_NOT_READY');task.status='queued';task.phase='等待转码';task.updatedAt=Date.now();queue.push(id);persistTasks();consume();return publicTask(task);}
     async function runTask(task){const selected=profile(task.profileId);if(!selected)throw new Error('PROFILE_NOT_FOUND');const base=path.parse(task.fileName).name,dir=path.dirname(task.inputPath);let currentInput=task.inputPath;
         task.status='running';task.startedAt=Date.now();
-        for(let index=0;index<selected.steps.length;index++){if(task.cancelRequested)throw new Error('TASK_CANCELLED');const final=index===selected.steps.length-1;const ext=final?(task.outputExtension||selected.output.extension):'mkv';const output=path.join(dir,final?`output.${ext}`:`step-${index+1}.${ext}`);const values={...task.params,INPUT_FILE:currentInput,ORIGINAL_INPUT_FILE:task.inputPath,OUTPUT_FILE:output,BASENAME:base,EXT:ext};const args=['-y',...buildArgs(selected.steps[index],values)];if(selected.builtin&&!['mp4','mov','m4v'].includes(ext)){const index=args.indexOf('-movflags');if(index>=0)args.splice(index,2);}task.phase=`${index+1}/${selected.steps.length} ${selected.steps[index].name}`;task.progress=Math.round(index/selected.steps.length*100);task.updatedAt=Date.now();persistTasks();await new Promise((resolve,reject)=>{const child=spawnProcess(ffmpegCommand,args,{shell:false,windowsHide:true,stdio:['ignore','ignore','pipe']});running.set(task.id,child);let pending='';child.stderr?.on('data',chunk=>{pending+=chunk.toString();const lines=pending.split(/\r?\n/);pending=lines.pop()||'';task.logs.push(...lines.filter(Boolean).slice(-20));task.logs=task.logs.slice(-80);task.updatedAt=Date.now();});child.on('error',reject);child.on('exit',(code,signal)=>{running.delete(task.id);if(task.cancelRequested||signal)return reject(new Error('TASK_CANCELLED'));if(code!==0)return reject(new Error(`FFMPEG_EXIT_${code}`));resolve();});});if(!fs.existsSync(output))throw new Error('FFMPEG_OUTPUT_NOT_CREATED');if(currentInput!==task.inputPath)fs.rmSync(currentInput,{force:true});currentInput=output;}
+        for(let index=0;index<selected.steps.length;index++){if(task.cancelRequested)throw new Error('TASK_CANCELLED');const final=index===selected.steps.length-1;const ext=final?(task.outputExtension||selected.output.extension):'mkv';const output=path.join(dir,final?`output.${ext}`:`step-${index+1}.${ext}`);const values={...task.params,INPUT_FILE:currentInput,ORIGINAL_INPUT_FILE:task.inputPath,OUTPUT_FILE:output,BASENAME:base,EXT:ext};const args=['-y',...buildArgs(selected.steps[index],values)];if(selected.builtin&&!['mp4','mov','m4v'].includes(ext)){const index=args.indexOf('-movflags');if(index>=0)args.splice(index,2);}task.phase=`${index+1}/${selected.steps.length} ${selected.steps[index].name}`;task.progress=Math.round(index/selected.steps.length*100);task.updatedAt=Date.now();persistTasks();await new Promise((resolve,reject)=>{const child=spawnProcess(ffmpegCommand,args,{shell:false,windowsHide:true,stdio:['ignore','ignore','pipe']});running.set(task.id,child);const outputLog=captureTranscodeOutput(task,args,index,selected.steps.length);child.stderr?.on('data',chunk=>outputLog.write(chunk));child.on('error',reject);child.on('exit',(code,signal)=>{outputLog.end();running.delete(task.id);if(task.cancelRequested||signal)return reject(new Error('TASK_CANCELLED'));if(code!==0)return reject(new Error(`FFMPEG_EXIT_${code}`));resolve();});});if(!fs.existsSync(output))throw new Error('FFMPEG_OUTPUT_NOT_CREATED');if(currentInput!==task.inputPath)fs.rmSync(currentInput,{force:true});currentInput=output;}
         const extension=task.outputExtension||selected.output.extension;const named=selected.output.nameTemplate.replace(/\$\{BASENAME\}/g,base).replace(/\$\{EXT\}/g,extension);task.outputPath=currentInput;task.outputName=cleanName(`${path.parse(named).name}.${extension}`,`${base}-transcoded.${extension}`);task.status='completed';task.phase='已完成';task.progress=100;task.finishedAt=Date.now();task.updatedAt=Date.now();persistTasks();}
     async function consume(){if(consuming)return;consuming=true;while(queue.length){const task=getTask(queue.shift());if(!task||task.status!=='queued')continue;try{await runTask(task);}catch(error){task.status=task.cancelRequested?'cancelled':'failed';task.phase=task.cancelRequested?'已取消':'转码失败';task.error=error.message;task.finishedAt=Date.now();task.updatedAt=Date.now();persistTasks();}}consuming=false;}
     function cancel(id){const task=getTask(id);if(!task||!['uploading','queued','running'].includes(task.status))throw new Error('TASK_NOT_CANCELLABLE');task.cancelRequested=true;running.get(id)?.kill('SIGTERM');if(task.status!=='running'){task.status='cancelled';task.phase='已取消';task.finishedAt=Date.now();}task.updatedAt=Date.now();persistTasks();return publicTask(task);}

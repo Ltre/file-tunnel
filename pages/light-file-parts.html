@@ -15,6 +15,8 @@
     </style>
     <link rel="stylesheet" href="/client/themes.css">
     <script defer src="/client/theme-preference.js"></script>
+    <script defer src="/client/i18n-bootstrap.js"></script>
+    <script defer src="/client/i18n.js"></script>
 </head>
 <body data-theme-page="light-parts">
 <main class="page">
@@ -38,7 +40,7 @@ async function render(){
   for(const t of tasks){
     const got=Number(t.receivedCount)||0,total=Math.max(1,Number(t.blockCount)||1),pct=Math.min(100,got/total*100);
     const el=document.createElement('article');el.className='card task';el.tabIndex=0;
-    el.innerHTML=`<div class="title">${esc(t.title||'光媒数据')}</div><div class="meta"><span>${esc(t.kind==='collection'?'文件合辑':'单文件')}</span><span>${got}/${total} 块 · ${pct.toFixed(1)}%</span><span>${fmt(t.totalSize)}</span><span>更新 ${dt(t.updatedAt)}</span></div><div class="progress"><i style="width:${pct}%"></i></div><div class="hash">${esc(t.taskId||'')}</div>`;
+    el.innerHTML=`<div class="title"${t.title?' data-i18n-raw':''}>${esc(t.title||'光媒数据')}</div><div class="meta"><span>${esc(t.kind==='collection'?'文件合辑':'单文件')}</span><span>${got}/${total} 块 · ${pct.toFixed(1)}%</span><span>${fmt(t.totalSize)}</span><span>更新 ${dt(t.updatedAt)}</span></div><div class="progress"><i style="width:${pct}%"></i></div><div class="hash">${esc(t.taskId||'')}</div>`;
     const resume=()=>parent!==window?parent.postMessage({type:'light-transfer-resume',taskId:t.taskId},location.origin):location.assign('/?lightResume='+encodeURIComponent(t.taskId));
     el.onclick=resume;el.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();resume()}};taskEl.appendChild(el);
   }
@@ -46,7 +48,7 @@ async function render(){
   receiptEl.innerHTML=receipts.length?'':'<div class="empty">暂无已完成的光媒接收记录</div>';
   for(const r of receipts){
     const el=document.createElement('article');el.className='card';
-    el.innerHTML=`<div class="title">${esc(r.title||'光媒数据')}</div><div class="meta"><span>${dt(r.completedAt)}</span><span>${Number(r.fileCount)||1} 个文件</span><span>${fmt(r.totalSize)}</span></div><div class="hash">${esc(r.taskId||'')}</div>${r.recordUrl?`<a class="link" href="${esc(r.recordUrl)}" target="_top">所在传输记录 ↗</a>`:''}`;
+    el.innerHTML=`<div class="title"${r.title?' data-i18n-raw':''}>${esc(r.title||'光媒数据')}</div><div class="meta"><span>${dt(r.completedAt)}</span><span>${Number(r.fileCount)||1} 个文件</span><span>${fmt(r.totalSize)}</span></div><div class="hash">${esc(r.taskId||'')}</div>${r.recordUrl?`<a class="link" href="${esc(r.recordUrl)}" target="_top">所在传输记录 ↗</a>`:''}`;
     receiptEl.appendChild(el);
   }
 }

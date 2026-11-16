@@ -7,8 +7,9 @@ const { createTelegramOidcMock } = require('../../server/telegram-oidc-mock');
 
 // Run the production OIDC route definitions with real HTTP, mock authorization
 // and signed account cookies, without booting a service on the user's data.
-async function createFixture() {
+async function createFixture({ isolateOpener = false } = {}) {
     const app = express(), key = crypto.randomBytes(32), users = new Map();
+    if (isolateOpener) app.use('/api/telegram/drive/oidc/mock', (_req,res,next) => { res.set('Cross-Origin-Opener-Policy','same-origin');next(); });
     const sessions = createDiskAccountSessions({ keyForRequest: () => key, user: id => users.get(id) });
     const receipt = createDiskOidcReceipt({ keyForRequest: () => key });
     const flows = new Map();

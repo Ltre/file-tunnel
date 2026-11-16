@@ -1,0 +1,1089 @@
+
+
+【旧】[编号261108-1]问（用于恢复上一轮任务中断）：
+
+   上一轮任务（`编号261107-2`）因额度不足，主动中断执行，并保存了相关交接文档。
+
+   由于上一轮任务开发与测试并不完整，在验收过程中还发现以下一些问题：
+
+      【过】1、本地局域网测试隧道传输，手机没有开igniter等网络代理，但是全部都是以socket.io Relay传输。以前即使电脑开trojan-Qt5全局网络代理，只要手机不开网络代理，就能走P2P。你最好还是看看[efbb770882beac7ed93f7729681f0ea03b531e0a]版本的隧道传输逻辑吧，那个版本可以正常快速走P2P。
+      【X】2、我的chrome语言设置为English，但是我看到即使我选择了使用系统语言，还是看到页面以简体中文渲染。
+	  
+      【OK】3、本设备在隧道A复制某个文件的磁力链接，然后在本设备A在隧道A原地打开顶栏的磁链缓存列表界面，输入刚才复制的磁力链接，可以看到文件信息和种子设备有多台在线，但是下方的`下载文件`按钮始终是被禁用状态，磁链进度条也没增长，一直是进度0状态。还以为是不是因为网盘有三个正在上传的队列，导致网络阻塞，把网盘上传队列取消掉，重试填写磁力链接，还是看到解析磁链的进度条处于进度0的状态。
+	  
+	  【OK】4、后台sns-dl/youtube-premium-dl页的任务按钮`标记为·待处理`点击后要弹出确认对话框。
+	  
+	  【OK】5、后台`视频转码`上传一个文件后，点击转码，一直停在状态“H.265 均衡转码并缩放 · 1/1 截取并缩放
+		08/11/2026, 22:18:53 · 0%”，ffmpeg输出框一直卡在“   CREATION_TIME   : 2025-08-20 15:28:59
+      LANGUAGE        : und
+      DURATION        : 00:03:16.949000000”。都看不到动静。
+	  等了很久，最后终于显示100%了，完全没有中间的百分比递增显示，也没有ffmpeg不断输出log的显示。之前还可以正常使用的。你可以参考[efbb770882beac7ed93f7729681f0ea03b531e0a]版本，这个版本一定正常。
+	  
+	  【OK】6、后台`视频转码`页面，查看转码任务细节，其中的日志框应该默认将焦点跳到日志尾行，不然没法看最新的转码细节。
+	  【OK】7、转发传输记录到别的隧道，要弹出一个对话框显示被转发的每一条记录的摘要，摘要文本显示一行截取就够了，另外要在摘要的下一行用靠右斜体小字显示记录ID，摘要的最右边显示转圈菊花表示等待发送中，发送完成的要换成绿色对勾，没有发送的要用红色叉表示。对话框要由用户自己关闭，不能自动关闭。
+	  
+	  【暂时OK,日后继续观察】8、后台sns-dl/youtube-premium-dl页对任务点击`转存到网盘`，在转存过程中，选择了网盘账号，并选择了目标目录，接着看到网盘顶栏提示"正在核验目标目录和来源版本..."，并且卡在这个界面很久，也没有弹出网盘的居中上传中loading浮层，而且，还他妈的导致浏览器其它选项卡页都无法选择，诡异的时，浏览器居然还不会崩溃，也不卡，就是他妈的没法使用！鼠标移动到浏览器的选项卡和浏览器全局右上角关闭/最小化/最大化按钮居然没有鼠标自带的hover效果！怎么也找不到关闭浏览器的地方！最后只能通过任务管理器找到chrome进程关闭掉！重启浏览器重试`转存到网盘`操作，又遇到重复的情况，依旧浏览器不崩溃但无法使用无法关闭只能通过进程管理器关闭chrome!操你妈的！真鸡巴服了！你全家死了是不是？都他妈的不知道到底什么狗逼代码能有这么大能耐把浏览器搞得这么奇怪还不崩溃而且还不能用！
+	  太操蛋了！暂时没心情测更多以前调好的功能了，都不知道到底会不会还有新问题出来！
+
+   虽然上一轮任务被中断，但经过个人验收，确认这些需求已实现：
+
+		【OK】5、后台sns-dl/youtube-premium-dl页的任务按钮`标记为已处理`点击后要弹出确认对话框。
+
+		【OK】7、隧道传输记录进入多选模式时，除了通过点击底部`取消`按钮，或使用返回键/返回手势外，还要支持按ESC键来退出多选模式。
+		【OK】8、隧道传输记录进入多选模式时，要支持：先选中任意一条记录A，然后再找一条隔了N条的记录B，按住shift键的同时，鼠标左键单击记录B，以此快捷选中从A记录到B记录之间（包含A和B）的记录。
+		
+		【OK】11、单指长按`连接设备`区域底部的`暂时离开按钮`如期弹出控制中心，但是触发控制中心的文字被标记选中问题。
+	
+
+   请结合以下文档信息，以及当前工作区的实际代码状态，准确恢复上一轮任务的执行上下文，并继续完成任务，以及解决上述验收时发现的 N 个问题。
+
+   文档信息：
+
+      - [原始需求及Codex Agent 执行输出记录（手动整理）](prompts\dev-prompt-logs\interrupt-agent-logs\ir-261107-2.clog)
+
+      - 进度、测试结果和恢复说明已保存到[开发日志](docs/devlog/dev-2611.md)
+
+   当前工作分支已切换到 `dev/2611-s1-FATAL-ERROR-e2`，并要求本次任务在这个分支执行。
+
+    上一轮任务在 `dev/2611-s1-FATAL-ERROR` 分支执行，为预防本次任务执行失败，已将上轮任务的执行产物提交到`dev/2611-s1-FATAL-ERROR-e2`分支的HEAD[554ba28858a9524c6e62c3183d60ddc20dcea6be]。
+
+    本分支 HEAD 相对于旧版[eb43a03a24741c70eb16c892c93beadf59ebb55e]的差异属于上一轮任务产物；当前工作区仅 `prompts/dev-prompt-logs/dev-2611.md` 有未提交修改。恢复任务时请据此核对上一轮实际执行进度，避免误删、覆盖或重复实现。
+
+    恢复任务时不要简单地从日志最后一行机械续接。应根据上一轮原始需求，结合执行记录、记忆上下文以及 HEAD 相对于旧版[eb43a03a24741c70eb16c892c93beadf59ebb55e] 的差异，逐项核对并区分：哪些内容已经正确完成、哪些正在执行时被中断、哪些尚未开始，同时检查中断前产生的代码修改是否已经完整落地，避免重复修改、遗漏修改或破坏已经正确完成的成果。
+
+    特别注意：如果中断点恰好位于某项修改、测试或验收过程中，应重新检查该细节及相关代码的实际完成状态，不能默认中断前的操作已经成功完成。确认中断点不存在半成品、错误完成或状态不一致的问题后，再从正确的位置继续执行。
+
+    最后，应按照以上文档中的 执行记录`ir-261107-2.clog`开头 [编号261107-2] 的完整原始需求及【任务执行时补充问题】 验收任务，确保上轮任务最终整体完整、正确地完成。
+
+【新】[编号261108-1]问（用于恢复上一轮中断任务）：
+
+	上一轮任务 [编号261107-2] 因额度不足暂停执行，并保存了执行记录、开发日志和恢复说明。
+
+	上一轮开发和测试尚未全部完成。我在个人验收过程中又发现以下问题，需要在恢复任务时一并处理。
+
+	1、局域网传输全部使用 Socket.IO Relay，未按此前的使用表现建立 P2P 连接
+
+	本地局域网测试隧道文件传输时，手机没有开启 Igniter 等网络代理，但观察到的传输全部使用 Socket.IO Relay。
+
+	按我此前的使用测试，即使电脑开启 Trojan-Qt5 全局网络代理，只要手机没有开启网络代理，局域网设备之间仍然可以通过 P2P 快速传输。
+
+	请对照以下版本的隧道传输逻辑，排查当前表现为何不同：
+	efbb770882beac7ed93f7729681f0ea03b531e0a
+	按我此前的测试，该版本可以正常、快速地使用 P2P。当前观察到的是传输使用了 Relay，尚未确认 P2P 未建立的具体原因。
+
+	2、选择“使用系统语言”后，页面仍显示简体中文
+
+	我的 Chrome 语言设置为 English，但在前台选择“使用系统语言”后，页面仍以简体中文渲染。
+
+	需要排查该实际行为与上一轮语言偏好需求不一致的原因。目前尚未核实浏览器实际向网页提供的语言值，不能仅凭 Chrome 的语言设置就认定具体故障原因。
+
+	3、磁链能够解析文件和在线种子信息，但下载进度始终为 0
+
+	在本设备的隧道 A 中复制某个文件的磁力链接，然后保持本设备仍在隧道 A，打开顶栏的“磁链缓存列表”，输入刚才复制的链接。
+
+	界面能够显示文件信息，也能看到多台在线种子设备，但出现以下问题：
+	- 下方“下载文件”按钮始终处于禁用状态。
+	- 磁链下载进度始终为 0，没有增长。
+	当时网盘有三个正在上传的任务，我曾怀疑这些任务造成了网络阻塞。但取消这些上传任务后，重新输入同一磁力链接，进度仍然停留在 0。
+
+	需要排查并修复磁链已经显示文件和在线种子信息，却没有继续获取文件内容的问题。目前不能认定网盘上传任务就是原因。
+
+	4、“标记为·待处理”也需要确认对话框
+
+	后台 /sns-dl 和 /youtube-premium-dl 页面的任务按钮 标记为·待处理，点击后也应先弹出确认对话框，用户确认后再修改任务状态。
+
+	上一轮已经实现并通过个人验收的是 ✔标记为已处理 的确认对话框；本条要求补充反向操作的确认。
+
+	5、视频转码期间，百分比和 FFmpeg 日志长时间没有更新
+
+	在后台“视频转码”页面上传一个文件并开始转码后，界面长时间停留在：
+	H.265 均衡转码并缩放 · 1/1 截取并缩放
+	08/11/2026, 22:18:53 · 0%
+	“FFmpeg 输出”日志框也停留在以下内容，没有继续显示新的输出：
+	CREATION_TIME   : 2025-08-20 15:28:59
+	LANGUAGE        : und
+	DURATION        : 00:03:16.949000000
+	等待很久后，界面最终直接显示 100%，期间没有看到百分比逐步增长，也没有看到日志持续更新。
+
+	任务最终完成，说明不能仅凭界面长时间停在 0% 就认定 FFmpeg 没有执行；需要排查转码过程中的进度和日志为何没有及时呈现。
+
+	按我此前的使用测试，版本 efbb770882beac7ed93f7729681f0ea03b531e0a 的该功能可以正常显示过程变化，请对照该版本核查。
+
+	6、【已有相关实现，但实际验收仍未通过】转码日志框默认显示末尾
+
+	后台“视频转码”页面查看任务详情、展开“FFmpeg 输出”时，日志框应默认滚动到末尾，直接显示最新日志，不应每次都需要手动滚动。
+
+	当前源码中已经存在展开时滚动到底部，以及刷新时保留滚动位置的处理，但我的实际验收仍未达到要求。因此，本条应继续按未通过验收处理，不能仅凭已有代码或此前测试通过就认定已经解决。
+
+	这里要求的是日志框的滚动位置，不是输入焦点。
+
+	7、转发传输记录时，逐条展示发送状态
+
+	将传输记录转发到其它隧道时，应弹出一个对话框，展示本次被转发的每一条记录及其发送状态。
+
+	具体要求：
+	- 每条记录展示一行摘要，超出一行的内容截断显示。
+	- 摘要下一行以靠右、斜体、小字号显示该记录的 ID。
+	- 摘要最右侧显示状态图标：等待发送或正在发送时显示旋转加载图标；成功发送后换成绿色对勾；未发送的记录显示红色叉号。
+	- 对话框由用户主动关闭，不能在转发结束后自动关闭。
+	8、“转存到网盘”长时间停在核验阶段，并伴随浏览器整体无法操作的异常
+
+	在后台 /sns-dl 或 /youtube-premium-dl 页面，对任务点击“转存到网盘”，选择网盘账号和目标目录后，网盘顶栏显示：
+	正在核验目标目录和来源版本…
+	随后长时间停留在这个阶段，没有出现网盘居中的上传加载浮层。
+
+	而且，还他妈的出现了浏览器整体无法正常操作的情况：其它选项卡无法切换，鼠标移到选项卡，以及浏览器右上角的关闭、最小化、最大化按钮时，也没有平时的悬停反馈。
+
+	诡异的是，浏览器没有直接崩溃，但我无法正常切换选项卡，也无法通过窗口按钮关闭浏览器，最后只能在任务管理器中结束 Chrome 进程。
+
+	重启浏览器后，再次执行“转存到网盘”，又遇到了相同情况：浏览器没有崩溃，却无法正常使用，也无法通过窗口按钮关闭，只能再次结束进程。
+
+	操你妈的！真鸡巴服了！你全家死了是不是？都他妈的不知道到底什么狗逼代码，能把浏览器搞得这么奇怪：既不崩溃，又不能用！
+
+	需要排查转存核验长时间没有结果，以及操作过程中伴随的浏览器整体交互异常。目前只能确认这些现象在该操作过程中重复出现，尚未确认它们是否由同一个原因造成，也未确认是否与上一轮修改有关。
+
+	太操蛋了！暂时没心情测更多以前调好的功能了，都不知道到底会不会还有新问题出来！
+
+	上一轮已通过个人验收的条目
+
+	虽然上一轮任务没有全部完成，但以下条目已经通过我的个人验收。恢复任务时应保留这些成果：
+	- 【OK，原第 5 项】后台 /sns-dl 和 /youtube-premium-dl 页面点击“标记为已处理”前，弹出确认对话框。
+	- 【OK，原第 7 项】传输记录多选模式支持按 Esc 退出，原有“取消”按钮和返回键／返回手势仍可使用。
+	- 【OK，原第 8 项】多选模式支持先选中记录 A，再按住 Shift 左键单击记录 B，选中当前列表中 A 至 B 的全部记录，包括两端。
+	- 【OK，原第 11 项】单指长按“连接设备”区域底部的“暂时离开”按钮打开控制中心时，不再出现文字被选中的问题。
+	恢复任务所依据的记录与代码基线
+
+	请结合以下文档，以及当前工作区实际代码，恢复上一轮任务上下文：
+	- [原始需求及 Codex Agent 执行输出记录（手动整理）](E:/Workspaces/github/Ltre/file-tunnel/prompts/dev-prompt-logs/interrupt-agent-logs/ir-261107-2.clog)
+	- [开发日志：进度、测试结果和恢复说明](E:/Workspaces/github/Ltre/file-tunnel/docs/devlog/dev-2611.md)
+	当前开发分支为：
+	dev/2611-s1-FATAL-ERROR-e2
+	本次恢复后的开发任务应在这个分支执行。
+
+	上一轮任务在 dev/2611-s1-FATAL-ERROR 分支执行。为保留上轮产物，已将相关修改提交到当前分支的 HEAD：
+	554ba28858a9524c6e62c3183d60ddc20dcea6be
+	当前 HEAD 相对于以下旧版的差异，包含上一轮任务的代码、测试、日志和执行记录：
+	eb43a03a24741c70eb16c892c93beadf59ebb55e
+	当前只读核对结果是：工作区仅以下文件存在未提交修改，应保留该修改：
+	prompts/dev-prompt-logs/dev-2611.md
+	恢复时不能只根据提交记录判断完成状态，也不能简单地从开发日志最后一行机械续接。应结合完整原始需求、后续问答、执行记录、开发日志和实际代码差异，逐项区分：
+	- 已经正确完成并通过验收的内容。
+	- 已有实现和阶段测试，但尚未完成最终验证，或已被最新人工验收发现仍有问题的内容。
+	- 修改、测试或验收过程中被中断的内容。
+	- 尚未开始处理的内容。
+	根据现有日志，前台漏译补齐尚未完成，Telegram App 登录后卡在回调页的问题尚未开始排障，最后全部改动的统一验证也尚未完成。这些内容不能遗漏。
+
+	特别注意：如果中断发生在某项修改、测试或验收过程中，应重新检查该细节是否完整落地、测试是否实际结束，以及代码与记录是否一致。不能默认中断前的操作已经成功，也不能用早于最后修改的测试结果证明当前版本已经通过验证。
+
+	确认中断点没有半成品、错误完成或状态不一致的问题后，再从实际未完成的位置继续，完成上一轮剩余任务，并处理本次新增的 8 项问题。避免重复实现、覆盖已有修改或破坏已通过验收的成果。
+
+	最后，应以执行记录 ir-261107-2.clog 中 [编号261107-2] 的完整新版需求、全部任务执行期间补充问题及后续澄清为验收依据，并一并验证本次新增问题。
+
+	执行记录和开发日志对后续补充事项存在编号差异，应按事项内容核对，避免因编号不同而遗漏重复转发测试反馈或 Telegram 登录回调问题。
+
+
+
+答：
+
+
+	我会按这份需求开始恢复开发。先核对 e2 分支和上轮产物，优先排查浏览器无法操作、P2P／磁链传输和转码反馈，再补完多语言、转发状态对话框及 Telegram 登录回调，最后统一验证。已通过人工验收的功能会保留，所有修改保持未暂存、未提交。
+
+	编辑了文件运行了命令
+	已运行 git branch --show-current; git rev-parse HEAD; git status --short; Get-Content -LiteralPath 'AGENTS.md'; Get-Content -LiteralPath 'package.json'
+
+	已运行 Get-Content -LiteralPath 'client/i18n.js'; Get-Content -LiteralPath 'client/localization-runtime.js'; rg --files client pages server tests | rg 'magnet|download-cache|transcode|pending-save|oidc|p2p'
+
+	已运行 rg -n 'confirmTelegramDriveAction|verifyTarget|verifySource|核验目标|DiskPendingSave|startTelegramLogin' client/disk-ui.js client/disk-pending-save.js client/disk-saved-location.js; rg -n 'forwardHistoryMessages|forwardHistoryMessage|openDownloadCacheOverlay' app.js; Get-Content -LiteralPath 'docs/devlog/dev-2611.md' -Tail 92
+
+	已运行 Get-Content -LiteralPath 'client/i18n.js' | Select-Object -Skip 170 -First 110; Get-Content -LiteralPath 'client/localization-runtime.js'; Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 355 -First 125; rg -n 'function confirmTelegramDriveAction|confirmTelegramDriveAction =' app.js client/disk-ui.js; Get-Content -LiteralPath 'client/disk-pending-save.js' -TotalCount 130
+
+	已运行 rg --files pages client server tests | rg 'magnet|download|transcode|oidc|p2p|pending-save'; rg -n 'ice|P2P|peerConnection|relay|forceRelay' client/file-assets.js | Select-Object -First 85; rg -n 'openDownloadCacheOverlay' app.js; Get-Content -LiteralPath 'tests/interactions-261108.browser.cjs'; Get-Content -LiteralPath 'tests/i18n-261108.browser.cjs' -TotalCount 90
+
+	已运行 Get-Content -LiteralPath 'server/video-transcode.js' -TotalCount 240; Get-Content -LiteralPath 'docs/overview/tests-and-regressions.md' -TotalCount 150; rg -n 'P2P|proxy|代理|ICE|回退|relay' docs/overview/transfer-cache.md | Select-Object -First 45
+
+	已运行 rg --files pages client server tests | rg 'magnet|download-cache|transcode|oidc|p2p|pending-save'; Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 635 -First 74; Get-Content -LiteralPath 'tests/interactions-261108.browser.cjs' -TotalCount 65; Get-Content -LiteralPath 'tests/i18n-261108.browser.cjs' -TotalCount 28
+
+	已运行 rg -n 'appLanguageSelect|drop2tunnel.language|setLanguage|localization-runtime|i18n.js' app.js client/*.js pages/index.html pages/tunnel-entry.html; rg -n 'magnet|downloadCache' app.js | Select-Object -Last 45; rg -n 'disabled|下载文件|file-asset|send-signaling' pages/magnet-downloader.html client/file-assets.js | Select-Object -First 95
+
+	已运行 git diff efbb770882beac7ed93f7729681f0ea03b531e0a HEAD -- client/file-assets.js; rg -n 'RTCPeerConnection|iceServers|send-signaling|p2pReady|p2p' app.js | Select-Object -First 90; rg --files pages | rg 'download|magnet'; Get-Content -LiteralPath 'server/video-transcode.js' -TotalCount 75
+
+	已运行 Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 270 -First 70; Get-Content -LiteralPath 'client/disk-pending-save.js' | Select-Object -Skip 235 -First 48; Get-Content -LiteralPath 'tests/admin-confirm-261108.browser.cjs'; Get-Content -LiteralPath 'tests/p2p-connection-regression.test.cjs' -TotalCount 75
+
+	已运行 rg -n 'appLanguageSelect|drop2tunnel.language|setLanguage|localization-runtime|__drop2TunnelLegacyCatalogOnly' app.js client -g '*.js'; Get-Content -LiteralPath 'pages/downloadList.html' -TotalCount 100; rg -n 'script|disabled|downloadBtn|file-assets|request|种子|下载文件' pages/downloader.html | Select-Object -First 100; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 18560 -First 35
+
+	已运行 Get-Content -LiteralPath 'app.js' | Select-Object -Skip 2300 -First 155; Get-Content -LiteralPath 'client/file-assets.js' | Select-Object -Skip 1170 -First 240; git diff efbb770882beac7ed93f7729681f0ea03b531e0a HEAD -- server/video-transcode.js; rg -n 'video.transcode|transcode|progress' tests/features-2610* tests/video* -g '*.cjs'
+
+	已编辑 dev-2611.md+7-0
+
+	已运行 node -e 'const fs=require("fs"),vm=require("vm");let c={window:{addEventListener(){}},document:{readyState:"loading",addEventListener(){}},localStorage:{getItem:()=>"en"},navigator:{language:"en-US"}};vm.createContext(c);for(const f of ["i18n-catalog","i18n"])vm.runInContext(fs.readFileSync("client/"+f+".js","utf8"),c);for(const message of ["正在核验目标目录和来源版本…","请确认转存目标","确认转存到网盘","请登录账号（账号名 hello / ID 12）后，继续查看该文件。","将“video.mp4”（100 MB）转存到“主分区”的 /？"]){c.input=message;let t=Date.now();try{console.log(message,vm.runInContext("window.TunnelI18n.t(input)",c,{timeout:2000}),Date.now()-t)}catch(e){console.log(message,e.message)}}'
+
+	已运行 Get-Content -LiteralPath 'pages/index.html' -TotalCount 103 | Select-Object -Last 24; Get-Content -LiteralPath 'pages/downloadList.html' | Select-Object -Skip 265 -First 210; Get-Content -LiteralPath 'pages/downloader.html' | Select-Object -Skip 312 -First 166; Get-Content -LiteralPath 'pages/video-transcode.html' -TotalCount 27
+
+	已运行 rg -n 'signal|relay-only|transportHint' server/file-assets.js server.js | Select-Object -First 70; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 2450 -First 137; rg -n 'createPeerConnection|shouldInitiatePeerConnection' tests/p2p-connection-regression.test.cjs | Select-Object -First 24
+
+	已确认上轮产物完整进入 e2 的 HEAD，当前只有你的提示记录有未提交修改。转码代码里找到两个明确缺口：FFmpeg 日志只按换行符拆分，会积压使用回车符刷新的输出；百分比只在步骤开始和全部结束时赋值。我会先补复现测试，核实这两处对界面的影响。
+
+	运行了命令
+	已运行 rg -n 'api/video-transcode|createVideoTranscodeService' tests -g '*.cjs' | Select-Object -First 35; Get-Content -LiteralPath 'pages/downloadList.html' | Select-Object -Skip 185 -First 85; Get-Content -LiteralPath 'pages/downloader.html' | Select-Object -Skip 150 -First 163; Get-Content -LiteralPath 'server.js' | Select-Object -Skip 10295 -First 53; Get-Content -LiteralPath 'tests/support/pending-save-261012-fixture.cjs' -TotalCount 65
+
+	已运行 Get-Content -LiteralPath 'tests/support/pending-save-261012-fixture.cjs' -Tail 65; Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 609 -First 30; Get-Content -LiteralPath 'tests/features-260916-2.test.cjs' | Select-Object -Skip 66 -First 62; rg -n 'media|P2P|before|startServer|spawn|chromium|clipboard|/fixture' tests/ui-261106.browser.cjs | Select-Object -First 60
+
+	已运行 Get-Content -LiteralPath 'tests/magnet-261026-2.test.cjs' -TotalCount 120; rg -n 'magnetId|session-history|session-joined' server.js | Select-Object -Last 48; rg -n 'function getDB|DB_NAME|indexedDB.open|onupgradeneeded|onblocked' app.js | Select-Object -First 30; Get-Content -LiteralPath 'client/cache-store.js' -TotalCount 80; rg -n 'getTunnelAuthorization|FileAssetTransfer\(' app.js | Select-Object -Last 12
+
+	已运行 Get-Content -LiteralPath 'tests/pending-save-location-261025-1.test.cjs' -TotalCount 90; rg -n 'pending-save|transfers|choose|目标目录|未重复|dialog' tests -g '*browser*' -g '*261012-1*' | Select-Object -First 45; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 10020 -First 148; Get-Content -LiteralPath 'server.js' | Select-Object -Skip 9440 -First 57; Get-Content -LiteralPath 'app.js' -TotalCount 148 | Select-Object -Last 24
+
+	已运行 rg -n 'function raw|async function raw|function request|async function request|onbeforeunload|beforeunload|showModal|alert\(' client/disk-client.js client/disk-ui.js client/disk-directory-picker.js app.js | Select-Object -First 45; Get-Content -LiteralPath 'client/disk-client.js' | Select-Object -Skip 75 -First 65; Get-Content -LiteralPath 'client/disk-directory-picker.js' | Select-Object -Skip 17 -First 60; Get-Content -LiteralPath 'tests/disk-pending-save-261012-1.test.cjs' -TotalCount 88; rg -n 'scripts|peer|fixture-p2p|function createFixture' tests/support/ui-261106* tests/support/*261106* -g '*.cjs'
+
+	已运行 Get-Content -LiteralPath 'tests/disk-location-retry-261029-2.browser.cjs' -TotalCount 95; Get-Content -LiteralPath 'client/disk-client.js' | Select-Object -Skip 160 -First 27; Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 2670 -First 120; Get-Content -LiteralPath 'tests/support/disk-oidc-261012-fixture.cjs' -TotalCount 70; Get-Content -LiteralPath 'tests/magnet-theme-paint-261030.browser.cjs' -TotalCount 55
+
+	为区分 Chrome 界面语言和网页实际收到的语言，请在出现“使用系统语言却显示中文”的那个页面控制台执行 JSON.stringify({language:navigator.language,languages:navigator.languages,preference:localStorage.getItem('drop2tunnel.language'),rendered:document.documentElement.lang})，把文本结果发来即可。我会继续处理其它问题。
+
+	编辑了文件运行了命令
+	已编辑 interactions-261108.browser.cjs+2-1
+
+	已创建 transcode-progress-261108.test.cjs+20-0
+
+	已运行 node --test tests/transcode-progress-261108.test.cjs
+
+	已编辑 video-transcode.js+37-0
+
+	已运行 @'
+	const fs=require('fs'),file='server/video-transcode.js';let s=fs.readFileSync(file,'utf8');const old="let pending='';child.stderr?.on('data',chunk=>{pending+=chunk.toString();const lines=pending.split(/\\r?\\n/);pending=lines.pop()||'';task.logs.push(...lines.filter(Boolean).slice(-20));task.logs=task.logs.slice(-80);task.updatedAt=Date.now();});";if(!s.includes(old))throw Error('missing original stderr handler');s=s.replace(old,"const outputLog=captureTranscodeOutput(task,args,index,selected.steps.length);child.stderr?.on('data',chunk=>outputLog.write(chunk));");const end="child.on('exit',(code,signal)=>{running.delete(task.id);";if(!s.includes(end))throw Error('missing exit handler');s=s.replace(end,"child.on('exit',(code,signal)=>{outputLog.end();running.delete(task.id);");fs.writeFileSync(file,s);
+	const page='pages/video-transcode.html',p=fs.readFileSync(page,'utf8'),before="task.logs.slice(-20).join('\\\\n')",after="task.logs.slice(-80).join('\\n')";if(!p.includes(before))throw Error('missing literal log separator');fs.writeFileSync(page,p.replace(before,after));
+	'@ | node
+	node --test tests/transcode-progress-261108.test.cjs tests/features-260916-2.test.cjs tests/features-260917-1.test.cjs
+
+	已运行 node -e 'const fs=require("fs"),s=fs.readFileSync("pages/video-transcode.html","utf8"),m=s.match(/task.logs.slice[^}]+/)[0];console.log(JSON.stringify(m),[...m.slice(-9)].map(x=>x.charCodeAt(0)))' 
+	node --test --test-name-pattern='running transcodes|视频转码服务|视频转码可直接|视频转码缓存' tests/transcode-progress-261108.test.cjs tests/features-260916-2.test.cjs tests/features-260917-1.test.cjs
+
+	已运行 Get-Content -LiteralPath 'client/i18n-catalog.js' -Tail 160; Get-Content -LiteralPath 'tests/disk-pending-save-261012-1.test.cjs' | Select-Object -Skip 90 -First 20; Get-Content -LiteralPath 'tests/support/p2p*' -TotalCount 3; Get-Content -LiteralPath 'tests/i18n-catalog-261108.test.cjs'
+
+	已运行 node --test --test-name-pattern='transcode logs' tests/interactions-261108.browser.cjs
+
+	为区分 Chrome 界面语言和网页实际收到的语言，请在出现“使用系统语言却显示中文”的那个页面控制台执行 JSON.stringify({language:navigator.language,languages:navigator.languages,preference:localStorage.getItem('drop2tunnel.language'),rendered:document.documentElement.lang})，把文本结果发来即可。我会继续处理其它问题。他妈的我在手机上的怎么执行？你有病吗？
+
+	星期日23:08
+
+	手机上不用执行控制台命令。刚才这个排查方式不适合你的使用环境，我收回这项请求；我会继续用隔离移动浏览器检查实际首页的语言选择和资源更新路径，不需要你再操作手机。
+
+	编辑了文件运行了命令
+	已运行 node --test --test-name-pattern='transcode logs' tests/interactions-261108.browser.cjs
+
+	已运行 Get-Content -LiteralPath 'tests/ui-261106.browser.cjs' -TotalCount 14; Get-Content -LiteralPath 'tests/route-261106-3.browser.cjs' -TotalCount 55; rg --files tests/support | Select-Object -First 45; Get-Content -LiteralPath 'service-worker.js' -TotalCount 85; Get-Content -LiteralPath 'tests/disk-pending-save-261012-1.test.cjs' -Tail 15; rg -n 'transportHint' server.js | Select-Object -Last 8
+
+	已运行 Get-Content -LiteralPath 'client/disk-pending-save.js' | Select-Object -Skip 340 -First 73; Get-Content -LiteralPath 'pages/downloadList.html' | Select-Object -Skip 174 -First 16; Get-Content -LiteralPath 'tests/support/streaming-console-fixture.cjs' -TotalCount 25; Get-Content -LiteralPath 'client/disk-client.js' | Select-Object -Skip 290 -First 20; rg -n 'active\.get|lockRecord|function update' client/disk-pending-save.js
+
+	已运行 rg -n 'withActivity|activity:|activity\(' client/disk-client.js client/disk-ui.js | Select-Object -First 27; Get-Content -LiteralPath 'client/disk-client.js' -Tail 52; Get-Content -LiteralPath 'client/disk-pending-save.js' | Select-Object -Skip 126 -First 25; rg -n 'http|test|cookies|popup|success' tests/support/disk-oidc-261012-fixture.cjs | Select-Object -Last 10
+
+	已编辑 disk-pending-save.js+3-2
+
+	已编辑 disk-ui.js+1-0
+
+	已编辑 sns-dl.html+1-1
+
+	已运行 @'
+	const fs=require('fs'),file='pages/youtube-premium-dl.html',s=fs.readFileSync(file,'utf8'),old="if (!task.handled && !confirm('确定将这个任务标记为已处理吗？')) return;",replacement="if (!confirm(task.handled ? '确定将这个任务标记为待处理吗？' : '确定将这个任务标记为已处理吗？')) return;";if(!s.includes(old))throw Error('missing handled confirmation');fs.writeFileSync(file,s.replace(old,replacement));
+	'@ | node
+
+	已编辑 admin-confirm-261108.browser.cjs+4-2
+
+	已运行 rg -n 'openLogTasks|function renderTasks|function loadTasks' pages/video-transcode.html; Get-Content -LiteralPath 'tests/bulk-forward-261108.test.cjs' -TotalCount 53; Get-Content -LiteralPath 'tests/support/pending-save-261012-fixture.cjs' -TotalCount 14; Get-Content -LiteralPath 'client/i18n.js' | Select-Object -Skip 152 -First 22
+
+	已编辑 interactions-261108.browser.cjs+4-0
+
+	已创建 pending-save-preflight-261108.browser.cjs+28-0
+
+	已编辑 pending-save-261012-fixture.cjs+2-2
+
+	已运行 node --test --test-name-pattern='transcode logs' tests/interactions-261108.browser.cjs
+
+	已运行 @'
+	const fs=require('fs'),file='pages/video-transcode.html';let s=fs.readFileSync(file,'utf8');const changes=[
+	["{top:log.scrollTop,tail:log.scrollHeight-log.clientHeight-log.scrollTop<8}","{top:log.scrollTop,tail:!log.dataset.positioned||log.scrollHeight-log.clientHeight-log.scrollTop<8}"],
+	["log.scrollTop=!previous||previous.tail?log.scrollHeight:previous.top;","log.scrollTop=!previous||previous.tail?log.scrollHeight:previous.top;log.dataset.positioned='true';"],
+	["if(log)log.scrollTop=log.scrollHeight;","if(log){log.scrollTop=log.scrollHeight;log.dataset.positioned='true';}"],
+	["task.logs.slice(-20)","task.logs.slice(-80)"]
+	];for(const [old,next]of changes){if(!s.includes(old))throw Error('missing '+old);s=s.replace(old,next);}fs.writeFileSync(file,s);
+	'@ | node
+	node --test tests/pending-save-preflight-261108.browser.cjs tests/admin-confirm-261108.browser.cjs tests/interactions-261108.browser.cjs > .npm-cache/e2-interactions.txt
+
+	日志尾行问题已补出一个此前漏测的复现：刚展开日志时，如果轮询恰好重建任务卡片，会把尚未滚动的顶部位置保存下来。我已修正这个时序，并保留用户主动上翻后的阅读位置。“标记为待处理”的确认和转存核验阶段的居中加载反馈也已补上，正在跑真实页面验证。
+
+	编辑了文件运行了命令
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-interactions.txt' -Tail 55; Get-Content -LiteralPath 'server.js' | Select-Object -Skip 11310 -First 105; rg -n 'registerFileAssetHandlers|canUseCapability|canRead' server/file-assets.js | Select-Object -First 28; rg -n 'canUseTunnelCapability.*magnet|magnetAssetId|clientType === .magnet' server.js
+
+	已运行 Get-Content -LiteralPath 'server.js' | Select-Object -Skip 9840 -First 26; rg -n 'isValidDeviceId|isValidSessionId' tests/p2p-connection-regression.test.cjs | Select-Object -First 12; Get-Content -LiteralPath 'server/file-assets.js' -TotalCount 70; Get-Content -LiteralPath 'client/i18n-catalog.js' -TotalCount 30
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-interactions.txt' -Tail 60; rg -n 'registerFileAssetHandlers' server.js; Get-Content -LiteralPath 'server.js' | Select-Object -Skip 3934 -First 46
+
+	已运行 Get-CimInstance Win32_Process -Filter "name = 'node.exe'" | Where-Object { $_.CommandLine -like '*261108*' } | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List; Get-Content -LiteralPath 'server.js' | Select-Object -Skip 11580 -First 50; Get-Item -LiteralPath '.npm-cache/e2-interactions.txt' | Select-Object Length,LastWriteTime
+
+	已运行 Get-CimInstance Win32_Process -Filter "name = 'node.exe'" | Where-Object { $_.CommandLine -like '*261108*' } | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-interactions.txt' -Tail 80; git diff --stat
+
+	已运行 Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 228 -First 40; rg -n 'dataset.positioned|tail:' pages/video-transcode.html; Get-Content -LiteralPath 'tests/forward-confirmation-261108.test.cjs' -TotalCount 35
+
+	已编辑 interactions-261108.browser.cjs+2-1
+
+	已编辑 pending-save-preflight-261108.browser.cjs+2-1
+
+	已运行 node --test tests/pending-save-preflight-261108.browser.cjs tests/admin-confirm-261108.browser.cjs tests/interactions-261108.browser.cjs > .npm-cache/e2-interactions.txt
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-interactions.txt' -Tail 65; Get-Content -LiteralPath 'server/file-assets.js' | Select-Object -Skip 214 -First 32; Get-Content -LiteralPath 'server.js' | Select-Object -Skip 9580 -First 20
+
+	已运行 node --test tests/pending-save-preflight-261108.browser.cjs tests/admin-confirm-261108.browser.cjs tests/interactions-261108.browser.cjs > .npm-cache/e2-interactions.txt
+
+	已运行 rg -n 'file-asset-relay-start|file-asset-relay-chunk|file-asset-relay-complete' app.js server/file-assets.js; Get-Content -LiteralPath 'server/file-assets.js' | Select-Object -Skip 643 -First 102; Get-Content -LiteralPath '.npm-cache/e2-interactions.txt' -Tail 28
+
+	已运行 Get-Content -LiteralPath 'app.js' | Select-Object -Skip 2143 -First 36; Get-Content -LiteralPath 'client/file-assets.js' | Select-Object -Skip 2146 -First 78; Get-Content -LiteralPath '.npm-cache/e2-interactions.txt' -Tail 32
+
+	已创建 magnet-download-261108.browser.cjs+32-0
+
+	已运行 node --test tests/magnet-download-261108.browser.cjs
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-interactions.txt' -Tail 45
+
+	已编辑 downloader.html+8-3
+
+	已编辑 pending-save-preflight-261108.browser.cjs+5-2
+
+	已运行 node --test tests/magnet-download-261108.browser.cjs tests/pending-save-preflight-261108.browser.cjs > .npm-cache/e2-network.txt
+
+	磁链停在 0% 的问题已用真实 Socket.IO 复现：下载页收到中继开始消息后没有返回 ACK，服务端因此一直等待确认，无法继续发送文件内容。我已按首页现有协议补齐开始、分块和完成回执，正在验证完整字节落盘后才启用“下载文件”按钮。
+
+	运行了命令
+	已运行 Get-Content -LiteralPath 'tests/p2p-connection-regression.test.cjs' | Select-Object -Skip 75 -First 110; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 2720 -First 37; Get-Content -LiteralPath '.npm-cache/e2-network.txt' -Tail 30; rg -n 'function forwardHistoryMessages|function forwardHistoryMessage|showBlockingProgressPanel|forwardHistoryBatch' app.js | Select-Object -First 20
+
+	已运行 rg -n 'reset|dispose|destroy|cancelAll' client/file-assets.js | Select-Object -First 12; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 9056 -First 44; Get-Content -LiteralPath '.npm-cache/e2-network.txt' -Tail 50
+
+	刚才你提到“为区分 Chrome 界面语言和网页实际收到的语言”，他麻痹的根本不用判断这个，肯定是以客户端浏览器使用的语言为准！这么理所当然的还他妈的研究！
+
+	星期日23:18
+
+	明确了：“使用系统语言”以客户端浏览器当前使用的语言为准；用户手动选择的语言仍优先。不再要求你提供控制台信息，我会按这个规则修正并验证。
+
+	编辑了文件运行了命令
+	已编辑 i18n.js+1-1
+
+	已编辑 i18n-261108.browser.cjs+8-0
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-network.txt' -Tail 48; Get-Content -LiteralPath 'pages/index.html' -Tail 38; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 8937 -First 60
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-network.txt' -Tail 45; git diff --numstat -- client/i18n.js server/video-transcode.js
+
+	已运行 Get-CimInstance Win32_Process -Filter "name = 'node.exe'" | Where-Object { $_.CommandLine -like '*261108*' } | Select-Object ProcessId,ParentProcessId,CommandLine | Format-List
+
+	已运行 Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq 12116 -or $_.ParentProcessId -eq 24896 } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | Format-List
+
+	已运行 Stop-Process -Id 12932
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-network.txt' -Tail 80
+
+	你中场抽空列出本次任务所有待修的问题清单，我要确认你会不会漏掉
+
+	星期日23:21
+
+	目前按下面这份清单执行。P2P 全部走 Relay、浏览器整体无法操作这两个现场问题，尚未确认根因，也没有认定已解决。
+
+	本次 [261108-1] 新增 8 项：
+	1. 局域网全部走 Relay：对照 efbb770...，检查实际信令、ICE、文件通道及回退原因；待完成真实 P2P 隔离验证。
+	2. 浏览器为 English，选择系统语言仍显示中文：已按你明确的规则，将浏览器当前语言作为依据；还要验证实际首页、移动布局和资源更新。
+	3. 磁链有在线种子但始终 0%、下载按钮禁用：已复现下载页缺少中继 ACK，并补齐回执；仍在完成缓存落盘及下载按钮验证。
+	4. “标记为·待处理”需要确认：已修改，两页的确认／取消测试已通过；最终回归会同时保留“标记为已处理”的确认。
+	5. 转码百分比和日志长时间不更新：已补回车符日志解析和基于输出时间的中间进度，相关 Node 测试通过；还要补实际 FFmpeg 和页面联动验证。
+	6. 转码日志默认显示末尾仍未通过验收：已复现“展开恰逢轮询重建”的竞态并修正，新浏览器用例通过；最终继续核对刷新与主动上翻。
+	7. 转发时逐条展示摘要、记录 ID、等待／成功／未发送图标，用户手动关闭：尚未实现。
+	8. 转存卡在核验阶段，伴随浏览器整体无法操作：已补核验阶段的居中加载反馈；正在验证完整流程、失败与重试。浏览器整体交互异常仍未复现，不能把加载反馈补齐当作该问题已解决。
+	上一轮 [261107-2] 必须补完或统一复查的项目：
+	1. 前台 i18n 集中及漏译补齐：集中工作已在 HEAD，漏译补齐仍未完成；继续保护技术标识、用户正文、文件名和路径。
+	2. 语言偏好、系统语言、未支持语言回退英语、系统选项自身翻译：与本次第 2 项一起验证。
+	3. 批量上传期间打开网盘目录延迟：已有 SSE 连接占用的针对性修复，需要回归上传期间导航。
+	4. 控制中心进度面板与抽屉同时显示对传输的影响：已有阶段测试，仍需纳入最新版本统一验证。
+	5. “标记为已处理”确认：你已验收通过，保留并验证反向确认没有破坏它。
+	6. 首次访问时，第一个短码字符重复进入第二格：已有修复，需回归首次输入、输入法和粘贴。
+	7. 多选按 Esc 退出：你已验收通过，保留。
+	8. Shift 连续范围选择：你已验收通过，保留。
+	9. 转码日志末尾显示：与本次第 6 项合并处理。
+	10. Orbit 不可预览文件内层信息卡白底：已有修复，纳入主题回归。
+	11. 长按离开按钮选中文字：你已验收通过，保留。
+	12. 转发网页 ZIP 编辑后回源同步：复查创建者标注、编辑凭据、连续编辑、重启恢复、可见设备路径、撤销和冲突；不能要求本设备与创建者同时进入源隧道，也不能强制自动加入。
+	13. 批量同步／一键获取缺失缓存／合辑还原不启动，单文件还原却成功：已有多处修复，继续验证自动补齐、批量恢复，以及两端都切到 B 的场景。
+	上一轮追加事项也在范围内：
+	- 批量转发缺记录、超时、重复测试又成功：核对实际保存、确认结果及重试去重，不能直接归因为服务器不稳定。
+	- “来源隧道尚未获得访问权”：复查来源身份与凭据配对、较早持久记录锚点及授权边界。
+	- Telegram App 登录后卡在回调页、关闭无效、原页没有登录态：尚未处理，按原要求排在前面事项之后。执行记录和日志编号不同，但这是同一项，没有漏掉。
+	最后还要做：全部相关代码和交互的统一回归、正常的 Service Worker 资源版本更新、逐项开发日志和遗留说明、建议 Git 提交日志。前一批已验收的控制中心、缓存安全、内存和备份成果会保留；不暂存、不提交。
+
+	编辑了文件运行了命令
+	已运行 rg -n 'onReceived' client/file-assets.js; Get-Content -LiteralPath 'client/file-assets.js' | Select-Object -Skip 1850 -First 118; Get-Content -LiteralPath 'tests/magnet-download-261108.browser.cjs' -Tail 8; rg -n 'pendingSave|PendingSave' client/disk-ui.js | Select-Object -Last 25; Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 3730 -First 24
+
+	已运行 Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 4169 -First 29; Get-Content -LiteralPath 'client/disk-ui.js' -TotalCount 24; Get-Content -LiteralPath 'client/disk-saved-location.js' -TotalCount 17; Get-Content -LiteralPath 'tests/disk-pending-save-261012-1.test.cjs' | Select-Object -Skip 293 -First 25; Get-Content -LiteralPath 'client/disk-client.js' | Select-Object -Skip 64 -First 15
+
+	已编辑 magnet-download-261108.browser.cjs+2-2
+
+	已编辑 pending-save-preflight-261108.browser.cjs+1-1
+
+	已运行 node --test tests/magnet-download-261108.browser.cjs tests/pending-save-preflight-261108.browser.cjs > .npm-cache/e2-network.txt
+
+	已运行 rg -n '^async function|^function' app.js | Where-Object { $_ -match '25[5-9][0-9]:|26[0-9][0-9]:|27[0-4][0-9]:' }; Get-Content -LiteralPath '.npm-cache/e2-network.txt' -Tail 32; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 2650 -First 70; Get-Content -LiteralPath 'client/file-assets.js' -TotalCount 46
+
+	已运行 Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 204 -First 27; rg -n 'choose|className.*account|dialog' client/account-ui.js | Select-Object -First 25; Get-Content -LiteralPath 'client/account-ui.js' | Select-Object -Skip 36 -First 85; Get-Content -LiteralPath '.npm-cache/e2-network.txt' -TotalCount 2
+
+	已创建 p2p-live-261108.browser.cjs+37-0
+
+	已编辑 pending-save-preflight-261108.browser.cjs+3-5
+
+	已运行 node --test tests/p2p-live-261108.browser.cjs tests/pending-save-preflight-261108.browser.cjs > .npm-cache/e2-live.txt
+
+	已运行 rg -n 'forwardHistoryMessages\(|forwardHistoryMessage\(' app.js; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 8780 -First 92; Get-Content -LiteralPath 'client/index.css' -Tail 14; Get-Content -LiteralPath '.npm-cache/e2-live.txt' -Tail 48
+
+	已运行 Get-Content -LiteralPath 'app.js' | Select-Object -Skip 8335 -First 17; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 8990 -First 27; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 8460 -First 26; Get-Content -LiteralPath '.npm-cache/e2-live.txt' -Tail 55
+
+	正在重新连接 /5
+
+	编辑了文件运行了命令
+	已编辑 app.js+45-8
+
+	已编辑 index.css+1-0
+
+	已编辑 forward-confirmation-261108.test.cjs+2-1
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-live.txt' -Tail 60; node --test tests/forward-confirmation-261108.test.cjs tests/i18n-catalog-261108.test.cjs
+
+	已运行 Get-Content -LiteralPath 'client/account-ui.js' -TotalCount 37; node -e 'const fs=require("fs"),cp=require("child_process"),s=fs.readFileSync("app.js","utf8"),o=cp.execFileSync("git",["show","efbb770882beac7ed93f7729681f0ea03b531e0a:app.js"],{encoding:"utf8",maxBuffer:4000000});const section=x=>x.slice(x.indexOf("// ==================== WebRTC P2P ===================="),x.indexOf("// ==================== Editor image assets ===================="));console.log({samePeerCode:section(s)===section(o)});'
+
+	已编辑 app.js+1-1
+
+	已编辑 p2p-live-261108.browser.cjs+2-1
+
+	已编辑 pending-save-preflight-261108.browser.cjs+1-1
+
+	已运行 node --test tests/p2p-live-261108.browser.cjs tests/pending-save-preflight-261108.browser.cjs > .npm-cache/e2-live.txt
+
+	P2P 对照已有结果：当前标准 WebRTC 建链代码与 efbb770... 完全相同；隔离 Chrome 中，首次建链和后续文件均实际通过 DataChannel 完成，未走 Relay。手机现场“全部走 Relay”还未复现，我会保留这个结论边界，不据此改写 ICE 或传输基础设施。
+
+	编辑了文件运行了命令
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-live.txt' -Tail 55; Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 137 -First 28; Get-Content -LiteralPath '.npm-cache/merge-native-ui-261108.cjs'; node tools/frontend-i18n-audit.js --output .npm-cache/frontend-i18n-audit-261108.json
+
+	已编辑 pending-save-preflight-261108.browser.cjs+1-1
+
+	已运行 node --test tests/p2p-live-261108.browser.cjs tests/pending-save-preflight-261108.browser.cjs > .npm-cache/e2-live.txt
+
+	已编辑 transcode-progress-261108.test.cjs+11-0
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-live.txt' -Tail 42; node --test tests/forward-confirmation-261108.test.cjs
+
+	已编辑 i18n.js+1-0
+
+	已运行 node --test tests/p2p-live-261108.browser.cjs tests/pending-save-preflight-261108.browser.cjs > .npm-cache/e2-live.txt
+
+	既然你提到“P2P 对照已有结果：当前标准 WebRTC 建链代码与 efbb770... 完全相同；隔离 Chrome 中，首次建链和后续文件均实际通过 DataChannel 完成，未走 Relay。手机现场“全部走 Relay”还未复现，我会保留这个结论边界，不据此改写 ICE 或传输基础设施  ”，那好好想想到底什么情况导致全部都走了socket.io relay？我手机都没有开代理，刷新两次页面，包括电脑都刷新了，还他妈的全走relay，怎么回事
+
+	星期日23:37
+
+	两端都刷新后仍然全走 Relay，这个现象需要继续查。刚才的对照和隔离测试只证明那条 P2P 路径能够工作，还没有解释你的现场情况。
+
+	我会继续查它前面的信令发送、身份路由和批量任务调度，确认是否有条件会持续阻止建链。手机没开代理也不能单独保证 P2P 建立成功，但目前没有证据把问题归到你的网络设置上。
+
+	编辑了文件运行了命令
+	已运行 rg -n 'checkMessageRate|MESSAGE.*RATE|messageCount|messageRate|msgCount' server.js; Get-Content -LiteralPath 'server.js' | Select-Object -Skip 9380 -First 60; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 2634 -First 18; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 3489 -First 38; rg -n 'connectToPeer\(|pendingIceCandidates|state.deviceId =' app.js | Select-Object -First 40; Get-Content -LiteralPath '.npm-cache/e2-live.txt' -Tail 34
+
+	已运行 Get-Content -LiteralPath 'server.js' | Select-Object -Skip 9515 -First 24; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 1195 -First 28; rg -n 'tunnel-access-grant|function tunnelDeviceId|function tunnelAuthorization|device-id' app.js server.js | Select-Object -First 18; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 16515 -First 25; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 1980 -First 38; Get-Content -LiteralPath '.npm-cache/e2-live.txt' -Tail 35
+
+	已编辑 p2p-live-261108.browser.cjs+6-1
+
+	已运行 node --test tests/p2p-live-261108.browser.cjs > .npm-cache/e2-p2p-rate.txt
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-live.txt' -Tail 40
+
+	已编辑 pending-save-preflight-261108.browser.cjs+2-2
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-p2p-rate.txt' -Tail 38; $env:TEST_FFMPEG='C:\Users\FF\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe'; node --test tests/transcode-progress-261108.test.cjs tests/pending-save-preflight-261108.browser.cjs > .npm-cache/e2-progress.txt
+
+	已编辑 p2p-live-261108.browser.cjs+1-0
+
+	已运行 node --test tests/p2p-live-261108.browser.cjs > .npm-cache/e2-p2p-rate.txt
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-progress.txt' -Tail 65
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-p2p-rate.txt' -Tail 28; rg -n 'setInterval|updateManifest|manifest.*completed|pipeline.*completed' server/disk-api.js | Select-Object -First 20
+
+	现在复现了一个具体的降级条件：服务端把 WebRTC 信令和普通业务消息共用“每分钟 100 条”的计数。业务消息用满计数后，SDP／ICE 会被拒绝，而文件中继仍可使用；隔离测试中，两份原本能走 P2P 的文件因此全部改走 Relay。
+
+	我会把信令计数独立出来，保留限流保护。这证明代码中存在这种情况，但还不能证明你现场当时触发的就是它。
+
+	编辑了文件运行了命令
+	已编辑 server.js+13-1
+
+	已编辑 p2p-connection-regression.test.cjs+7-0
+
+	已编辑 transcode-progress-261108.test.cjs+1-1
+
+	已运行 node --test tests/p2p-live-261108.browser.cjs > .npm-cache/e2-p2p-rate.txt
+
+	已运行 rg -n 'return \{|list\(|active\(|close\(' server/disk-operations.js | Select-Object -Last 16; Get-Content -LiteralPath 'server/disk-operations.js' -Tail 22; Get-Content -LiteralPath '.npm-cache/e2-p2p-rate.txt' -Tail 12; Get-Content -LiteralPath 'server/disk-api.js' | Select-Object -Skip 2772 -First 28; Get-Content -LiteralPath 'tests/transcode-progress-261108.test.cjs' -Tail 12
+
+	已编辑 pending-save-preflight-261108.browser.cjs+3-2
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-p2p-rate.txt' -Tail 38; $env:TEST_FFMPEG='C:\Users\FF\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe'; node --test tests/transcode-progress-261108.test.cjs tests/pending-save-preflight-261108.browser.cjs > .npm-cache/e2-progress.txt
+
+	已创建 forward-results-261108.browser.cjs+24-0
+
+	已运行 node --test tests/forward-results-261108.browser.cjs tests/i18n-261108.browser.cjs > .npm-cache/e2-dialog-language.txt
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-progress.txt' -Tail 15; git diff --check
+
+	已运行 Get-Content -LiteralPath 'app.js' | Select-Object -Skip 1165 -First 29; Get-Content -LiteralPath 'tests/i18n-261108.browser.cjs' -Tail 15; Get-Content -LiteralPath '.npm-cache/e2-dialog-language.txt' -Tail 24; git status --short
+
+	已编辑 dev-2611.md+13-0
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-dialog-language.txt' -Tail 24
+
+	已运行 rg -n '^\.send-mode-overlay|\.send-mode-overlay\s*\{|send-mode-dialog' client/index.css client/themes.css | Select-Object -First 16; Get-Content -LiteralPath '.npm-cache/e2-dialog-language.txt' -TotalCount 20; Get-Content -LiteralPath 'app.js' | Select-Object -Skip 10784 -First 16; Get-Content -LiteralPath 'tests/frontend-i18n-audit-261108.test.cjs' -TotalCount 8
+
+	已运行 @'
+	const fs=require('fs'),file='tests/forward-results-261108.browser.cjs';let s=fs.readFileSync(file,'utf8');s=s.replace("const LAST_FORWARD_SESSION_STORAGE_KEY='last',localStorage={setItem(){}},generateId=()=>crypto.randomUUID()", "let sequence=0;const LAST_FORWARD_SESSION_STORAGE_KEY='last',localStorage={setItem(){}},generateId=()=> 'target-'+(++sequence)");fs.writeFileSync(file,s);
+	'@ | node
+	node --test tests/forward-results-261108.browser.cjs tests/i18n-261108.browser.cjs > .npm-cache/e2-dialog-language.txt
+
+	这一阶段的验证已收尾：磁链文件可完整落盘；转码能显示真实 FFmpeg 的中间进度；转存核验期间有居中反馈，放行并确认后只提交一次；转发结果对话框会保留，用户关闭它也不会取消正在进行的批次。接下来继续补齐前台漏译和动态文案，再处理 Telegram 登录回调，最后做全量回归。
+
+	编辑了文件运行了命令
+	已运行 node -e 'const a=require("./.npm-cache/frontend-i18n-audit-261108.json"),fs=require("fs"),vm=require("vm"),c={window:{addEventListener(){}},document:{readyState:"loading",addEventListener(){}},navigator:{language:"en"},localStorage:{getItem:()=>null}};vm.createContext(c);for(const f of ["i18n-catalog","i18n"])vm.runInContext(fs.readFileSync("client/"+f+".js","utf8"),c);const languages=c.window.Drop2TunnelI18nConfig.dynamicLanguages;let rows=[];for(const x of a.phrases){let source=x.phrase.replace(/\{(\d+)\}/g,(_,n)=>String(900000+Number(n)));const en=c.window.TunnelI18n.t(source,"en"),ja=c.window.TunnelI18n.t(source,"ja");if(ja===en||ja===source||/[\u3400-\u9fff]/.test(en))rows.push({...x,en,ja});}fs.writeFileSync(".npm-cache/i18n-e2-effective.json",JSON.stringify(rows,null,2));console.log({remaining:rows.length});for(const [i,x]of rows.slice(0,90).entries())console.log(i,x.files[0],JSON.stringify(x.phrase),JSON.stringify(x.en));'
+
+	已运行 node -e 'const fs=require("fs"),vm=require("vm"),c={window:{addEventListener(){}},document:{readyState:"loading",addEventListener(){}},navigator:{language:"en"},localStorage:{getItem:()=>null}};vm.createContext(c);for(const f of ["i18n-catalog","i18n"])vm.runInContext(fs.readFileSync("client/"+f+".js","utf8"),c);for(const k of ["最近使用","保存","最小化","选择此账号","选择目标目录"]){const key=Object.keys(c.window.Drop2TunnelI18nCatalog).find(x=>x.replace(/\s/g,"")===k);console.log(k,key,c.window.Drop2TunnelI18nCatalog[key],c.window.TunnelI18n.t(k,"ja"));}'
+
+	已运行 @'
+	const fs=require('fs'),a=require('./.npm-cache/i18n-e2-effective.json');const grouped={};for(const x of a){const f=x.files[0];(grouped[f]||=[]).push(x.phrase);}for(const [f,p]of Object.entries(grouped))console.log(f,p.length);fs.writeFileSync('.npm-cache/i18n-e2-groups.json',JSON.stringify(grouped,null,2));
+	'@ | node
+	Get-Content -LiteralPath '.npm-cache/e2-dialog-language.txt' -Tail 10
+
+	已运行 node -e 'const fs=require("fs"),vm=require("vm"),c={window:{}};vm.runInNewContext(fs.readFileSync("client/i18n-catalog.js","utf8"),c);const all=Object.entries(c.window.Drop2TunnelI18nCatalog),langs=c.window.Drop2TunnelI18nConfig.dynamicLanguages;const full=all.filter(([,v])=>langs.every(l=>v[l]));console.log({entries:all.length,full:full.length});let matches=[];const canon=s=>s?.toLowerCase().replace(/[\s.,;!：。；！？]/g,"");for(const [key,value]of all)if(!langs.every(l=>value[l])&&value.en){const source=full.filter(([,v])=>canon(v.en)===canon(value.en));if(source.length===1)matches.push([key,source[0][0]]);}console.log(matches);'
+
+	已创建 native-recovery-core-261108.json+36-0
+
+	已运行 node .npm-cache/merge-native-ui-261108.cjs .npm-cache/native-recovery-core-261108.json; node --test tests/i18n-catalog-261108.test.cjs
+
+	已运行 node -e 'const g=require("./.npm-cache/i18n-e2-groups.json");for(const f of ["client/streaming-console.js","client/streaming-player.js","client/light-transfer.js","pages/index.html"])console.log(f,JSON.stringify(g[f],null,2))'
+
+	列出已经处理的问题和剩余未处理的问题清单
+
+	当前状态如下。“已处理”表示已有代码修改和对应验证，不代表整轮已经完成最终验收。
+
+	本次 [261108-1] 的 8 项：
+
+	| 项目 | 已处理内容 | 仍待处理或确认 |
+	|---|---|---|
+	| 1．局域网全部走 Relay | 复现业务消息限额耗尽后拦截 SDP／ICE；已分离信令计数，相同真实 Chrome 测试恢复 P2P | 尚未确认这是不是你手机现场的原因，不能宣称现场问题已解决 |
+	| 2．系统语言仍显示中文 | 改为优先使用浏览器当前语言；移动布局、语言列表差异和手动偏好测试通过 | 最终核对实际首页及 Service Worker 资源更新 |
+	| 3．磁链始终 0%、下载禁用 | 补齐下载页缺失的中继 ACK；真实文件完整落盘、字节一致、按钮启用 | 纳入最终回归 |
+	| 4．标记为待处理需确认 | 两个后台页面均已补齐；确认／取消测试通过 | 纳入最终回归 |
+	| 5．转码进度和日志不更新 | 修复 CR 日志积压，增加实际输出时间对应的中间进度；真实 FFmpeg 测试通过 | 纳入最终回归 |
+	| 6．日志默认显示末尾 | 修复展开与轮询重建的竞态；末尾定位、上翻保留测试通过 | 纳入最终回归 |
+	| 7．逐条转发状态对话框 | 已实现摘要、ID、状态图标和手动关闭；关闭后批次继续的测试通过 | 补齐相关多语言，纳入最终回归 |
+	| 8．转存核验卡住、浏览器无法操作 | 已补核验阶段居中反馈；两种来源完整转存流程通过，核验期间其它页面可操作 | **浏览器整个窗口按钮无法操作的现场异常尚未复现，根因未确认** |
+
+	上一轮 [261107-2] 的状态：
+	- 仍在处理：原第 1 项前台翻译。 统一目录和运行时已落地，本轮又补了 34 组完整语言词条；其它模块的漏译、长提示和动态文案仍未补完。
+	- 已有实现，待本轮统一复查： 原第 2 项语言偏好、第 3 项上传期间目录延迟、第 4 项双进度视图、第 6 项首次短码重复、第 10 项 Orbit 内层卡片背景。
+	- 你已人工验收通过，正在保留： 原第 5 项“已处理”确认、第 7 项 Esc 退出多选、第 8 项 Shift 连选、第 11 项长按不选中文字。
+	- 原第 9 项转码日志： 已并入本次第 6 项继续修复。
+	- 原第 12 项网页 ZIP 回源： 来源证明、旧编辑凭据恢复和待同步路径已有修改及阶段测试；仍需最终复查授权、连续编辑、重启恢复和可见设备条件。
+	- 原第 13 项批量缓存恢复： 来源元数据、持久锚点、两端都在 B 的缓存发现已有修复；仍需最新版本统一回归。
+	- 追加的转发缺记录／超时、来源权限提示： 已有确认、去重、身份配对和持久锚点修复；生产间歇故障的全部原因尚未证实。
+	- Telegram App 登录回调：尚未开始处理。 按原要求排在前面事项之后，没有漏掉。
+	最后还剩：全部相关功能统一回归、构建校验、Service Worker 更新、逐项日志和交付说明。没有暂存、没有提交。
+
+	编辑了文件运行了命令
+	已运行 node -e 'const fs=require("fs"),vm=require("vm"),r=require("./.npm-cache/frontend-i18n-audit-261108.json"),c={window:{addEventListener(){}},document:{readyState:"loading",addEventListener(){}},navigator:{language:"en"},localStorage:{getItem:()=>null}};vm.createContext(c);for(const f of ["i18n-catalog","i18n"])vm.runInContext(fs.readFileSync("client/"+f+".js","utf8"),c);let x=[];for(const p of r.phrases){const s=p.phrase.replace(/\{(\d+)\}/g,(_,n)=>String(900000+Number(n))),v=c.window.TunnelI18n.t(s,"en");if(/[\u3400-\u9fff]/.test(v))x.push({...p,en:v});}fs.writeFileSync(".npm-cache/i18n-e2-missing-en.json",JSON.stringify(x,null,2));console.log({missingEn:x.length});for(const [n,p]of x.entries())console.log(n,p.files[0],JSON.stringify(p.phrase));'
+
+	已创建 merge-recovery-en-261108.cjs+4-0
+
+	已创建 recovery-en-261108.json+258-0
+
+	已运行 node .npm-cache/merge-recovery-en-261108.cjs; node --test tests/i18n-catalog-261108.test.cjs
+
+	已运行 node --test tests/p2p-connection-regression.test.cjs tests/bulk-forward-261108.test.cjs tests/persisted-forward-261108.test.cjs tests/source-access-261107.test.cjs tests/forward-confirmation-261108.test.cjs tests/web-zip-origin-261108.test.cjs tests/web-zip-credentials.test.cjs tests/web-zip-sync.test.cjs tests/web-zip-visibility-261107.test.cjs tests/web-zip-publish-261031-3.test.cjs > .npm-cache/e2-core.txt
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-dialog-language.txt' -Tail 10; Get-Content -LiteralPath 'docs/overview/pwa-ui/localization.md' -TotalCount 78; rg -n 'translateTextNode|title|i18n' tests/frontend-i18n-audit-261108.test.cjs
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-core.txt' -Tail 55; rg --files tests | rg 'web-zip.*(sync|publish|credential|integration)'
+
+	中场我测试了大批量隧道传输，都能走P2P，目前看起来还没有遇到问题
+
+	0:02
+
+	已记录：你刚才的大批量隧道传输复测能够走 P2P，目前未遇到问题。这项加入人工复测通过记录，我会保留当前修复，继续处理多语言、Telegram 登录回调和最终统一验收。
+
+	编辑了文件运行了命令
+	已编辑 dev-2611.md+1-0
+
+	已运行 node --test tests/p2p-connection-regression.test.cjs tests/bulk-forward-261108.test.cjs tests/persisted-forward-261108.test.cjs tests/source-access-261107.test.cjs tests/forward-confirmation-261108.test.cjs tests/web-zip-origin-261108.test.cjs tests/web-zip-credentials-261106-3.test.cjs tests/web-zip-sync-261106-2.test.cjs tests/web-zip-visibility-261107.test.cjs tests/web-zip-publish-261106-2.test.cjs tests/web-zip-integration-261106-2.test.cjs > .npm-cache/e2-core.txt
+
+	我说的中场测试指的是拿你现在工作区正在修改的版本来跑的
+
+	0:03
+
+	明白，你测试的是当前工作区正在修改、尚未提交的版本。我会按这个代码基线记录“大批量传输可走 P2P”的人工复测结果。
+
+	编辑了文件运行了命令
+	已编辑 dev-2611.md+1-0
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-core.txt' -Tail 10
+
+	已创建 merge-recovery-cjk-261109.cjs+4-0
+
+	已创建 recovery-cjk-261109.json+104-0
+
+	已运行 node .npm-cache/merge-recovery-cjk-261109.cjs; node --test tests/i18n-catalog-261108.test.cjs
+
+	已编辑 downloadList.html+3-0
+
+	已编辑 frontend-i18n-audit.js+1-1
+
+	已运行 node tools/frontend-i18n-audit.js --output .npm-cache/frontend-i18n-audit-261108.json; node -e 'const a=require("./.npm-cache/frontend-i18n-audit-261108.json");for(const p of a.phrases.filter(p=>p.files.some(f=>f==="pages/downloadList.html"||f==="pages/downloader.html")&&!p.inCatalog))console.log(JSON.stringify(p.phrase));'
+
+	忘了补充本次的任务约束
+	目前处于分支：
+	dev/2611-s1-FATAL-ERROR-e2
+	要读取完毕所有需求条目后，再科学地安排每个需求的实现先后顺序。
+	请直接在该分支当前代码基础上修改。
+
+	长任务执行期间，在阶段检查点查询 5 小时额度及刷新时间；若额度剩余不高于 12%，且距下次刷新时间超过 10 分钟，暂停并按任务指定位置记录进度、中断点和恢复说明。无法查询时不要估算，明确说明无法判断是否触发。
+
+	不要提交，不要暂存（不要执行 git commit、`git add`）。
+
+	推理结论、问题根因、实际修改内容、测试情况及开发记录保存到：
+	docs/devlog/dev-2611.md
+	最后请另外给出建议使用的 Git 提交日志，但不要实际提交。
+
+	Git 提交日志要求：
+	- title 以中文为主，简洁概括本次改动；
+	- description 以中文为主；
+	- description 按功能分成若干简短小节；
+	- 每个小节使用几行列表概括主要修改；
+	- 内容有条理但不要写得过于冗长。
+	- 将git日志的title和description分开显示，并分别使用代码模式以便于一键复制。
+
+	0:07
+
+	已按最新约束执行：额度暂停阈值改为剩余不高于 12%、且距刷新超过 10 分钟。我现在核对一次额度和分支；开发日志仍追加到指定文件，所有修改保持未暂存、未提交。
+
+	编辑了文件运行了命令已检查用量
+	已运行 git branch --show-current; git rev-parse HEAD; git diff --cached --name-only; git status --short
+
+	已检查用量
+
+	已编辑 dev-2611.md+3-0
+
+	实际查询结果：5 小时额度剩余 43%，下次刷新为 今天 03:32:34（北京时间），未触发暂停条件。最新核心回归 92/92、转发结果界面与语言相关浏览器测试 11/11 通过，继续补齐多语言。
+
+	编辑了文件运行了命令
+	已创建 recovery-cjk-rest-261109.json+156-0
+
+	已运行 node .npm-cache/merge-recovery-cjk-261109.cjs .npm-cache/recovery-cjk-rest-261109.json; node --test tests/i18n-catalog-261108.test.cjs; node tools/frontend-i18n-audit.js --output .npm-cache/frontend-i18n-audit-261108.json
+
+	已运行 node -e 'const a=require("./.npm-cache/frontend-i18n-audit-261108.json");for(const [n,p]of a.phrases.filter(p=>p.missing.includes("ja")).entries())console.log(n,p.files[0],JSON.stringify(p.phrase));fs=require("fs");fs.writeFileSync(".npm-cache/i18n-e2-missing-ja.json",JSON.stringify(a.phrases.filter(p=>p.missing.includes("ja")),null,2));'
+
+	已创建 merge-ja-list-261109.cjs+4-0
+
+	已创建 recovery-ja-list-261109.json+54-0
+
+	已运行 node .npm-cache/merge-ja-list-261109.cjs; node --test tests/i18n-catalog-261108.test.cjs
+
+	已运行 Get-Content -LiteralPath 'tools/frontend-i18n-audit.js' -TotalCount 25; rg -n 'setStatus\(' pages/downloader.html; rg -n 'setStatus\(|pendingSaveFeedback\(' client/disk-ui.js | Select-Object -First 9
+
+	你不要光适配日语的，之前有个超级多种语言的适配MAP。
+
+	0:14
+
+	会按现有 MAP 覆盖全部 16 种语言：简体、繁体、英、日、法、俄、西、意、韩、马来、印尼、越、泰、波斯、高棉、缅甸语。
+
+	目前先补了英文、繁体和日语的一部分，还没有把它算作完成。接下来按同一批词条补齐其余语种，继续统一维护在原有 MAP 中，不会只适配日语。
+
+	而且我说过，散落在多处的多语言翻译支持，要统一在一处执行，不要在代码中找很多地方改
+
+	0:15
+
+	对，翻译继续统一到现有入口：词条和规则放在 client/i18n-catalog.js，执行统一走 client/i18n.js。不会在各个功能文件里另加语言 MAP 或逐语种分支；业务文案的参数、协议字段和用户内容保持原样。
+
+	编辑了文件运行了命令
+	已运行 rg -n 'zh-Hant|zh-Hans|currentLanguage\(|normalizeLanguage|Drop2TunnelI18nCatalog|TunnelI18n\.t\s*=' client -g '*.js' -g '!i18n-catalog.js' -g '!vendor/**' -g '!*.min.js' | Select-Object -First 85; Get-Content -LiteralPath 'client/disk-error-messages.js' -TotalCount 65
+
+	已创建 merge-recovery-all-locales-261109.cjs+4-0
+
+	已创建 recovery-all-locales-1-261109.json+43-0
+
+	已运行 node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-all-locales-1-261109.json; node --test tests/i18n-catalog-261108.test.cjs
+
+	已创建 recovery-all-locales-2-261109.json+35-0
+
+	已运行 node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-all-locales-2-261109.json; node --test tests/i18n-catalog-261108.test.cjs
+
+	已运行 node -e 'const fs=require("fs"),vm=require("vm"),c={window:{}};vm.runInNewContext(fs.readFileSync("client/i18n-catalog.js","utf8"),c);for(const [key,value]of Object.entries(c.window.Drop2TunnelI18nCatalog))if(!value.en)console.log(JSON.stringify(key),Object.keys(value).join(","));'
+
+	已运行 @'
+	const fs=require('fs'),vm=require('vm'),ctx={window:{addEventListener(){}},document:{readyState:'loading',addEventListener(){}},navigator:{language:'en'},localStorage:{getItem:()=>null}};vm.createContext(ctx);for(const file of ['i18n-catalog','i18n'])vm.runInContext(fs.readFileSync('client/'+file+'.js','utf8'),ctx);
+	const rows=['已请求还原 {0} 个文件，{1} 个失败','已请求还原 {0} 个缺失文件'].map(key=>{const example=key.replace(/\{(\d+)\}/g,(_,n)=>String(730100+Number(n)));return[key,...ctx.window.Drop2TunnelI18nConfig.dynamicLanguages.map(language=>ctx.window.TunnelI18n.t(example,language).replace(/73010([01])/g,(_,n)=>'{'+n+'}'))];});fs.writeFileSync('.npm-cache/recovery-existing-restore-261109.json',JSON.stringify(rows,null,2));console.log(rows.map(row=>({source:row[0],en:row[2],ja:row[3]})));
+	'@ | node
+	node .npm-cache/merge-native-ui-261108.cjs .npm-cache/recovery-existing-restore-261109.json
+	node --test tests/i18n-catalog-261108.test.cjs
+
+	已编辑 merge-recovery-all-locales-261109.cjs+1-1
+
+	已创建 recovery-magnet-all-261109.json+20-0
+
+	已运行 node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-magnet-all-261109.json .npm-cache/i18n-e2-missing-ja.json; node --test tests/i18n-catalog-261108.test.cjs
+
+	已运行 rg -n '\^已|\^正在|raw[0-9]|templateLabels' client/i18n-catalog.js | Select-Object -Last 25; Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 1725 -First 22; Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 1025 -First 17; Get-Content -LiteralPath 'client/data-backup-i18n.js' -TotalCount 9; rg -n 'data-backup-i18n' pages -g '*.html'
+
+	已编辑 i18n-catalog.js+8-1
+
+	已编辑 i18n.js+9-2
+
+	已编辑 i18n-261108.browser.cjs+7-0
+
+	已运行 node --test tests/i18n-261108.browser.cjs tests/i18n-catalog-261108.test.cjs > .npm-cache/e2-i18n-current.txt
+
+	上下文已自动压缩
+
+	会按现有语言 MAP 覆盖全部支持语言，词条、动态文案规则和翻译执行统一放在 client/i18n-catalog.js 与 client/i18n.js，各功能只调用统一接口。我先核对中断前最后一批修改和测试结果，再继续补齐遗漏项。
+
+	已读取文件运行了命令已检查用量
+	已运行 git status --short
+
+	已运行 git branch --show-current
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-i18n-current.txt' -Tail 90
+
+	已运行 Get-Content -LiteralPath 'docs/devlog/dev-2611.md' -Tail 110
+
+	已运行 rg -n 'templateLabels|TEMPLATE_LABELS|localizedValues|action slots|action labels' client/i18n* tests/i18n-261108.browser.cjs
+
+	已检查用量
+
+	已读取 i18n.js
+
+	已运行 Get-Content -LiteralPath '.npm-cache/merge-recovery-all-locales-261109.cjs'; Get-Content -LiteralPath '.npm-cache/i18n-e2-missing-en.json'
+
+	已运行 Get-Content -LiteralPath '.npm-cache/i18n-e2-missing-ja.json'; Get-Content -LiteralPath 'docs/overview/master.md' -TotalCount 90
+
+	已运行 rg -n 'templateLabels|已\{0\} \{1\} 项|正在\{0\}|^.*"移动"' client/i18n-catalog.js tests/i18n-261108.browser.cjs
+
+	已运行 Get-Content -LiteralPath 'client/i18n-catalog.js' | Select-Object -Skip 23385 -First 30; Get-Content -LiteralPath 'client/i18n-catalog.js' | Select-Object -Skip 8028 -First 30; Get-Content -LiteralPath 'client/i18n-catalog.js' | Select-Object -Skip 24280 -First 110
+
+	已运行 node -e "const fs=require('fs'),vm=require('vm'),c={window:{}};vm.runInNewContext(fs.readFileSync('client/i18n-catalog.js','utf8'),c);for(const [file,label]of [['.npm-cache/i18n-e2-missing-en.json','EN'],['.npm-cache/i18n-e2-missing-ja.json','JA']]){const p=JSON.parse(fs.readFileSync(file,'utf8'));console.log(label);console.log(p.map((x,i)=>i+' '+x.phrase).filter((v,i)=>label==='JA'?i>=52:i<105).join('\n'))}"
+
+	已运行 Get-Content -LiteralPath 'tests/i18n-261108.browser.cjs' -TotalCount 70; Get-Content -LiteralPath 'tools/frontend-i18n-audit.js' -Tail 55
+
+	已运行 node -e "const fs=require('fs'),vm=require('vm'),c={window:{addEventListener(){}},document:{readyState:'loading',addEventListener(){}},localStorage:{getItem:()=> 'en'},navigator:{language:'en'}};vm.runInNewContext(fs.readFileSync('client/i18n-catalog.js','utf8'),c);vm.runInNewContext(fs.readFileSync('client/i18n.js','utf8'),c);const t=c.window.TunnelI18n;console.log({move:t.t('移动'),template:t.t('已{0} {1} 项到“{2}”'),formatted:t.format('已{0} {1} 项到“{2}”','移动',2,'设置'),dynamic:t.t('已移动 2 项到“设置”')});console.log(Object.entries(c.window.Drop2TunnelI18nCatalog).filter(([k,v])=>k.includes('{0}')&&k.startsWith('已')).map(([k,v])=>[k,v.en]));"
+
+	已运行 @'
+	const fs=require('fs'),vm=require('vm'),c={window:{addEventListener(){}},document:{readyState:'loading',addEventListener(){}},localStorage:{getItem:()=> 'en'},navigator:{language:'en'}};
+	vm.runInNewContext(fs.readFileSync('client/i18n-catalog.js','utf8'),c);vm.runInNewContext(fs.readFileSync('client/i18n.js','utf8'),c);
+	const t=c.window.TunnelI18n;
+	console.log({move:t.t('移动'),template:t.t('已{0} {1} 项到“{2}”'),formatted:t.format('已{0} {1} 项到“{2}”','移动',2,'设置'),dynamic:t.t('已移动 2 项到“设置”')});
+	console.log(Object.entries(c.window.Drop2TunnelI18nCatalog).filter(([k,v])=>k.includes('{0}')&&k.startsWith('已')).map(([k,v])=>[k,v.en]));
+	'@ | node
+
+	最后一批测试发现一个动态文案问题：中央模板把“移动”和数量之间的空格当作可省略，导致参数错位。我会在统一运行时修正规则，并保留目标名称原文。刚查询到 5 小时额度剩余 27%，刷新时间为北京时间 03:32:34，尚未触发暂停条件。
+
+	编辑了文件运行了命令
+	已编辑 i18n.js+2-1
+
+	已运行 node --test tests/i18n-261108.browser.cjs tests/i18n-catalog-261108.test.cjs > .npm-cache/e2-i18n-current.txt
+
+	已运行 @'
+	const fs=require('fs'),vm=require('vm'),ctx={window:{}};vm.runInNewContext(fs.readFileSync('client/i18n-catalog.js','utf8'),ctx);
+	for(const [name,file]of [['EN','.npm-cache/i18n-e2-missing-en.json'],['JA','.npm-cache/i18n-e2-missing-ja.json']]){
+	 const phrases=JSON.parse(fs.readFileSync(file,'utf8'));console.log(name);for(let i=0;i<phrases.length;i++){const p=phrases[i].phrase,k=Object.keys(ctx.window.Drop2TunnelI18nCatalog).find(k=>k.replace(/\s/g,'')===p.replace(/\s/g,'')),v=ctx.window.Drop2TunnelI18nCatalog[k]||{},missing=ctx.window.Drop2TunnelI18nConfig.dynamicLanguages.filter(l=>!v[l]);if(missing.length&&name==='EN')console.log(i+' '+p.replace(/\n/g,'\\n'));}
+	}
+	'@ | node
+
+	已运行 Get-Content -LiteralPath '.npm-cache/merge-native-ui-261108.cjs' -TotalCount 35; Get-Content -LiteralPath '.npm-cache/e2-i18n-current.txt' -Tail 12
+
+	后面执行不要管剩余额度，专注执行任务
+
+	0:33
+
+	收到，后续按你最新要求专注执行，不再因剩余额度暂停。动态参数错位已修正，相关 11 项测试全部通过；接下来继续补齐全部支持语言，并检查磁链独立页面是否都接入同一个翻译入口。
+
+	编辑了文件运行了命令
+	已运行 Get-Content -LiteralPath 'tools/frontend-i18n-audit.js' -TotalCount 55; rg -n 'alert\(|confirm\(|prompt\(|setStatus\(' pages/downloadList.html pages/downloader.html; rg -n 'captureTranscodeOutput|preflight\(' server/video-transcode.js client/disk-pending-save.js; Get-Content -LiteralPath 'tests/frontend-i18n-audit-261108.test.cjs' -Tail 55
+
+	已编辑 downloadList.html+6-6
+
+	已编辑 frontend-i18n-audit.js+1-1
+
+	已运行 @'
+	const fs=require('fs'),vm=require('vm');const c={window:{}};vm.runInNewContext(fs.readFileSync('client/i18n-catalog.js','utf8'),c);const en=JSON.parse(fs.readFileSync('.npm-cache/i18n-e2-missing-en.json','utf8'));const ja=JSON.parse(fs.readFileSync('.npm-cache/i18n-e2-missing-ja.json','utf8'));console.log(ja.slice(52,82).map((x,i)=>[i+52,c.window.Drop2TunnelI18nCatalog[x.phrase]?.en]).join('\n'));
+	'@ | node
+
+	已创建 merge-ja-native-261109.cjs+10-0
+
+	已创建 streaming-native-1-261109.json+32-0
+
+	已运行 node .npm-cache/merge-ja-native-261109.cjs .npm-cache/streaming-native-1-261109.json
+
+	已运行 node --test tests/i18n-catalog-261108.test.cjs tests/frontend-i18n-audit-261108.test.cjs
+
+	串流台的观看、订阅、封面、节目单保存和版本冲突提示，已新增 30 组完整的 15 种目标语言，全部留在中央词条文件。词条参数和审计测试已通过；磁链列表的原生对话框也已接入统一接口，下载页状态文案已纳入漏译扫描。
+
+	编辑了文件运行了命令
+	已创建 streaming-native-2-261109.json+32-0
+
+	已运行 node .npm-cache/merge-ja-native-261109.cjs .npm-cache/streaming-native-2-261109.json
+
+	已运行 node --test tests/i18n-catalog-261108.test.cjs
+
+	已创建 streaming-native-3-261109.json+27-0
+
+	已运行 node .npm-cache/merge-ja-native-261109.cjs .npm-cache/streaming-native-3-261109.json
+
+	已运行 node tools/frontend-i18n-audit.js --output .npm-cache/i18n-e2-audit-current.json; node --test tests/i18n-catalog-261108.test.cjs
+
+	已运行 @'
+	const fs=require('fs'),r=JSON.parse(fs.readFileSync('.npm-cache/i18n-e2-audit-current.json','utf8'));console.log(r.summary);console.log('no catalog');console.log(r.phrases.filter(p=>!p.inCatalog).map(p=>p.phrase).join('\n'));console.log('ja missing');console.log(r.phrases.filter(p=>p.missing.includes('ja')).map(p=>p.phrase).join('\n'));console.log(Object.fromEntries(['en','ja','fr','ko','ms','id','fa','km','my'].map(l=>[l,r.phrases.filter(p=>p.missing.includes(l)).length])));
+	'@ | node
+
+	已创建 account-native-261109.json+19-0
+
+	已运行 node .npm-cache/merge-ja-native-261109.cjs .npm-cache/account-native-261109.json
+
+	已创建 recovery-all-locales-3-261109.json+30-0
+
+	中央目录又补齐了串流邀请、观看权限、账号切换和开放资源警告，均覆盖全部支持语言。正在继续补文件缓存与批量下载的长提示；翻译只处理系统说明，文件名、账号名、路径、错误码和记录 ID 仍保留原值。
+
+	编辑了文件运行了命令
+	已运行 @'
+	const fs=require('fs'),file='.npm-cache/recovery-all-locales-3-261109.json',rows=JSON.parse(fs.readFileSync(file,'utf8'));rows.find(r=>r[0]===5)[11]='សិទ្ធិចូលឯកសារដើមមូលដ្ឋាននៅតែត្រឹមត្រូវ ហើយច្បាប់ចម្លងសុវត្ថិភាពនៅក្នុងកម្មវិធីរុករក';fs.writeFileSync(file,JSON.stringify(rows,null,2));
+	'@ | node
+	node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-all-locales-3-261109.json
+	node --test tests/i18n-catalog-261108.test.cjs
+
+	已创建 magnet-status-native-261109.json+13-0
+
+	已运行 node .npm-cache/merge-native-ui-261108.cjs .npm-cache/magnet-status-native-261109.json
+
+	已运行 rg -n 'navigator\.language|currentLanguage\(|zh-Hans|zh-Hant|LANG(UAGES|UAGE)|I18N|i18n' client -g '*.js' -g '!i18n-catalog.js' -g '!i18n.js' -g '!vendor*' -g '!qrcode*' -g '!simplewebauthn.js' -g '!third-party*' | Select-Object -First 95
+
+	已运行 Get-Content -LiteralPath 'tests/i18n-catalog-261108.test.cjs'; rg -n 'oidc|Telegram.*回调' docs/overview/telegram-drive.md docs/overview/tests-and-regressions.md
+
+	已编辑 i18n-catalog.js+2-2
+
+	已编辑 i18n.js+4-3
+
+	已编辑 i18n-261108.browser.cjs+7-0
+
+	已运行 node --test tests/i18n-261108.browser.cjs tests/i18n-catalog-261108.test.cjs tests/frontend-i18n-audit-261108.test.cjs > .npm-cache/e2-i18n-current.txt
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-i18n-current.txt' -Tail 35; rg -n '抓取任务转存' client/i18n-catalog.js | Select-Object -First 5
+
+	又确认了一处参数保护缺口：旧动态规则会把错误详情或来源名称碰巧命中的系统词条也翻译掉。现已改为只翻译中央规则明确指定的系统标签，来源名称和诊断内容保持原文，并补了针对性测试。
+
+	编辑了文件运行了命令
+	已编辑 i18n-261108.browser.cjs+1-1
+
+	已运行 @'
+	const fs=require('fs'),vm=require('vm'),c={window:{}};vm.runInNewContext(fs.readFileSync('client/i18n-catalog.js','utf8'),c);console.log(c.window.Drop2TunnelI18nConfig.templates.map((v,i)=>i+' '+v[0]+' '+v[1].length).join('\n'));
+	'@ | node
+
+	已创建 complete-dynamic-locales-261109.cjs+13-0
+
+	已编辑 i18n-catalog-261108.test.cjs+3-0
+
+	已运行 node .npm-cache/complete-dynamic-locales-261109.cjs
+	node --test tests/i18n-catalog-261108.test.cjs tests/i18n-261108.browser.cjs tests/frontend-i18n-audit-261108.test.cjs > .npm-cache/e2-i18n-current.txt
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-i18n-current.txt' -Tail 9; git diff --stat; git diff --cached --stat
+
+	已编辑 dev-2611.md+4-0
+
+	已创建 recovery-all-locales-4-261109.json+25-0
+
+	已运行 node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-all-locales-4-261109.json
+	node --test tests/i18n-catalog-261108.test.cjs
+
+	已运行 node --test tests/magnet-download-261108.browser.cjs tests/pending-save-preflight-261108.browser.cjs tests/forward-results-261108.browser.cjs tests/interactions-261108.browser.cjs tests/admin-confirm-261108.browser.cjs > .npm-cache/e2-ui-after-i18n.txt
+
+	已运行 rg -n 'setStatus\(|pendingSaveFeedback\(|language' client/disk-ui.js pages/downloader.html | Select-Object -First 65; rg -n 'NAVIGATOR|locale|newContext|Chinese|状态|status' tests/magnet-download-261108.browser.cjs | Select-Object -First 20; Get-Content -LiteralPath 'client/disk-error-messages.js' -TotalCount 80
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-ui-after-i18n.txt' -Tail 55
+
+	已运行 node --test tests/magnet-download-261108.browser.cjs tests/pending-save-preflight-261108.browser.cjs tests/forward-results-261108.browser.cjs tests/interactions-261108.browser.cjs tests/admin-confirm-261108.browser.cjs > .npm-cache/e2-ui-after-i18n.txt
+
+	已运行 Get-Content -LiteralPath 'client/disk-error-messages.js' -Tail 80; rg -n 'markHandled|window.confirm|transfer.*Dialog|confirm\(' pages/sns-dl.html pages/youtube-premium-dl.html | Select-Object -Last 10
+
+	已创建 recovery-all-locales-5-261109.json+25-0
+
+	已运行 node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-all-locales-5-261109.json
+	node --test tests/i18n-catalog-261108.test.cjs
+
+	最新一轮实际页面回归已通过：磁链完整接收后启用下载、两种转存核验反馈、逐条转发结果、输入／多选／日志交互及后台确认都在覆盖范围内。沙箱曾阻止本机测试端口，获准重跑后通过。接下来继续补剩余语种，并核对网盘面向用户的错误说明；错误码本身保持不变。
+
+	编辑了文件运行了命令
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-ui-after-i18n.txt' -Tail 12
+	@'
+	const fs=require('fs'),vm=require('vm'),c={window:{}};vm.runInNewContext(fs.readFileSync('client/i18n-catalog.js','utf8'),c);const m=require('./client/disk-error-messages');const vals=[...new Set([...Object.values(m.codes),...Object.values(m.reasons)])],cat=c.window.Drop2TunnelI18nCatalog,lang=c.window.Drop2TunnelI18nConfig.dynamicLanguages;const report=vals.map(phrase=>{const k=Object.keys(cat).find(k=>k.replace(/\s/g,'')===phrase.replace(/\s/g,''));return{phrase,missing:lang.filter(l=>!cat[k]?.[l]),inCatalog:!!k};});console.log({errorPhrases:vals.length,missing:report.filter(r=>r.missing.length).length,missingEnglish:report.filter(r=>r.missing.includes('en')).length});console.log(report.filter(r=>r.missing.length).slice(0,8));fs.writeFileSync('.npm-cache/i18n-disk-errors-261109.json',JSON.stringify(report.filter(r=>r.missing.length),null,2));
+	'@ | node
+
+	已创建 recovery-all-locales-6-261109.json+24-0
+
+	已运行 node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-all-locales-6-261109.json
+	node --test tests/i18n-catalog-261108.test.cjs
+
+	已编辑 frontend-i18n-audit-261108.test.cjs+7-0
+
+	已编辑 frontend-i18n-audit.js+6-4
+
+	已运行 node --test tests/frontend-i18n-audit-261108.test.cjs
+	@'
+	const fs=require('fs'),vm=require('vm'),c={window:{}};vm.runInNewContext(fs.readFileSync('client/i18n-catalog.js','utf8'),c);const p=JSON.parse(fs.readFileSync('.npm-cache/i18n-e2-missing-en.json','utf8')),cat=c.window.Drop2TunnelI18nCatalog;console.log(p.map((v,i)=>({i,p:v.phrase,entry:cat[Object.keys(cat).find(k=>k.replace(/\s/g,'')===v.phrase.replace(/\s/g,''))]})).filter(v=>c.window.Drop2TunnelI18nConfig.dynamicLanguages.some(l=>!v.entry?.[l])).map(v=>v.i+' '+v.p.replace(/\n/g,'\\n')).join('\n'));
+	'@ | node
+
+	已创建 recovery-all-locales-7-261109.json+26-0
+
+	已运行 node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-all-locales-7-261109.json
+	node --test tests/i18n-catalog-261108.test.cjs
+
+	网盘错误说明的补查发现了先前扫描遗漏的一批文案：这些是面向用户的中文解释，需要翻译；它们对应的错误码是技术标识，不能翻译。已扩展只读审计来区分两者，保护测试通过。回收站、分段编辑、目录上传恢复和多账号提示也已继续补齐全部语种。
+
+	编辑了文件运行了命令
+	已运行 rg -n '确定.*吗|已.*项到|个文件 ·|来源为.*获取|const .*hint|actionLabel' client/disk-ui.js client/disk-* -g '*.js' | Select-Object -First 40; Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 1430 -First 90
+
+	已运行 Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 1388 -First 30; rg -n 'return.*description|showAppToast\(`|onStage\(' client/disk-pending-save.js | Select-Object -First 40
+
+	已创建 recovery-all-locales-8-261109.json+28-0
+
+	已运行 node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-all-locales-8-261109.json
+	node --test tests/i18n-catalog-261108.test.cjs
+
+	已运行 Get-Content -LiteralPath 'client/disk-ui.js' | Select-Object -Skip 2315 -First 100; rg -n 'textContent.*error|telegramDriveErrorText|DiskErrorMessages' client/disk-ui.js client/disk.js | Select-Object -First 20; rg -n '已生成.*个|退出后将失去|取消后，所有邀请' client/i18n-catalog.js | Select-Object -First 10
+
+	已创建 recovery-all-locales-9-261109.json+24-0
+
+	已运行 node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-all-locales-9-261109.json
+	node --test tests/i18n-catalog-261108.test.cjs
+
+	已创建 recovery-all-locales-10-261109.json+16-0
+
+	已运行 node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-all-locales-10-261109.json
+	node --test tests/i18n-catalog-261108.test.cjs
+
+	这批 256 处前台缺口已全部补到 15 种目标语言，覆盖文件缓存、ZIP、光媒、回收站、网盘、分区、S3 和登录说明。它们目前仍是阶段成果；我会继续核对剩余候选，不能用这批数量宣称所有界面已无漏译。
+
+	编辑了文件运行了命令
+	已运行 node tools/frontend-i18n-audit.js --output .npm-cache/i18n-e2-audit-current.json
+	@'
+	const fs=require('fs'),vm=require('vm'),c={window:{}};vm.runInNewContext(fs.readFileSync('client/i18n-catalog.js','utf8'),c);const p=JSON.parse(fs.readFileSync('.npm-cache/i18n-e2-missing-ja.json','utf8')),cat=c.window.Drop2TunnelI18nCatalog;console.log(p.map((v,i)=>({i,p:v.phrase,entry:cat[Object.keys(cat).find(k=>k.replace(/\s/g,'')===v.phrase.replace(/\s/g,''))]})).filter(v=>c.window.Drop2TunnelI18nConfig.dynamicLanguages.some(l=>!v.entry?.[l])).map(v=>v.i+' '+v.p.replace(/\n/g,'\\n')).join('\n'));
+	const r=JSON.parse(fs.readFileSync('.npm-cache/i18n-e2-audit-current.json','utf8'));console.log(Object.fromEntries(['en','ja','fr','fa','km','my'].map(l=>[l,r.phrases.filter(p=>p.missing.includes(l)).length])));
+	'@ | node
+
+	已创建 recovery-ja-all-locales-261109.json+34-0
+
+	已运行 node .npm-cache/merge-recovery-all-locales-261109.cjs .npm-cache/recovery-ja-all-locales-261109.json .npm-cache/i18n-e2-missing-ja.json
+	node --test tests/i18n-catalog-261108.test.cjs
+
+	已运行 @'
+	const fs=require('fs'),p=JSON.parse(fs.readFileSync('.npm-cache/i18n-disk-errors-261109.json','utf8'));console.log(p.slice(0,36).map((r,i)=>i+' '+r.phrase).join('\n'));
+	'@ | node
+
+	已创建 merge-error-native-261109.cjs+6-0
+
+	已创建 disk-errors-native-1-261109.json+18-0
+
+	已运行 node .npm-cache/merge-error-native-261109.cjs .npm-cache/disk-errors-native-1-261109.json
+	node --test tests/i18n-catalog-261108.test.cjs
+
+	已编辑 i18n-261108.browser.cjs+12-0
+
+	已运行 node --test --test-name-pattern='central UI error composition' tests/i18n-261108.browser.cjs > .npm-cache/e2-i18n-error-before.txt
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-i18n-error-before.txt' -Tail 29
+
+	已编辑 i18n-catalog.js+5-1
+
+	已编辑 i18n.js+11-3
+
+	用时 2小时 21分钟 27秒
+
+	实际浏览器测试还复现了一个“已登记词条却仍显示中文”的原因：网盘把说明、错误码和请求编号拼成整句后，原运行时无法识别。我已在中央运行时补组合规则，继续保留错误码、路径和请求编号原文，无需在各个报错按钮里分别改翻译逻辑。
+
+	编辑了文件运行了命令
+	已创建 error-composition-native-261109.json+6-0
+
+	已运行 node .npm-cache/merge-native-ui-261108.cjs .npm-cache/error-composition-native-261109.json
+	node --test tests/i18n-catalog-261108.test.cjs tests/i18n-261108.browser.cjs tests/frontend-i18n-audit-261108.test.cjs > .npm-cache/e2-i18n-current.txt
+
+	已运行 Get-Content -LiteralPath '.npm-cache/e2-i18n-current.txt' -Tail 15
+	@'
+	const fs=require('fs'),vm=require('vm'),c={window:{}};vm.runInNewContext(fs.readFileSync('client/i18n-catalog.js','utf8'),c);const cat=c.window.Drop2TunnelI18nCatalog,langs=c.window.Drop2TunnelI18nConfig.dynamicLanguages;for(const file of ['.npm-cache/i18n-e2-missing-en.json','.npm-cache/i18n-e2-missing-ja.json']){const p=JSON.parse(fs.readFileSync(file,'utf8'));console.log(file,p.filter(p=>{const k=Object.keys(cat).find(k=>k.replace(/\s/g,'')===p.phrase.replace(/\s/g,''));return langs.some(l=>!cat[k]?.[l])}).length)}
+	'@ | node
+
+	已运行 @'
+	const fs=require('fs'),vm=require('vm'),c={window:{}};vm.runInNewContext(fs.readFileSync('client/i18n-catalog.js','utf8'),c);const cat=c.window.Drop2TunnelI18nCatalog,langs=c.window.Drop2TunnelI18nConfig.dynamicLanguages,norm=s=>s.replace(/[\s。；;，,:：.!！?？]+$/g,'');let full=new Map();for(const [k,v]of Object.entries(cat))if(langs.every(l=>v[l]))full.set(norm(k),{k,v});let rows=JSON.parse(fs.readFileSync('.npm-cache/i18n-disk-errors-261109.json','utf8'));console.log(rows.map((r,i)=>({i,parts:r.phrase.split(/[。；]/).filter(Boolean)})).filter(r=>r.parts.every(p=>full.has(norm(p)))).map(r=>r.i+' '+r.parts.join(' | ')).join('\n'));console.log('existing clause examples');for(const k of ['文件不存在或已被删除','请刷新列表','请联系所有者','请重新选择目标','请重新执行操作'])console.log(k,full.get(k)?.k);
+	'@ | node
+
+	【中断信息】你已达到使用上限。升级套餐或充值额度以继续，或稍后再试。
+
+	已编辑 57 个文件+1,555-46查看变更撤销查看变更
+
+	docs/devlog/dev-2611.mddocs/devlog/dev-2611.md+29-0
+	tests/interactions-261108.browser.cjstests/interactions-261108.browser.cjs+7-1
+	tests/transcode-progress-261108.test.cjstests/transcode-progress-261108.test.cjs+31-0
+	server/video-transcode.jsserver/video-transcode.js+37-0
+	client/disk-pending-save.jsclient/disk-pending-save.js+3-2
+	client/disk-ui.jsclient/disk-ui.js+1-0
+	pages/sns-dl.htmlpages/sns-dl.html+1-1
+	tests/admin-confirm-261108.browser.cjstests/admin-confirm-261108.browser.cjs+4-2
+	tests/pending-save-preflight-261108.browser.cjstests/pending-save-preflight-261108.browser.cjs+31-0
+	tests/support/pending-save-261012-fixture.cjstests/support/pending-save-261012-fixture.cjs+2-2
+	tests/magnet-download-261108.browser.cjstests/magnet-download-261108.browser.cjs+32-0
+	pages/downloader.htmlpages/downloader.html+8-3
+	client/i18n.jsclient/i18n.js+28-10
+	tests/i18n-261108.browser.cjstests/i18n-261108.browser.cjs+34-0
+	tests/p2p-live-261108.browser.cjstests/p2p-live-261108.browser.cjs+44-0
+	app.jsapp.js+45-8
+	client/index.cssclient/index.css+1-0
+	tests/forward-confirmation-261108.test.cjstests/forward-confirmation-261108.test.cjs+2-1
+	server.jsserver.js+13-1
+	tests/p2p-connection-regression.test.cjstests/p2p-connection-regression.test.cjs+7-0
+	tests/forward-results-261108.browser.cjstests/forward-results-261108.browser.cjs+24-0
+	.npm-cache/native-recovery-core-261108.json.npm-cache/native-recovery-core-261108.json+36-0
+	.npm-cache/merge-recovery-en-261108.cjs.npm-cache/merge-recovery-en-261108.cjs+4-0
+	.npm-cache/recovery-en-261108.json.npm-cache/recovery-en-261108.json+258-0
+	.npm-cache/merge-recovery-cjk-261109.cjs.npm-cache/merge-recovery-cjk-261109.cjs+4-0
+	.npm-cache/recovery-cjk-261109.json.npm-cache/recovery-cjk-261109.json+104-0
+	pages/downloadList.htmlpages/downloadList.html+9-6
+	tools/frontend-i18n-audit.jstools/frontend-i18n-audit.js+7-5
+	.npm-cache/recovery-cjk-rest-261109.json.npm-cache/recovery-cjk-rest-261109.json+156-0
+	.npm-cache/merge-ja-list-261109.cjs.npm-cache/merge-ja-list-261109.cjs+4-0
+	.npm-cache/recovery-ja-list-261109.json.npm-cache/recovery-ja-list-261109.json+54-0
+	.npm-cache/merge-recovery-all-locales-261109.cjs.npm-cache/merge-recovery-all-locales-261109.cjs+4-0
+	.npm-cache/recovery-all-locales-1-261109.json.npm-cache/recovery-all-locales-1-261109.json+43-0
+	.npm-cache/recovery-all-locales-2-261109.json.npm-cache/recovery-all-locales-2-261109.json+35-0
+	.npm-cache/recovery-magnet-all-261109.json.npm-cache/recovery-magnet-all-261109.json+20-0
+	client/i18n-catalog.jsclient/i18n-catalog.js+15-4
+	.npm-cache/merge-ja-native-261109.cjs.npm-cache/merge-ja-native-261109.cjs+10-0
+	.npm-cache/streaming-native-1-261109.json.npm-cache/streaming-native-1-261109.json+32-0
+	.npm-cache/streaming-native-2-261109.json.npm-cache/streaming-native-2-261109.json+32-0
+	.npm-cache/streaming-native-3-261109.json.npm-cache/streaming-native-3-261109.json+27-0
+	.npm-cache/account-native-261109.json.npm-cache/account-native-261109.json+19-0
+	.npm-cache/recovery-all-locales-3-261109.json.npm-cache/recovery-all-locales-3-261109.json+30-0
+	.npm-cache/magnet-status-native-261109.json.npm-cache/magnet-status-native-261109.json+13-0
+	.npm-cache/complete-dynamic-locales-261109.cjs.npm-cache/complete-dynamic-locales-261109.cjs+13-0
+	tests/i18n-catalog-261108.test.cjstests/i18n-catalog-261108.test.cjs+3-0
+	.npm-cache/recovery-all-locales-4-261109.json.npm-cache/recovery-all-locales-4-261109.json+25-0
+	.npm-cache/recovery-all-locales-5-261109.json.npm-cache/recovery-all-locales-5-261109.json+25-0
+	.npm-cache/recovery-all-locales-6-261109.json.npm-cache/recovery-all-locales-6-261109.json+24-0
+	tests/frontend-i18n-audit-261108.test.cjstests/frontend-i18n-audit-261108.test.cjs+7-0
+	.npm-cache/recovery-all-locales-7-261109.json.npm-cache/recovery-all-locales-7-261109.json+26-0
+	.npm-cache/recovery-all-locales-8-261109.json.npm-cache/recovery-all-locales-8-261109.json+28-0
+	.npm-cache/recovery-all-locales-9-261109.json.npm-cache/recovery-all-locales-9-261109.json+24-0
+	.npm-cache/recovery-all-locales-10-261109.json.npm-cache/recovery-all-locales-10-261109.json+16-0
+	.npm-cache/recovery-ja-all-locales-261109.json.npm-cache/recovery-ja-all-locales-261109.json+34-0
+	.npm-cache/merge-error-native-261109.cjs.npm-cache/merge-error-native-261109.cjs+6-0
+	.npm-cache/disk-errors-native-1-261109.json.npm-cache/disk-errors-native-1-261109.json+18-0
+	.npm-cache/error-composition-native-261109.json.npm-cache/error-composition-native-261109.json+6-0
+

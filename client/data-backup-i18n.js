@@ -1,6 +1,7 @@
 (function (global) {
     'use strict';
     const rows = [
+        ['正在请求继续备份…','Requesting backup retry…'], ['重试已接受，备份正在服务端继续。关闭本页不会停止任务。','Retry accepted. The backup is continuing on the server; closing this page will not stop it.'],
         ['展开更早的20条记录', 'Show 20 older records'], ['收起较早记录', 'Collapse older records'],
         ['已跳过 {0} 项（读取权限受限）：','Skipped {0} items (read access denied):'],
         ['备份完成（有跳过项）','Backup completed with skipped items'],

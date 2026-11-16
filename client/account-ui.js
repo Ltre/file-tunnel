@@ -60,7 +60,7 @@
                     const offline = button('使用离线身份', async () => {
                         if (await options.offline() === false) return; close();
                         const message = t('已使用离线身份，部分需要登录的功能将无法使用。');
-                        if (global.showAppToast) global.showAppToast(message); else global.alert(message);
+                        if (global.showAppToast) global.showAppToast(message); else (window.TunnelI18n?.alert || global.alert)(message);
                     });
                     const add = signIn.querySelector('button');
                     if (add) { const row = document.createElement('div'); row.className = 'account-sign-actions'; add.before(row); row.append(add, offline); } else signIn.append(offline);
