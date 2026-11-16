@@ -1,6 +1,6 @@
 # SNS、YouTube Premium、Cookie 同步、音轨修复与转码 — 思维导图
 
-> **源码基线 Commit**：`b1788ca4b219718ad802ed778ed41c081ecad39b`  
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
 > **文档更新时间**：2026-10-16  
 > **状态**：现有功能与运行边界  
 > **主要参考**：[../download-transcode.md](./../download-transcode.md)、[../download-transcode/sns-cookie-sync.md](./../download-transcode/sns-cookie-sync.md)
@@ -266,3 +266,9 @@ mindmap
 ```
 
 注意：该图概括细节与交互边界；具体调用链、迁移过程、失败回滚及版本差异以链接的模块文档和实际源码为准。
+
+## 2026-11-09—10 增量
+
+- SNS / YouTube Premium 表单可将当前 TAB 保存为管理员鉴权云端快照，按 clientKey/revision 做并发保护；跨浏览器可读取，复制仍为本地草稿，任务提交后表单清理独立执行。
+- 云表单只保存白名单字段、候选格式分析和选中格式，不保存 Cookie，不同步抓取任务或输出文件。
+- FFmpeg stderr 解析 Duration 与 time=，按每一步有效时长计算多步骤任务进度；完成前最高 99%，日志保留最近 80 行，UI 重绘时保留用户滚动位置。
