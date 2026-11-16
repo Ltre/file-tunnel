@@ -1,9 +1,9 @@
 # 初始 Overview 覆盖验收
 
-> **当前实现源码锚点 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
+> **当前实现源码锚点 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
 > **历史覆盖起点 Commit**：`192ecbcb9ea27a9754f8622041165f9712a8fbf4`  
 > **第一个实际代码版本 Commit**：`0224de3d07f2160055eef58dd1907235aed3aef4`  
-> **文档更新时间**：`2026-11-07`
+> **文档更新时间**：`2026-11-17`
 
 ## 1. 本文件解决什么问题
 
@@ -83,9 +83,21 @@
 
 第五轮合入能力：串流控制台节目/权限/观看/媒体来源、七主题及路由、系统备份、SNS 图文 Markdown、后台设备权限与诊断、文件/Markdown 历史、网盘转存回执、网页编辑凭据与延后同步。根据实际代码归属新增 `streaming-console.md`、`system-backup.md`、`pwa-ui/themes.md`，并同步架构、测试、历史和 UI 等模块。
 
+第六轮只在当前 `dev/doc-overview` 分支比较上一轮文档 HEAD `bb93602ad450f46b9b88b30017677bc82b1ac956` → `f2c8b033c50d5a7c50f0ee4950222595d49c40a4`：**12 个提交、130 个非 `docs/overview/**` 变更文件**。本轮没有读取其它分支。变更以代码、页面、配置、构建工具和新增测试为依据，主要包括：
+
+- 16 语言前端国际化拆分为小型启动包与按需 JSON 包；系统语言仅在用户进入设置后征求下载确认，构建验证生成包与中央词条目录一致；
+- SNS / YouTube Premium 下载表单的管理员鉴权云端 TAB 保存、revision 冲突保护和提交后独立清理；
+- 文件 P2P 背压已判失败时的精确 attempt 放弃协议、独立信令限流、Relay ACK 诊断及跨隧道文件来源身份/记录锚点；
+- 多条记录转发逐项结果、超时状态核对、稳定消息 ID 和服务端持久化 ACK；
+- 浏览器缓存盘点改用元数据游标，垃圾缓存删除前重新核对引用/会话归属，读取失败停止清理；
+- 网盘待转存恢复前预检、辅助上传进度流并发上限、默认分区名标记；系统备份发布前逐段远端清单复核；
+- 网页 ZIP 来源签名证明和离线来源 grant 校验、FFmpeg 按输出时间计算任务进度、磁链 Relay 接收端 ACK、控制中心通知/账号入口及 IME 输入修正。
+
+逐文件核对同一分支两端的 Git tree：`pages/**` 仍为 **30** 个；`client/**` 101 → **116**（新增 15）；`server/**` 94 → **95**（新增 1）；`tests/**` 299 → **332**（新增 33，另有 11 个测试/夹具文件修改）；`tools/**` 50 → **52**（新增 2，另有部署构建脚本修改）。本轮没有新增页面，所有新增客户端、服务端、测试和工具文件均在下方或模块测试索引中归属。
+
 所以：
 
-> 当前 Overview 的代码事实终点已推进到 `71e58b07350a0ef3b480fa82272177863de74448`；初始 `b422e438...` 只作为历史冻结锚点保留。
+> 第五轮 Overview 代码事实终点为 `71e58b07350a0ef3b480fa82272177863de74448`；第六轮现已推进到 `f2c8b033c50d5a7c50f0ee4950222595d49c40a4`。初始 `b422e438...` 只作为历史冻结锚点保留。
 
 ## 4. 当前页面覆盖表
 
@@ -219,7 +231,14 @@
 | `client/tunnel-access-editor.js/.css`、`tunnel-code-scanner.js`、`tunnel-entry.js/.css`、`tunnel-landing.css` | `tunnel-core.md`、`pwa-ui/themes.md` |
 | `client/tunnel-markdown.js` | `transfer-cache.md` |
 
-**验收结果：当前 101 个 `client/**` 文件全部有明确模块归属。**
+### 5.9 2026-11-07—10 新增客户端 15 项
+
+| 新文件 | 对应 Overview |
+|---|---|
+| `client/i18n-bootstrap.js` | `pwa-ui/localization.md` |
+| `client/i18n/es.json`、`fa.json`、`fr.json`、`id.json`、`it.json`、`ja.json`、`km.json`、`ko.json`、`ms.json`、`my.json`、`ru.json`、`th.json`、`vi.json`、`zh-Hant.json` | `pwa-ui/localization.md` |
+
+**验收结果：当前 116 个 `client/**` 文件全部有明确模块归属。**
 
 ## 6. 当前服务端模块覆盖表
 
@@ -326,7 +345,11 @@
 - 进程、限流、设备权限：`server/process-diagnostics.js`、`request-rate-limit.js`、`tunnel-permissions.js` → `admin-security-deployment.md`、`tunnel-core.md`；
 - Web ZIP：`server/web-zip-credentials.js`、`web-zip-sync.js` → `web-workshop.md`。
 
-**验收结果：当前 94 个 `server/**` 文件全部有明确模块归属。**
+### 6.9 2026-11-07—10 新增服务端 1 项
+
+- `server/admin-form-cache.js` → `admin-security-deployment.md`、`download-transcode.md`（管理员下载表单云端保存、revision 冲突及原子 JSON 存储）。
+
+**验收结果：当前 95 个 `server/**` 文件全部有明确模块归属。**
 
 ## 7. 工具链覆盖
 
@@ -342,10 +365,14 @@
 
 → `admin-security-deployment.md`
 
-### i18n audits
+### i18n audits / generated language packs
 
 - `tools/i18n-audit.js`
 - `tools/server-i18n-audit.js`
+- `tools/frontend-i18n-audit.js`
+- `tools/build-i18n-packs.cjs`
+
+→ `pwa-ui/localization.md`；`tools/deploy/build.mjs` 同时执行生成包一致性检查并复制按需语言包。
 
 → `pwa-ui/localization.md`
 
@@ -370,6 +397,10 @@
 `vclient/index.js`、`runtime.js`、`cache-store.js`
 
 → `vclient.md`
+
+### 7.1 测试树增量
+
+本轮 `tests/**` 从 299 增至 332 个文件：新增 33 个测试文件，另修改 11 个既有测试/夹具。新增测试按模块列于 [tests-and-regressions.md](./tests-and-regressions.md)，不是 33 项全部独立的新业务功能；其中包含对旧网盘账号、挂载、登录和部署路径补回的回归覆盖。
 
 ## 8. 根入口覆盖
 
@@ -458,8 +489,8 @@
 - [x] 固定当前最后一个非 Overview 项目 Commit；
 - [x] 主要历史阶段有时间线；
 - [x] 当前 30 个 Pages 有归属；
-- [x] 当前 101 个 Client 文件有归属；
-- [x] 当前 94 个 Server 文件有归属；
+- [x] 当前 116 个 Client 文件有归属；
+- [x] 当前 95 个 Server 文件有归属；
 - [x] 当前工具/VClient 有归属；
 - [x] 未来 Idea 与当前实现分离；
 - [x] Overview 后续增量扫描规则已明确；
@@ -468,4 +499,4 @@
 
 以上条件已经全部满足，**初始 Overview 创建阶段正式关闭**。
 
-当前已完成第五轮增量维护，下一轮源码比较锚点为 `71e58b07350a0ef3b480fa82272177863de74448`，维护规则以 [VERSION.md](./VERSION.md) 为准。
+当前已完成第六轮增量维护，下一轮源码比较锚点为 `f2c8b033c50d5a7c50f0ee4950222595d49c40a4`，维护规则以 [VERSION.md](./VERSION.md) 为准。
