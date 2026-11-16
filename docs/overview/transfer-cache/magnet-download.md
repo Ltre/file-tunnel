@@ -1,7 +1,7 @@
 # Drop2Tunnel 磁链分享、种子发现与独立下载器
 
-> **源码基线 Commit**：`10ebe1000b9bd57097f90e51337a251ba17734f3`  
-> **文档更新时间**：`2026-10-17`（261014-3 更新持久登记与历史统计）
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **文档更新时间**：`2026-11-17`（261014-3 更新持久登记与历史统计）
 
 ## 1. 术语说明
 
@@ -300,3 +300,11 @@ Magnet：
 2026-10-14 完成的磁链持久化记录继续有效；10-15 新增隧道成员凭据后，**创建**磁链要求当前合法已登记成员，但**外部下载**使用磁链绑定的特定 `assetId` 能力，不要求加入完整隧道房间，不返回隧道历史/其它文件/短码/长期凭据。服务端阻止外部访客借此探测其它文件；对离线供源仍可解析登记但没有字节来源。
 
 相关入口 `server/tunnel-access.js`、`server/file-assets.js`、`server/infra-store.js` 和 `tests/features-261015-1.test.cjs`。短码轮换不应让旧磁链自动获得其它授权；显式删除隧道仍撤销其磁链，过往未持久化的 ID 仍不可恢复。
+
+## 18. 2026-11-08：Relay 分片接收端 ACK
+
+独立磁链下载页 `pages/downloader.html` 对 `file-asset-relay-start`、`file-asset-relay-chunk`、`file-asset-relay-complete` 不再只注册无回执回调：每个处理器现在将接收端 Promise 的成功/失败通过 Socket.IO ACK 返回；失败时回报原因并更新下载状态。页面同时接收统一的 `file-asset-transfer-status`。
+
+这让服务端能够区分“事件已发出”和“接收端实际完成处理”，尤其在最终完成确认阶段避免静默吞掉接收端错误。它仍是 Drop2Tunnel 自有 Relay/磁链缓存协议，不是 BitTorrent Tracker/DHT；不会因为收到 ACK 就绕过完整内容持久化后才允许下载的规则。
+
+专项浏览器回归：`tests/magnet-download-261108.browser.cjs`；Service Worker 旧版本升级与磁链恢复另见 `tests/sw-language-update-261109.browser.cjs`。
