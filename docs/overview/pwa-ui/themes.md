@@ -1,7 +1,7 @@
 # UI 主题、响应式工作区与路由外观
 
-> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
-> **文档更新时间**：`2026-11-07`  
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **文档更新时间**：`2026-11-17`  
 > 主要源码：`client/themes.css`、`themes-legacy.css`、`themes-blamen.css`、`themes-lusns.css`、`theme-preference.js`、`index.css`，入口 `app.js`、`pages/index.html`。
 
 ## 1. 主题体系已进入当前代码
@@ -32,3 +32,10 @@
 - 参考 `docs/devlog/dev-2610-UI261026.md` 的 261028-2、261028-3、261029—261031、261101-1；`docs/devlog/dev-2611.md` 的 261102—261106；以及当前代码。
 - 回归：`tests/themes-261028-2.test.cjs`、`tests/theme-offline-261028.browser.cjs`、`tests/theme-blamen-lusns.browser.cjs`、`tests/ui-261106.browser.cjs`、`tests/route-261106-3.browser.cjs` 等。
 - 开发记录中的浏览器模拟覆盖不同 CSS px 的布局、主题配色和缓存升级，但不能替代真实 Android 平板的导航栏、软键盘、浏览器媒体权限或 GPU 差异验收。本轮未重新运行浏览器回归。
+
+## 5. 2026-11-07—10：主题细节与中央翻译运行时
+
+- Lumen / Orbit 的网盘上下文菜单补齐 hover 和键盘焦点态；Orbit 文件预览中的音频文件名改用主题正文色，阻塞进度说明使用主题辅助文字色。只调整显示样式，不改变媒体内容、文件权限或缓存状态。
+- 网盘文件详情两个入口移除底部右键/触摸提示行；分区挂载选择器在没有名称输入字段时让剩余控件独占整行，保留原有横向标签与选择器结构。
+- 主题之外的系统提示与动态界面文案统一接入中央 `TunnelI18n`。系统语言包按需加载的启动与构建边界见 [localization.md](./localization.md)；切换主题不会触发语言包下载或业务状态迁移。
+- 控制中心新增账号入口磁贴与通知未读角标；角标使用通知中心原有的设备范围未读数，不单独维护计数。控制中心内的未读消息列表不会因打开控制中心就标记已读，进入完整通知中心才执行原有已读语义。
