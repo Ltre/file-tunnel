@@ -1,7 +1,7 @@
 # 传输记录、文件资产、缓存与恢复链路
 
-> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
-> **文档更新时间**：`2026-11-07`
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **文档更新时间**：`2026-11-17`
 
 ## 子模块文档
 
@@ -471,3 +471,36 @@ SNS/X 帖子转成 Markdown 时，正文附件有对应生命周期和图片资�
 - 原有普通文件的 P2P/Socket.IO Relay 与串流台对节目 Range 的 P2P 直传是不同机制；用户在 PC PAC / Android VPN 下的 WebRTC 差异仍以 [260812 P2P 复盘](../other/P2P_TRANSMISSION_NOTES-260812.md) 和抓取的候选对为准。暂存记录 `prompts/dev-prompt-logs/p2p-progress-origin-difference-todo-261030.md` 是待调查线索，**不是确认修复**。
 
 关联 `app.js`、`client/file-assets.js`、`client/cache-store.js`、`server/file-assets.js`、`server/markdown-records.js` 以及 `tests/history-*.test.cjs`、`tests/markdown-*.browser.cjs`、`tests/transfer-feedback-261101-3.*`、`tests/resource-cache-261106.test.cjs`。
+
+## 25. 2026-11-07—10：P2P 明确放弃、跨隧道转发确认与缓存安全
+
+### P2P 背压失败的明确放弃协议
+
+- 只在既有等待逻辑已经判定 `backpressure stalled/timeout` 或文件 DataChannel drain timeout 后，发送端才关闭**本次文件 DataChannel**，并报告与 `requestId`、P2P 传输类型及全文件/Range `transferId` 对应的 `abandonedAttemptId`。共享 PeerConnection 保留，原 5 秒供源冷却和重试调度继续使用。
+- `server/file-assets.js` 按当前请求/传输计算预期 attempt ID，只转发完全匹配的放弃标识；接收端还要核对当前供源、当前活动 attempt、未完成状态，才释放该全文件或 Range P2P 任务并走原有回退。
+- 普通 `failed`、旧请求通知、其它供源的失败及短暂队列背压不能中断仍在工作的 P2P 路径。没有修改 ICE 建链、分包、并发、缓冲阈值、8 秒停滞判定、30 秒接收期限或 Relay 竞争策略。
+- `server.js` 将 P2P `signal` 的每分钟限流计数与聊天/编辑/转发消息分开；沿用同一个限额常量，但普通消息突发不再消耗 WebRTC 建链信令额度。首个超限事件记录 `p2p-signal-rate-limited`。
+- `file-asset-relay-complete` 增加阶段、耗时、Socket、会话、目标、资源、传输和 attempt 诊断字段，区分验证、接收端完成 ACK 和服务端记录完成；不记录文件正文。
+
+### 跨隧道来源身份与缓存发现
+
+- 文件资产请求不再只从当前设备身份读取一个旧的 `tunnel-access:{sessionId}` 字符串。客户端优先使用每隧道 `tunnel-authorization:{sourceSessionId}` 中的 `deviceId + grant`，并把精确的 `recordMessageId`、`sourceDeviceId`、`sourceAccessGrant` 随请求发送；旧键仅作为兼容回退。
+- 服务端以签名 grant 校验该来源隧道绑定的 deviceId，**请求里自报的 sourceDeviceId 本身不授予权限**。转发文件的目标历史超出内存窗口时，按 `recordMessageId` 从持久历史读取那一条记录后再核对引用关系，不以其它记录或同名文件代替。
+- 目标隧道已拥有被转发的文件，但尚无供源设备时，服务端可在确认目标记录归属后触发一次受限 `file-asset-discovery`；同一会话/资源两秒内限一次，单设备记录表限制 256 项。发现只帮助找回目标端已有副本，不提升原来源授权。
+- `requestedMetadata` 以合并方式保留来源会话、消息锚点及 `backupSourceSessionId` 等来源字段，避免后续 provider presence 广播覆盖掉目标记录的跨隧道 provenance。资源浏览器重新构建资源项时也保留 `backupSourceSessionId`、`forwardedToSessionId`、`forwardedSourceGrant`。
+
+### 批量转发的逐条确认和未知结果恢复
+
+- 单条与多条转发统一走逐条发送流程。结果对话框分别显示等待、发送中、已确认、失败、未发送和结果未确认；批量处理对确定失败的项目可继续，对结果未知的项目停止后续发送，避免继续扩大不确定状态。
+- 每条转发在本地保留稳定目标消息 ID；服务端按源会话、源设备和消息 ID 对并发重复请求做合并，并检查相同消息指纹。转发记录必须实际写入持久历史并完成 flush 后才 ACK。
+- 10 秒发送 ACK 超时后，客户端用 `forward-message-status` 查询目标隧道中同一条目标消息，校验 sender、`forwardedFrom` 源会话/消息及目标访问授权。确认成功才标记成功；仍无法确认时显示“结果尚未确认”，用户重试沿用原消息 ID，不盲目新建重复记录。
+- 批次记录在当前页面保留已确认项目，重试跳过它们；最多保留 10 个未完成批次，单条最多 50 个未确认目标消息。文件/合辑要求源端缓存可供源；Markdown 附件必须有可用副本，缺失时拒绝转发。
+
+### 缓存盘点和清理的安全性
+
+- 首页 Presence、编辑器图片供源和资源浏览器盘点改用 `getCurrentSessionFileInventory()` 元数据游标，不为枚举资源读取每个 IndexedDB Blob。这样不会仅为筛选少量图片而把大量视频 ArrayBuffer 全部载入内存。
+- 垃圾缓存预览失败时显示检查失败并停止，不把读取异常当作“空引用/无文件”。真正删除前重新读取当前会话资源目录和引用集合，核对候选仍属于当前会话；被消息、合辑、Markdown、富文本或编辑器引用的资源保留，流媒体缓存另走 StreamingCache 清理。
+- 删除失败保留候选并允许重试；资源浏览器单项删除也同时核对 UI 引用和实际 IndexedDB 引用。源会话、目标会话和本地缓存归属字段在重建时继续保留。此处的保护针对**浏览器缓存删除**，不替代服务端消息删除权限。
+- 控制中心的批量转发入口支持 Shift 范围选择；逐项结果反馈不再只给一个总成功/失败提示。
+
+关联回归：`tests/p2p-connection-regression.test.cjs`、`p2p-live-261108.browser.cjs`、`source-access-261107.test.cjs`、`relay-diagnostics-261109.test.cjs`、`bulk-forward-261108.test.cjs`、`forward-confirmation-261108.test.cjs`、`forward-results-261108.browser.cjs`、`persisted-forward-261108.test.cjs`、`cache-safety-261107.test.cjs`。
