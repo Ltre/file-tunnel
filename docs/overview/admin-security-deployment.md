@@ -475,3 +475,8 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 - API 路由位于 `server.js`，前端共用 `client/download-form-tabs.js`，SNS 与 YouTube Premium 页面分别传入 `serverForms: 'sns-dl'` / `'youtube-premium-dl'`。
 
 专项测试：`tests/admin-form-cache-261109.test.cjs`、`admin-form-cache-261109.browser.cjs`。更多用户侧行为见 [download-transcode.md](./download-transcode.md)。
+
+## 26. 2026-11-08：管理员隧道权限选择器的输入模式
+
+管理员跳转到某个隧道权限页时，页面先检查该 ID 是否存在于真实下拉选项。已列出的 ID 直接选中下拉并清空手动输入；只有不在列表中的 ID 才保留为手动输入并禁用下拉。保存结束后继续保持当前模式；手动输入改为下拉已存在 ID 或清空后，恢复下拉操作。该 UI 变化不放宽服务端权限校验，也不会把手动填写的设备/会话 ID 自动登记为成员。回归见 `tests/admin-confirm-261108.browser.cjs`。
+
