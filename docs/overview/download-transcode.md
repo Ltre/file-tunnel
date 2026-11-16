@@ -1,7 +1,7 @@
 # SNS / YouTube Premium、音轨修复与视频转码
 
-> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
-> **文档更新时间**：`2026-11-07`
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **文档更新时间**：`2026-11-17`
 
 ## 子模块文档
 
@@ -575,3 +575,22 @@ X/Twitter 的帖子正文、作者名称、用户名/头像、最多多张配图
 - 2026-11-05 起增加下载表单多标签和前后台多选交互，11-06 修正列表/文件名/缓存缺失提示及初始消息的异常分支。已存在的原生 Node `yt-dlp` 路线没有因为这个 UI 模块变成网页视频转码器。
 
 相关测试：`tests/sns-post-261027-1.test.cjs`、`sns-images-261102-2.test.cjs`、`sns-author-261103-2.test.cjs`、`twitter-browser-261103.test.cjs`、`download-file-name-261105.test.cjs`、`download-form-tabs-261105.browser.cjs` 等。原始 X 站点与公开媒体 URL 行为不断变化，孤立样本不能被视为所有帖子的确定保证。
+
+## 24. 2026-11-09—10：下载表单云端 TAB 与 FFmpeg 实时进度
+
+### SNS / YouTube 下载表单
+
+两类下载页面仍保留原来的多 TAB 草稿、复制、备注、候选格式解析和提交逻辑；新增可选的云端保存入口：
+
+- SNS `pages/sns-dl.html` 与 YouTube Premium `pages/youtube-premium-dl.html` 分别绑定服务端表单类型。带 `☁|` 的 TAB 表示当前快照已保存到服务器；编号由服务器序列分配，和本浏览器 TAB 的显示顺序无关。
+- 云端保存包含白名单表单参数、完整格式候选解析结果、已选格式、稳定 `clientKey`、revision 和更新时间。新浏览器可读取；复制 TAB 仍是本地草稿；删除云 TAB 先按 revision 删除对应服务端副本。
+- 本地旧版本与服务端新 revision 冲突时不静默覆盖用户输入；首次保存的迟到响应不会把已经提交并清空的表单重新标成云端保存。任务成功提交后清理表单副本，清理失败只保留可重试清理记录，不重提抓取任务。
+- 这是**表单跨浏览器保存**，不是把 SNS/YouTube 下载任务同步到其它设备，也不共享 Cookie、私人账号或服务器输出文件。服务端权限、存储与冲突语义见 [admin-security-deployment.md](./admin-security-deployment.md)。
+
+### 视频转码进度和日志
+
+`server/video-transcode.js` 现在解析 FFmpeg stderr 的 `Duration` 与 `time=` 状态行，支持 CR/LF 形式的进度刷新，并按输入/输出侧 `-ss`、`-t`、`-to` 调整有效时长，结合多步骤索引计算任务整体进度。进度限制在完成前最高 99%，只有最终输出文件确认存在并任务成功时才置 100%。
+
+stderr 采用 UTF-8 `StringDecoder`，保留最近 80 条日志；未终止的异常长行限制在 16 KiB，避免日志缓冲无界增长。页面重绘任务卡片时保留日志滚动位置：原本贴近底部则继续跟随新日志，用户向上查看历史时则保持原位置；首次展开定位到日志尾部。此进度是 FFmpeg 时间戳估算，不是输出字节百分比，也不保证所有滤镜/未知时长输入都能产生可计算进度。
+
+专项测试：`tests/transcode-progress-261108.test.cjs`。
