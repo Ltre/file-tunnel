@@ -1,7 +1,7 @@
 # 系统备份程序：范围、快照、分段与恢复边界
 
-> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
-> **文档更新时间**：`2026-11-07`  
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **文档更新时间**：`2026-11-17`  
 > 入口：`/system-backup`；后端 `server/data-backup.js`，页面 `pages/system-backup.html`，前端 `client/data-backup.js/.css` 与 `data-backup-i18n.js`。
 
 ## 1. 功能定位
@@ -36,3 +36,11 @@
 - `server/data-backup.js` 负责扫描/快照/清单/状态/上传；`server.js` 和后台布局负责挂载及认证。
 - `tests/data-backup-261027.test.cjs`、`tests/data-backup-review-261027.test.cjs` 与 `tests/support/data-backup-261027-fixture.cjs` 覆盖模式、身份、分段失败及重启等。
 - 开发记录 `docs/devlog/dev-2610-streaming-console.md` 的“261027-1”“261027-2”提供实际测试和限制。**当前维护仅检查已合入源码及既有证据，未重新执行生产备份/恢复。**
+
+## 5. 2026-11-07：发布完成前的远端清单复核与重试状态
+
+上传任务在发布最终完成 manifest 前，新增对**全部远端对象分段**的重新核验，包括中断前已标记完成的分段。每段必须能重新 stat 到实际文件 ID，且 ID、字节数和 `backupSha256` 与任务清单一致；缺失或不一致时重置该段/文件完成标记并以 `BACKUP_VERIFY_FAILED` 失败，不发布“已完成”清单。复用已有远端对象时也要求它具有有效文件 ID。
+
+重试入口会按是否已有完成快照重置为 snapshotting 或 uploading，并清除旧错误/进度状态。前端给重试任务更新本地状态版本，旧的轮询响应不能把刚接受的重试任务重新覆盖成旧失败卡片。此处加强的是**备份上传完成确认**，没有增加自动灾难恢复，也没有把不同数据库和普通文件变成同一全局原子快照。
+
+回归：`tests/backup-261107.test.cjs`。
