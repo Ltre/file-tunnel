@@ -1,7 +1,7 @@
 # 网页工坊与 .html.zip Runtime
 
-> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
-> **文档更新时间**：`2026-11-07`
+> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **文档更新时间**：`2026-11-17`
 
 ## 1. 功能定位与产生背景
 
@@ -605,3 +605,15 @@ Runtime 根据路径推断：
 - 前台网页元信息现在区分创作者、原记录和已转发记录的编辑来源；用户从转发记录中选择“更新原网页”或“另存为”时需要明确行为。仅凭标签是 HTML ZIP 不允许跨原创建者根更新。
 
 回归：`tests/web-zip-credentials-261106-3.test.cjs`、`web-zip-sync-261106-2.test.cjs`、`web-zip-publish-261106-2.test.cjs`、`web-zip-integration-261106-2.test.cjs` 及 261106-3 开发记录。正式多设备异地授权同步仍需真实用户环境验收。
+
+## 24. 2026-11-07—10：离线来源凭据、来源证明与身份隔离
+
+网页 ZIP 的跨隧道编辑凭据继续只代表指定网页的编辑能力；本轮额外强化了**来源关系证明**和来源读取授权的分离：
+
+- `server/web-zip-credentials.js` 在同一私钥下用不同签名域生成 `ws1.` 来源证明。它绑定当前转发记录、创建者、网页根 ID 和原始来源会话/消息，只证明“这是这份网页的对应转发来源”，**不授予编辑、加入隧道或读取文件的权限**。
+- `webZipSourceProof` 随网页 ZIP 文件元数据保存，后续读取原始记录或旧审计标记缺失时，可先验证确切来源锚点；旧记录的来源恢复还需要编辑者原有签名编辑凭据和精确 root/permission scope，不能仅凭 `forwardedFrom` 字段或同名文件认领来源。无法证明的旧来源返回 `WEB_ZIP_SOURCE_UNVERIFIED`。
+- `server.js` 的来源同步判断可从持久 `infraStore` 读取当前未在线内存会话的隧道权限；每条 Socket 会话单独记录已验证的 `webZipSyncIdentities` 与 `webZipSyncAccessGrants`。服务端以该隧道原绑定 deviceId 验证 grant，再检查来源隧道 read capability 和编辑隧道发布/编辑资格。
+- 已验证的来源授权不再依赖短码当前仍有效：短码轮换不会自动使一个仍有效的已签名 grant 失效，也不会要求同步程序为了回写而重新加入原隧道。撤销 read 权限后，待同步工作保持阻塞；授权恢复且两侧现有凭据仍有效时才继续。编辑者在不同隧道的设备身份分别校验，不合并成一个全局身份。
+- 对离线原来源，服务端只能在持久权限和现有签名 grant 均可验证时继续同步；若原始记录已丢失、权限版本不匹配或来源证明不完整，必须失败/等待，不能静默改写另一个记录。
+
+专项测试：`tests/web-zip-origin-261108.test.cjs`、`web-zip-visibility-261107.test.cjs`、`web-zip-offline-source-261109.test.cjs`。
