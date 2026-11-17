@@ -12,13 +12,13 @@ const equivalent=(a,b)=>a&&b&&a.creatorDeviceId===b.creatorDeviceId&&a.name===b.
 const version=file=>({id:file.id,revision:revision(file)});
 const failure=code=>{throw Error(code);};
 function replaceFile(message,id,file){const next=clone(message);if(next.type==='file')next.fileInfo=file;else next.collection.files=next.collection.files.map(value=>value.id===id?file:value);return next;}
-function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent,canSync,credentials,isForwardedCopy=()=>false,log=()=>{}}){
+function createWebZipSync({filename,readRecord,listRecords=()=>[],writeRecord,canPublish,hasContent,canSync,credentials,isForwardedCopy=()=>false,log=()=>{}}){
     let unavailable=false,saving=Promise.resolve(),scheduled=false,changed=false;
-    const jobs=new Map(),running=new Map(),publishing=new Set();
+    const jobs=new Map(),running=new Map(),publishing=new Set(),publications=new Map();
     try{const saved=readJson(filename,{version:1,jobs:[]});if(saved.version!==1||!Array.isArray(saved.jobs))throw Error('invalid journal');for(const job of saved.jobs){if(!job?.key||!job.file?.id||!job.sessionId||!job.messageId)throw Error('invalid job');jobs.set(job.key,job);}}
     catch(error){unavailable=true;log('web-zip-sync-storage-unreadable',error);}
     const persist=()=>{const snapshot={version:1,jobs:[...jobs.values()].map(clone)};saving=saving.catch(()=>{}).then(()=>writeJsonAsync(filename,snapshot));return saving;};
-    const key=(sessionId,messageId,file)=>JSON.stringify([sessionId,messageId,file.webZipRootId||file.id]);
+    const key=(sessionId,messageId,file,origin)=>JSON.stringify(origin?[sessionId,origin.sessionId,origin.messageId,file.creatorDeviceId,file.webZipRootId||file.id]:[sessionId,messageId,file.webZipRootId||file.id]);
     const sourceScope=(sessionId,message,file,origin)=>({sessionId,messageId:message.id,creatorDeviceId:file.creatorDeviceId,rootId:file.webZipRootId||file.id,sourceSessionId:origin.sessionId,sourceMessageId:origin.messageId});
     const lostSource=(sessionId,message,file,origin)=>!origin&&message?.forwardedFrom?.sessionId&&message.forwardedFrom.sessionId!==sessionId&&file.webZipRootId&&file.webZipSourceVersion;
     function sourceOf(sessionId,message,file,editCredential='',deviceId=''){
@@ -30,12 +30,57 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
         const candidates=files(original).filter(value=>webpage(value)&&value.creatorDeviceId===file.creatorDeviceId);
         let matches=candidates.filter(value=>value.id===file.webZipSourceVersion?.id||file.webZipRootId&&(value.id===file.webZipRootId||value.webZipRootId===file.webZipRootId));
         if(!matches.length)matches=candidates.filter(value=>equivalent(value,file));
+        // Old single-file forwards have no root yet. Their verified record
+        // anchor still identifies the one webpage after another copy edits it.
+        if(!matches.length&&forwarded&&!file.webZipRootId&&original.type==='file'&&candidates.length===1)matches=candidates;
         const resolved={...origin,message:original,file:matches.length===1?matches[0]:null};
         // Before provenance proofs existed, an already completed publication
         // lost its audit marker. The editor's original signed capability can
         // recover that exact link, including permission versions and anchors.
         if(!forwarded&&(!resolved.file||!credentials?.verify(editCredential,scopeOf(sessionId,message.id,file,deviceId,resolved))))return null;
         return resolved;
+    }
+    function copiesOf(sessionId,message,file,origin){
+        const result=[{message,file}];if(!origin)return result;
+        const root=origin.file?.webZipRootId||origin.file?.id||file.webZipRootId;
+        if(!root)return result;
+        for(const candidate of listRecords(sessionId))for(const copy of files(candidate)){
+            if(candidate.id===message.id&&copy.id===file.id||candidate.forwardedFrom?.sessionId!==origin.sessionId||candidate.forwardedFrom?.messageId!==origin.messageId||!webpage(copy)||copy.creatorDeviceId!==file.creatorDeviceId)continue;
+            const source=sourceOf(sessionId,candidate,copy);
+            if(source?.sessionId===origin.sessionId&&source.messageId===origin.messageId&&
+                (source.file?.webZipRootId||source.file?.id||copy.webZipRootId)===root)result.push({message:candidate,file:copy});
+        }
+        return result;
+    }
+    async function updateCopies(job,transform,canWrite){
+        const message=readRecord(job.sessionId,job.messageId),file=files(message).find(value=>value.id===job.file.id);
+        if(!file||jobs.get(job.key)!==job)return;
+        for(const target of copiesOf(job.sessionId,message,file,{...job.origin,file:job.file})){
+            if(jobs.get(job.key)!==job)return;
+            // Another file in a collection may already have changed its record.
+            const current=readRecord(job.sessionId,target.message.id),copy=files(current).find(value=>value.id===target.file.id);
+            if(!copy)continue;
+            const next=transform(copy,current);if(!next||JSON.stringify(next)===JSON.stringify(copy))continue;
+            await writeRecord(job.sessionId,current,replaceFile(current,copy.id,next),{check:()=>jobs.get(job.key)===job&&(!canWrite||canWrite())});
+        }
+    }
+    async function mirror(job){
+        await updateCopies(job,(file,message)=>{
+            if(file.id===job.file.id&&revision(file)===revision(job.file))return null;
+            if(revision(file)>revision(job.file))failure('WEB_ZIP_SOURCE_CHANGED');
+            const next={...clone(job.file),replacesFileId:file.id===job.file.id?file.replacesFileId:file.id};
+            if(credentials?.issueSource)next.webZipSourceProof=credentials.issueSource(sourceScope(job.sessionId,message,next,job.origin));
+            return next;
+        },()=>canPublish(job.sessionId,job.deviceId)&&canEdit(files(readRecord(job.sessionId,job.messageId)).find(file=>file.id===job.file.id),job.deviceId));
+    }
+    function reanchor(job){
+        for(const message of listRecords(job.sessionId))for(const file of files(message)){
+            if(file.id!==job.file.id||file.creatorDeviceId!==job.file.creatorDeviceId||file.webZipRootId!==job.file.webZipRootId)continue;
+            const source=sourceOf(job.sessionId,message,file);
+            if(source?.sessionId!==job.origin.sessionId||source.messageId!==job.origin.messageId)continue;
+            job.credentialMessageId ||= job.messageId;job.messageId=message.id;return true;
+        }
+        return false;
     }
     function ownedCopy(file,input,deviceId){
         const next={...file};
@@ -57,31 +102,41 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
     }
     async function mark(job,error){
         if(jobs.get(job.key)!==job)return;
-        const message=readRecord(job.sessionId,job.messageId),file=files(message).find(value=>value.id===job.file.id);
-        if(!file||file.webZipPendingSync?.lastError===error)return;
-        const next={...file,webZipPendingSync:{...file.webZipPendingSync,lastError:error}};
-        await writeRecord(job.sessionId,message,replaceFile(message,file.id,next),{check:()=>jobs.get(job.key)===job});
+        await updateCopies(job,file=>file.id===job.file.id&&file.webZipPendingSync&&file.webZipPendingSync.lastError!==error?
+            {...file,webZipPendingSync:{...file.webZipPendingSync,lastError:error}}:null);
     }
     async function finish(job){
-        const message=readRecord(job.sessionId,job.messageId),file=files(message).find(value=>value.id===job.file.id);
         if(jobs.get(job.key)!==job)return;
-        if(file?.webZipPendingSync){const next={...file,webZipSourceVersion:version(job.file)};delete next.webZipPendingSync;
+        await updateCopies(job,(file,message)=>{
+            if(file.id!==job.file.id||!file.webZipPendingSync)return null;
+            const next={...file,webZipSourceVersion:version(job.file)};delete next.webZipPendingSync;
             if(credentials?.issueSource)next.webZipSourceProof=credentials.issueSource(sourceScope(job.sessionId,message,next,job.origin));
-            await writeRecord(job.sessionId,message,replaceFile(message,file.id,next),{check:()=>jobs.get(job.key)===job});}
+            return next;
+        });
         if(jobs.get(job.key)===job){jobs.delete(job.key);try{await persist();}catch(error){if(!jobs.has(job.key))jobs.set(job.key,job);throw error;}topologyChanged();}
     }
     async function sync(job){
         if(jobs.get(job.key)!==job||publishing.has(job))return;
-        const message=readRecord(job.sessionId,job.messageId),file=files(message).find(value=>value.id===job.file.id);
-        if(!file){jobs.delete(job.key);await persist();return;}
-        if(!canSync(job.deviceId,job.origin.sessionId,job.sessionId))return;
+        let message=readRecord(job.sessionId,job.messageId),file=files(message).find(value=>value.id===job.file.id);
+        if(!file){if(!reanchor(job)){jobs.delete(job.key);await persist();return;}await persist();message=readRecord(job.sessionId,job.messageId);file=files(message).find(value=>value.id===job.file.id);}
         if(!canEdit(file,job.deviceId)||!canPublish(job.sessionId,job.deviceId))return mark(job,'WEB_ZIP_EDIT_DENIED');
         const original=readRecord(job.origin.sessionId,job.origin.messageId);
-        if(!original)return mark(job,'WEB_ZIP_SOURCE_MISSING');
         const candidates=files(original).filter(value=>webpage(value)&&value.creatorDeviceId===job.file.creatorDeviceId);
         const current=candidates.find(value=>value.id===job.file.id)||candidates.find(value=>value.id===job.base?.id)||candidates.find(value=>value.webZipRootId===job.file.webZipRootId||value.id===job.file.webZipRootId)||candidates.find(value=>equivalent(value,job.previous));
+        // A journal from the former per-record model may be based on the
+        // version before a sibling completed. Only a verified, completed
+        // sibling proving that exact source version can advance that base.
+        if(current&&current.id!==job.file.id&&job.base&&current.id!==job.base.id){
+            const prior=copiesOf(job.sessionId,message,file,{...job.origin,file:job.file}).find(target=>target.file.id===current.id&&!target.file.webZipPendingSync&&
+                target.file.webZipSourceVersion?.id===current.id&&target.file.webZipSourceVersion.revision===revision(current)&&
+                Number(target.file.webZipUpdatedAt||0)<=Number(job.file.webZipUpdatedAt||0));
+            if(prior){job.base=version(current);job.file.webZipRevision=Math.max(revision(job.file),revision(current)+1);await persist();}
+        }
+        await mirror(job);
+        if(!canSync(job.deviceId,job.origin.sessionId,job.sessionId))return;
+        if(!original)return mark(job,'WEB_ZIP_SOURCE_MISSING');
         if(!current)return mark(job,'WEB_ZIP_SOURCE_CHANGED');
-        const scope=scopeOf(job.sessionId,job.messageId,file,job.deviceId,{...job.origin,file:current});
+        const scope=scopeOf(job.sessionId,job.credentialMessageId||job.messageId,file,job.deviceId,{...job.origin,file:current});
         const credentialValid=credentials?.verify(job.editCredential,scope);
         if(!canEdit(current,job.deviceId)&&!credentialValid)return mark(job,'WEB_ZIP_SOURCE_EDIT_DENIED');
         if(current.webZipPendingSync)return mark(job,'WEB_ZIP_SOURCE_BUSY');
@@ -110,10 +165,10 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
     function recordChanged(sessionId,messageId){
         let removed=false;
         const ids=new Set(files(readRecord(sessionId,messageId)).map(file=>file.id));
-        for(const [jobKey,job]of jobs)if(job.sessionId===sessionId&&job.messageId===messageId&&!ids.has(job.file.id)){jobs.delete(jobKey);removed=true;}
+        for(const [jobKey,job]of jobs)if(job.sessionId===sessionId&&job.messageId===messageId&&!ids.has(job.file.id)){if(!reanchor(job))jobs.delete(jobKey);removed=true;}
         if(removed)persist().catch(error=>log('web-zip-sync-cleanup-failed',error));
     }
-    async function publish({sessionId,messageId,fileId,fileInfo,deviceId,editCredential}){
+    async function publishNow({sessionId,messageId,fileId,fileInfo,deviceId,editCredential}){
         const message=readRecord(sessionId,messageId),current=files(message).find(value=>value.id===fileId);
         const retried=files(message).find(value=>value.id===fileInfo?.id&&value.replacesFileId===fileId&&value.ownerDeviceId===deviceId);
         if(retried&&canEdit(retried,deviceId)&&canPublish(sessionId,deviceId)){const job=[...jobs.values()].find(value=>value.file.id===retried.id&&value.sessionId===sessionId&&value.messageId===messageId);if(job)await attempt(job);return readRecord(sessionId,messageId);}
@@ -130,19 +185,27 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
         else delete next.webZipSourceProof;
         let job,previousJob;
         if(origin){
-            const jobKey=key(sessionId,messageId,{...current,webZipRootId:next.webZipRootId});
-            previousJob=jobs.get(jobKey);
+            const jobKey=key(sessionId,messageId,{...current,webZipRootId:next.webZipRootId},origin);
+            previousJob=jobs.get(jobKey)||[...jobs.values()].find(value=>value.sessionId===sessionId&&value.origin.sessionId===origin.sessionId&&value.origin.messageId===origin.messageId&&value.file.creatorDeviceId===current.creatorDeviceId&&value.file.webZipRootId===next.webZipRootId);
             job={key:jobKey,sessionId,messageId,deviceId,origin:{sessionId:origin.sessionId,messageId:origin.messageId},file:next,editCredential,
                 previous:{id:current.id,name:current.name,type:current.type,size:current.size,creatorDeviceId:current.creatorDeviceId,webZipDraftId:current.webZipDraftId,webZipRevision:revision(current)},
                 base:previousJob?.base||current.webZipSourceVersion||(equivalent(current,origin.file)?version(origin.file):null)};
-            next.webZipPendingSync={state:'pending',sessionId:origin.sessionId,messageId:origin.messageId};publishing.add(job);jobs.set(jobKey,job);
-            try{await persist();}catch(error){publishing.delete(job);if(previousJob)jobs.set(jobKey,previousJob);else jobs.delete(jobKey);throw error;}
+            next.webZipPendingSync={state:'pending',sessionId:origin.sessionId,messageId:origin.messageId};publishing.add(job);if(previousJob)jobs.delete(previousJob.key);jobs.set(jobKey,job);
+            try{await persist();}catch(error){publishing.delete(job);jobs.delete(jobKey);if(previousJob)jobs.set(previousJob.key,previousJob);throw error;}
         }
         try{await writeRecord(sessionId,message,replaceFile(message,fileId,next),{check:()=>canPublish(sessionId,deviceId)&&canEdit(files(readRecord(sessionId,messageId)).find(value=>value.id===fileId),deviceId)});}
-        catch(error){if(job&&jobs.get(job.key)===job){if(previousJob)jobs.set(job.key,previousJob);else jobs.delete(job.key);await persist();}throw error;}
+        catch(error){if(job&&jobs.get(job.key)===job){jobs.delete(job.key);if(previousJob)jobs.set(previousJob.key,previousJob);await persist();}throw error;}
         finally{if(job)publishing.delete(job);}
         if(job)await attempt(job);
         return readRecord(sessionId,messageId);
+    }
+    function publish(input){
+        const message=readRecord(input.sessionId,input.messageId),file=files(message).find(value=>value.id===input.fileId)||files(message).find(value=>value.id===input.fileInfo?.id);
+        const origin=file&&sourceOf(input.sessionId,message,file,input.editCredential,input.deviceId);
+        const publicationKey=file?key(input.sessionId,input.messageId,{...file,webZipRootId:origin?.file?.webZipRootId||origin?.file?.id||file.webZipRootId},origin):JSON.stringify([input.sessionId,input.messageId]);
+        const previous=publications.get(publicationKey)||Promise.resolve();
+        const task=previous.catch(()=>{}).then(()=>publishNow(input));publications.set(publicationKey,task);
+        task.finally(()=>{if(publications.get(publicationKey)===task)publications.delete(publicationKey);}).catch(()=>{});return task;
     }
     function needsApproval(sessionId,messageId,fileId,deviceId){
         const message=readRecord(sessionId,messageId),file=files(message).find(value=>value.id===fileId);
@@ -154,10 +217,17 @@ function createWebZipSync({filename,readRecord,writeRecord,canPublish,hasContent
         const message=readRecord(sessionId,messageId),file=files(message).find(value=>value.id===fileId||value.webZipRootId===rootId||value.replacesFileId===fileId)|| (message?.type==='file'?message.fileInfo:null);
         if(!webpage(file)||file.creatorDeviceId!==creatorDeviceId)failure('not-web-zip-creator');
         const origin=sourceOf(sessionId,message,file);
-        for(const target of [...(origin?.file?[{sessionId:origin.sessionId,message:origin.message,file:origin.file}]:[]),{sessionId,message,file}]){
+        const peers=copiesOf(sessionId,message,file,origin),permissionAt=Date.now();
+        for(const target of [...(origin?.file?[{sessionId:origin.sessionId,message:origin.message,file:origin.file}]:[]),...peers.map(value=>({...value,sessionId}))]){
             if(target.file.creatorDeviceId!==creatorDeviceId)failure('not-web-zip-creator');
-            const updated={...target.file,webZipEditors:[...new Set([...(target.file.webZipEditors||[]),deviceId])],webZipPermissionUpdatedAt:Date.now()};
-            await writeRecord(target.sessionId,target.message,replaceFile(target.message,target.file.id,updated),{source:'web-zip-editor-approved'});
+            const current=readRecord(target.sessionId,target.message.id),latest=files(current).find(value=>value.id===target.file.id);if(!latest)failure('WEB_ZIP_SOURCE_CHANGED');
+            const updated={...latest,webZipEditors:[...new Set([...(latest.webZipEditors||[]),deviceId])],webZipPermissionUpdatedAt:permissionAt};
+            if(target.sessionId===sessionId&&origin?.file){
+                updated.webZipRootId=origin.file.webZipRootId||origin.file.id;
+                updated.webZipSourceVersion=latest.webZipSourceVersion||version(origin.file);
+                if(credentials?.issueSource)updated.webZipSourceProof=credentials.issueSource(sourceScope(sessionId,current,updated,origin));
+            }
+            await writeRecord(target.sessionId,current,replaceFile(current,latest.id,updated),{source:'web-zip-editor-approved'});
         }
         topologyChanged();return readRecord(sessionId,messageId);
     }

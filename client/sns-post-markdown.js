@@ -53,6 +53,7 @@
         if (progress.stage === 'failed') {
             const reason = document.createElement('span');
             reason.textContent = errorText(progress.error);
+            if (Number.isInteger(progress.httpStatus) && progress.httpStatus >= 400 && progress.httpStatus <= 599) reason.textContent += ' (HTTP ' + progress.httpStatus + ')';
             container.append(reason);
         } else if (!known || progress.total > 0) {
             const bar = document.createElement('progress');

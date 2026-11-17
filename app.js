@@ -3605,7 +3605,7 @@ function initFileAssetTransfer() {
             historyLog('file-download-attempt-ui-cleared', { fileId, reason: reason || '' });
         },
         onReceived: async (asset) => {
-            hideCompletedFileReceiveProgress(asset.id);
+            hideCompletedFileReceiveProgress(asset.id, { preserveCompletion: true });
             const sourceInfo = serverAssetRecoveries.metadata.get(asset.id);
             let storedFile = await getFromStore('files', asset.id).catch(() => null);
             if (hasCompleteFileCache(storedFile, asset)) {
@@ -5014,6 +5014,7 @@ function openWebZipStandalone(fileInfo, options = {}) {
 }
 
 function showWebZipEditDialog(fileInfo, context = {}) {
+    fileInfo = { ...fileInfo, recordMessageId: context.messageId || context.sourceMessageId || fileInfo.recordMessageId };
     document.querySelector('.web-zip-edit-dialog')?.remove();
     const owner = fileInfo.creatorDeviceName || (fileInfo.creatorDeviceId ? '设备' + fileInfo.creatorDeviceId.slice(-4) : '未知设备');
     const isOwner = fileInfo.creatorDeviceId === state.deviceId, allowed = canEditWebZip(fileInfo);
@@ -6890,7 +6891,7 @@ function drainServerAssetRecoveries() {
 async function requestMissingFileAssetCache(message, reason) {
     const fileInfo = message?.fileInfo;
     if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
-        scheduleServerAssetRecovery(fileInfo, fileInfo.ownerDeviceId || message.sender, reason);
+        scheduleServerAssetRecovery({ ...fileInfo, recordMessageId: message.id }, fileInfo.ownerDeviceId || message.sender, reason);
         return;
     }
     if (!fileAssetTransfer || !fileInfo?.id || !fileInfo.isAsset) return;
@@ -6911,7 +6912,7 @@ async function requestMissingCollectionAssetCaches(message, reason) {
     const files = getCollectionFiles(message);
     for (const fileInfo of files) {
         if (fileInfo?.isServerAsset && fileInfo.serverAssetUrl) {
-            scheduleServerAssetRecovery(fileInfo, fileInfo.ownerDeviceId || message?.sender, reason);
+            scheduleServerAssetRecovery({ ...fileInfo, recordMessageId: message.id }, fileInfo.ownerDeviceId || message?.sender, reason);
             continue;
         }
         if (!fileAssetTransfer) continue;
@@ -7020,7 +7021,7 @@ async function handleMessage(data) {
             await fileAssetTransfer.request(
                 message.fileInfo.id,
                 message.fileInfo.ownerDeviceId || message.sender,
-                message.fileInfo
+                { ...message.fileInfo, recordMessageId: message.id }
             );
         };
         if (message.fileInfo.size <= CONFIG.SMALL_FILE_THRESHOLD) {
@@ -9033,10 +9034,25 @@ function showForwardHistoryProgress(records, done) {
     };
     for (const record of records) setState(record.id,done.has(record.id)?'confirmed':'waiting');
     const previousFocus = document.activeElement;
-    const finishClose = () => { document.removeEventListener('keydown',key,true); overlay.remove(); if(previousFocus?.isConnected)previousFocus.focus({preventScroll:true}); };
+    const historyToken = 'forward-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    let closed = false, ownsHistory = false;
+    const back = event => {
+        if (event.state?.forwardHistoryDialog === historyToken) return;
+        event.stopImmediatePropagation(); finishClose(true); window.removeEventListener('popstate',back,true);
+    };
+    const finishClose = (fromHistory = false) => {
+        if (closed) return;
+        closed = true; window.removeEventListener('keydown',key,true); overlay.remove();
+        if(previousFocus?.isConnected)previousFocus.focus({preventScroll:true});
+        if (!fromHistory && ownsHistory && history.state?.forwardHistoryDialog === historyToken) history.back();
+        else window.removeEventListener('popstate',back,true);
+    };
     const key = event => { if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();finishClose();} };
-    close.onclick = finishClose; header.append(title,close); dialog.append(header,list,summary); overlay.append(dialog); document.body.append(overlay);
-    document.addEventListener('keydown',key,true); close.focus({preventScroll:true});
+    close.onclick = () => finishClose();
+    overlay.addEventListener('click',event => { if (event.target === overlay) finishClose(); });
+    header.append(title,close); dialog.append(header,list,summary); overlay.append(dialog); document.body.append(overlay);
+    try { history.pushState({ ...history.state, forwardHistoryDialog:historyToken }, ''); ownsHistory = true; window.addEventListener('popstate',back,true); } catch (_) {}
+    window.addEventListener('keydown',key,true); close.focus({preventScroll:true});
     return {setState,finish(text){summary.textContent=text;}};
 }
 
@@ -12525,6 +12541,7 @@ function renderAudioPreview(content, fileInfo, storedFile, url) {
 
 async function openFilePreviewForInfo(fileInfo, options = {}) {
     if (!fileInfo?.id) return false;
+    fileInfo = { ...fileInfo, recordMessageId: options.messageId || options.collectionMessageId || fileInfo.recordMessageId };
     const version = ++filePreviewLoadVersion, sessionId = state.sessionId;
     const isCurrent = () => version === filePreviewLoadVersion && sessionId === state.sessionId;
     if (/\.html\.zip$/i.test(String(fileInfo.name || ''))) return openWebZipStandalone(fileInfo, options);
@@ -18238,12 +18255,17 @@ function initTunnelControlCenter(dialog) {
         clearTimeout(drag.timer); drag.tile.classList.remove('is-dragging');
         drag.ghost?.remove();
         if (drag.tile.hasPointerCapture?.(drag.id)) drag.tile.releasePointerCapture(drag.id);
-        if (drag.moved || (drag.touch && (drag.active || drag.scrolling))) suppressUntil = Date.now() + 700;
+        if (drag.moved || (drag.touch && drag.active)) suppressUntil = Date.now() + 700;
         if (drag.moved) { try { localStorage.setItem('tunnelControlCenterOrder', JSON.stringify(order)); } catch (_) {} }
         drag = null; label.hidden = true;
     };
     const activate = () => {
         if (!drag) return;
+        // Narrow panels can move after the tunnel scroll buttons settle.
+        // Start from their current layout, not slots measured at mount time.
+        for (const animation of animations.values()) animation.cancel();
+        animations.clear();
+        for (const tile of tiles.values()) slots.set(tile, tile.getBoundingClientRect());
         drag.active = true; drag.tile.classList.add('is-dragging');
         const rect = drag.tile.getBoundingClientRect();
         drag.rect = rect;
@@ -18262,7 +18284,7 @@ function initTunnelControlCenter(dialog) {
         tile.addEventListener('contextmenu', event => event.preventDefault());
         tile.addEventListener('pointerdown', event => {
             if (event.button > 0 || !event.isPrimary) { reset(); return; }
-            drag = { tile, id: event.pointerId, x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, active: false, touch: event.pointerType === 'touch', scroll: dialog.querySelector('.control-center').scrollTop };
+            drag = { tile, id: event.pointerId, x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, active: false, touch: event.pointerType === 'touch' };
             try { tile.setPointerCapture(event.pointerId); } catch (_) {}
             if (drag.touch) drag.timer = setTimeout(activate, 500); else activate();
         });
@@ -18271,8 +18293,11 @@ function initTunnelControlCenter(dialog) {
             if (drag.tile !== tile) return;
             const distance = Math.hypot(event.clientX - drag.x, event.clientY - drag.y);
             if (!drag.active) {
-                if (distance > 10) { clearTimeout(drag.timer); drag.scrolling = true; suppressUntil = Date.now() + 700; dialog.querySelector('.control-center').scrollTop = drag.scroll + drag.y - event.clientY; }
-                return;
+                if (distance < 8) return;
+                // Tiles own their touch gesture (touch-action:none), so a
+                // deliberate finger movement sorts just like a mouse drag.
+                // Waiting in place still supports the existing long hold.
+                clearTimeout(drag.timer); activate();
             }
             event.preventDefault();
             if (distance < 8) return;
@@ -18282,7 +18307,7 @@ function initTunnelControlCenter(dialog) {
             const top = wide.matches ? Math.min(bounds.bottom-drag.rect.height, Math.max(bounds.top,drag.rect.top+event.clientY-drag.y)) : drag.rect.top+event.clientY-drag.y;
             drag.ghost.style.left = `${left}px`; drag.ghost.style.top = `${top}px`;
             let hovered;
-            if (wide.matches) {
+            {
                 // Use layout slots rather than animated rectangles so a tile
                 // gives way just before contact, without chasing its animation.
                 const dx = event.clientX-drag.lastX, dy = event.clientY-drag.lastY;
@@ -18300,7 +18325,7 @@ function initTunnelControlCenter(dialog) {
                     }
                 }
                 drag.lastX = event.clientX; drag.lastY = event.clientY;
-            } else hovered = document.elementFromPoint(left+drag.rect.width/2, top+drag.rect.height/2)?.closest('[data-control-tile]');
+            }
             let targetId, insertAfter = false;
             if (hovered && hovered !== drag.tile) {
                 targetId = hovered.dataset.controlTile;
@@ -18309,19 +18334,24 @@ function initTunnelControlCenter(dialog) {
                 const rect = panel.getBoundingClientRect();
                 if (!wide.matches) {
                     if (event.clientY >= rect.top && event.clientY <= rect.bottom) { targetId = 'tunnels'; insertAfter = event.clientY > rect.top + rect.height / 2; }
-                    else if (event.clientY < rect.top && !hovered) targetId = 'tunnels';
-                    else if (event.clientY > rect.bottom && !hovered) { targetId = 'tunnels'; insertAfter = true; }
+                    else if (event.clientY < rect.top && event.clientY >= bounds.bottom && !hovered) targetId = 'tunnels';
+                    else if (event.clientY > rect.bottom && !hovered && (!after.children.length || event.clientY < after.getBoundingClientRect().top)) { targetId = 'tunnels'; insertAfter = true; }
                 }
             }
             if (targetId) {
                 const next = order.filter(id => id !== drag.tile.dataset.controlTile), index = next.indexOf(targetId);
-                next.splice(index + (insertAfter ? 1 : 0), 0, drag.tile.dataset.controlTile); order = next;
-                drag.reorderedAt = { x:event.clientX, y:event.clientY }; render();
+                next.splice(index + (insertAfter ? 1 : 0), 0, drag.tile.dataset.controlTile);
+                if (next.some((id,index) => id !== order[index])) {
+                    order = next; drag.reorderedAt = { x:event.clientX, y:event.clientY }; render();
+                }
             }
             const scroller = dialog.querySelector('.control-center'), rect = scroller.getBoundingClientRect();
             if (wide.matches) return;
+            const previousScroll = scroller.scrollTop;
             if (event.clientY < rect.top + 40) scroller.scrollTop -= 12;
             else if (event.clientY > rect.bottom - 40) scroller.scrollTop += 12;
+            const scrollOffset = previousScroll - scroller.scrollTop;
+            if (scrollOffset) for (const [tile,slot] of slots) slots.set(tile, { left:slot.left, right:slot.right, width:slot.width, height:slot.height, top:slot.top+scrollOffset, bottom:slot.bottom+scrollOffset });
         };
         const finish = event => { if (drag?.tile === tile && drag.id === event.pointerId) reset(); };
         window.addEventListener('pointermove', move, { capture: true, passive: false });
@@ -20488,10 +20518,13 @@ function cleanupProgressForDeletedFile(fileId) {
     updateProgressDrawerSummary();
 }
 
-function hideCompletedFileReceiveProgress(fileId) {
+function hideCompletedFileReceiveProgress(fileId, options = {}) {
     if (!fileId) return;
     fileTransferProgressStates.delete(fileId);
     completedFileProgress.add(fileId);
+    // Fast transfers can finish before the browser paints a frame. Keep the
+    // existing completion timer so their confirmed result is visible as well.
+    if (options.preserveCompletion && progressHideTimers.has(fileId)) return;
     hideProgress(fileId);
 }
 

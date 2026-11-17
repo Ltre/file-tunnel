@@ -4225,7 +4225,7 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
 .control-center .session-switch-item{width:100%;justify-content:flex-start;margin:6px 0}
 .control-center-tiles{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:10px;padding:10px 14px}
 .control-center-tiles:empty{display:none}
-.control-center-tile{display:inline-flex;align-items:center;justify-content:center;min-width:48px;min-height:46px;padding:9px 15px;border:1px solid #c8d7e8;border-radius:13px;background:#eef3ff;color:#354974;box-shadow:0 2px 6px #10203320;font:24px/1.2 system-ui;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none}
+.control-center-tile{display:inline-flex;align-items:center;justify-content:center;min-width:48px;min-height:46px;padding:9px 15px;border:1px solid #c8d7e8;border-radius:13px;background:#eef3ff;color:#354974;box-shadow:0 2px 6px #10203320;font:24px/1.2 system-ui;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .control-center-tile.is-dragging{background:#d9e7fc;outline:2px solid #658bc1;cursor:grabbing}
 .control-center-tile{position:relative}
 #tunnelControlCenter .control-center-tile>.control-center-unread-badge{position:absolute;top:-6px;right:-7px;box-sizing:border-box;min-width:20px;height:20px;padding:0 5px;display:inline-flex;align-items:center;justify-content:center;border:2px solid var(--cc-panel,var(--panel-bg,#fff));border-radius:999px;background:#d73650;color:#fff;box-shadow:0 1px 4px #0003;font:700 11px/1 system-ui;pointer-events:none}
@@ -4237,6 +4237,7 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
 .control-center-heading {position:relative;min-height:40px}
 .control-center-heading>strong {display:none}
 .control-center-live {display:none}
+@media(max-width:1023px) {.control-center [data-control-side="after"]:empty {display:flex;min-height:68px}}
 .control-center-tile.is-dragging:not(.control-center-drag-ghost) {opacity:0;pointer-events:none}
 .control-center-drag-ghost {opacity:1;cursor:grabbing;box-shadow:0 8px 24px #0003}
 .control-center-tile[data-control-tile="magnet"],.control-center-drag-ghost[data-control-icon="magnet"] {white-space:nowrap;font-size:20px}

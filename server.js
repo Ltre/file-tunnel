@@ -7002,7 +7002,7 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistIte
         if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections), '--force-keyframes-at-cuts');
         if (maxFileSize > 0) args.splice(args.indexOf('-o'), 0, '--max-filesize', String(maxFileSize));
         try {
-            await spawnYtDlpCapture(args, {
+            const downloadOptions = {
                 sourceUrl: url,
                 operation: attempt ? 'sns-media-download-format-fallback' : 'sns-media-download',
                 timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
@@ -7015,7 +7015,21 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistIte
                         options.onStage?.('merging');
                     }
                 }
-            });
+            };
+            try {
+                await spawnYtDlpCapture(args, downloadOptions);
+            } catch (error) {
+                // Some Bilibili CDN/exit combinations reject a full GET with
+                // HTTP 567. Preserve the normal first request; retry that
+                // failure once with a complete range on the same exit.
+                if (options.signal?.aborted || !/^https?:\/\/(?:[a-z0-9-]+\.)*(?:bilibili\.com|b23\.tv)(?:[/?#]|$)/i.test(url) ||
+                    !/\bHTTP(?:\s+Error)?\s*:?\s*567\b/i.test(String(error?.message || ''))) throw error;
+                cleanupSnsWorkFiles(`${assetId}.`);
+                progressState.lastAt = 0;
+                await spawnYtDlpCapture([...args.slice(0, -1), '--add-headers', 'Range:bytes=0-', args.at(-1)], {
+                    ...downloadOptions, operation: 'sns-media-download-bilibili-range-fallback'
+                });
+            }
             lastFormatError = null;
             options.onDetail?.({
                 message: 'yt-dlp 媒体下载命令执行成功',
@@ -9373,6 +9387,17 @@ function readWebZipRecord(sessionId, messageId) {
     return getHistoryMessageEntry(session, messageId)?.message || infraStore?.getHistoryMessage(sessionId, messageId) || null;
 }
 
+function listWebZipRecords(sessionId) {
+    const session = sessions.get(sessionId), records = new Map(), deleted = new Set(session?.deletedMessageIds || []);
+    if (infraStore?.listHistoryRecords) for (let offset = 0; ; offset += 1000) {
+        const batch = infraStore.listHistoryRecords(sessionId, { limit:1000, offset });
+        for (const entry of batch) if (entry.message && !deleted.has(entry.message.id)) records.set(entry.message.id, entry.message);
+        if (batch.length < 1000) break;
+    }
+    for (const entry of session?.history || []) if (!deleted.has(entry.message.id)) records.set(entry.message.id, entry.message);
+    return [...records.values()];
+}
+
 function writeWebZipRecord(sessionId, previous, next, options = {}) {
     return new Promise((resolve, reject) => {
         let outcome, prepared;
@@ -9472,7 +9497,7 @@ function canSyncWebZipSource(deviceId, sourceSessionId, editingSessionId) {
 
 const webZipSync = require('./server/web-zip-sync').createWebZipSync({
     credentials: require('./server/web-zip-credentials').createWebZipCredentials({dataDir:SERVER_DATA_DIR}),
-    filename: path.join(SERVER_DATA_DIR, 'web-zip-sync.json'), readRecord: readWebZipRecord, writeRecord: writeWebZipRecord,
+    filename: path.join(SERVER_DATA_DIR, 'web-zip-sync.json'), readRecord: readWebZipRecord, listRecords:listWebZipRecords, writeRecord: writeWebZipRecord,
     isForwardedCopy: (sessionId,messageId,file,origin) => {
         const entry = getHistoryMessageEntry(sessions.get(sessionId),messageId);
         if (entry?.forwardedSourceSessionId === origin.sessionId && file.backupSourceSessionId === origin.sessionId && file.forwardedToSessionId === sessionId) return true;

@@ -634,8 +634,11 @@ function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}
             try { if (ownerId) await cleanup(sessionId, ownerId); }
             finally {
                 if (progress && record(sessionId, id)) {
-                    const code = /^(?:SNS_(?:POST|X)_[A-Z0-9_]+|permission-denied)$/.test(error.message) ? error.message : 'SNS_POST_FAILED';
-                    await report({ ...progress, stage: 'failed', error: code });
+                    const httpStatus = Number(String(error.message || '').match(/\bHTTP(?:\s+Error)?\s*:?\s*(\d{3})\b/i)?.[1]);
+                    const code = /^(?:SNS_(?:POST|X)_[A-Z0-9_]+|permission-denied)$/.test(error.message) ? error.message
+                        : progress.stage === 'resources' && httpStatus >= 400 && httpStatus <= 599 ? 'SNS_POST_MEDIA_UNAVAILABLE' : 'SNS_POST_FAILED';
+                    await report({ ...progress, stage: 'failed', error: code,
+                        ...(httpStatus >= 400 && httpStatus <= 599 ? { httpStatus } : {}) });
                 }
             }
             throw error;
