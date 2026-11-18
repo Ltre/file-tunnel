@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v148-content-v8-ui-forward-sync-261117-1';
+const CACHE_NAME = 'instant-tunnel-v150-content-v8-261118-1-fixes';
 const APP_SHELL = [
     '/',
     '/index.html',

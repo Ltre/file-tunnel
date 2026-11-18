@@ -3995,7 +3995,7 @@ function canReadForwardedFile(targetSessionId, deviceId, sourceSessionId, fileId
             if (message) entries = [...entries, { message }];
         } catch (_) { return false; }
     }
-    return entries.some(entry => {
+    const accepts = entry => {
         const message = entry.message;
         if (Array.isArray(target.deletedMessageIds) ? target.deletedMessageIds.includes(message?.id) : target.deletedMessageIds?.has?.(message?.id)) return false;
         const files = message?.type === 'file' ? [message.fileInfo] : message?.type === 'collection' ? message.collection?.files || [] : [];
@@ -4019,15 +4019,33 @@ function canReadForwardedFile(targetSessionId, deviceId, sourceSessionId, fileId
                 const origin = recorded.forwardedFrom;
                 if (origin?.sessionId !== sourceSessionId || !origin.messageId || origin.messageId !== message.forwardedFrom?.messageId || origin.sessionId !== message.forwardedFrom?.sessionId) return false;
                 const asset = infraStore.get('SELECT source_device_id, file_name, mime_type, file_size FROM file_assets WHERE session_id = ? AND file_id = ?', [sourceSessionId, fileId]);
-                if (!asset || asset.source_device_id !== saved.sender_device_id || asset.file_name !== copy.name || asset.mime_type !== copy.type || Number(asset.file_size) !== Number(copy.size)) return false;
+                // Provider metadata normalizes an empty browser MIME to the
+                // unknown binary type; old forwarded records may retain ''.
+                if (!asset || asset.source_device_id !== saved.sender_device_id || asset.file_name !== copy.name || (asset.mime_type || 'application/octet-stream') !== (copy.type || 'application/octet-stream') || Number(asset.file_size) !== Number(copy.size)) return false;
                 if (infraStore.get('SELECT 1 AS found FROM transfer_files WHERE session_id = ? AND file_id = ? LIMIT 1', [sourceSessionId, fileId])) return false;
                 const predecessor = infraStore.get('SELECT payload_json FROM transfer_records WHERE session_id = ? AND message_id = ?', [sourceSessionId, origin.messageId]);
                 if (!predecessor) return false;
                 const original = JSON.parse(predecessor.payload_json), originals = original.type === 'file' ? [original.fileInfo] : original.type === 'collection' ? original.collection?.files || [] : [];
-                return originals.some(value => value?.id && value.id !== fileId && value.name === copy.name && value.type === copy.type && Number(value.size) === Number(copy.size));
+                return originals.some(value => value?.id && value.id !== fileId && value.name === copy.name && (value.type || 'application/octet-stream') === (copy.type || 'application/octet-stream') && Number(value.size) === Number(copy.size));
             } catch (_) { return false; }
         });
-    }) || false;
+    };
+    if (entries.some(accepts)) return true;
+    if (recordMessageId || entries.some(entry => {
+        const message = entry.message;
+        const files = message?.type === 'file' ? [message.fileInfo] : message?.type === 'collection' ? message.collection?.files || [] : [];
+        return files.some(file => file?.id === fileId && file.backupSourceSessionId === sourceSessionId);
+    })) return false;
+    // Recovery requests from older clients or cached file metadata may lack a
+    // record hint. Look up only this destination's exact file references, then
+    // apply the same ownership proof, deletion and permission checks above.
+    try {
+        const rows = infraStore?.query?.('SELECT r.payload_json FROM transfer_records r JOIN transfer_files f ON f.session_id = r.session_id AND f.message_id = r.message_id WHERE r.session_id = ? AND f.file_id = ? AND r.deleted_at IS NULL AND f.removed_at IS NULL', [targetSessionId, fileId]) || [];
+        return rows.some(row => {
+            try { return accepts({ message: JSON.parse(row.payload_json) }); }
+            catch (_) { return false; }
+        });
+    } catch (_) { return false; }
 }
 
 function getSessionPermissionPayload(session, deviceId = '') {
@@ -9165,7 +9183,12 @@ function addToSessionHistory(sessionId, session, message, context = {}) {
         return { stored: false, reason: 'duplicate', evicted: 0 };
     }
     const fileId = message?.type === 'file' ? message.fileInfo?.id : null;
-    if (fileId && session.history.some(entry => entry.message?.type === 'file' && entry.message.fileInfo?.id === fileId)) {
+    // Same-source webpage copies intentionally share an updated content asset.
+    // Their independent record anchors must survive a cold history rebuild.
+    const independentWebZipRecord = message.forwardedFrom?.sessionId && message.forwardedFrom.sessionId !== sessionId &&
+        message.forwardedFrom.messageId && message.fileInfo?.creatorDeviceId &&
+        (message.fileInfo.webZip || /\.html\.zip$/i.test(message.fileInfo.name || ''));
+    if (fileId && !independentWebZipRecord && session.history.some(entry => entry.message?.type === 'file' && entry.message.fileInfo?.id === fileId)) {
         // The bounded browser history de-duplicates the same file asset, but the audit
         // ledger must still retain every distinct transfer record/message id.
         persistHistoryAudit(

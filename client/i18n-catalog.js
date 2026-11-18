@@ -4,6 +4,24 @@
     // Parameter values, authored content and protocol identifiers are not keys.
     const languages = [["zh-Hans","中文简体"],["zh-Hant","中文繁體"],["en","English"],["ja","日本語"],["fr","Français"],["ru","Русский"],["es","Español"],["it","Italiano"],["ko","한국어"],["ms","Bahasa Melayu"],["id","Bahasa Indonesia"],["vi","Tiếng Việt"],["km","ភាសាខ្មែរ"],["my","မြန်မာဘာသာ"],["th","ไทย"],["de","Deutsch"]];
     const catalog = {
+  "转入草稿箱编辑": {
+      "zh-Hant": "轉入草稿匣編輯",
+      "en": "Move to drafts and edit",
+      "ja": "下書きに移して編集",
+      "fr": "Déplacer vers les brouillons pour modifier",
+      "ru": "Переместить в черновики для редактирования",
+      "es": "Mover a borradores para editar",
+      "it": "Sposta nelle bozze per modificare",
+      "ko": "초안으로 옮겨 편집",
+      "ms": "Pindahkan ke draf untuk disunting",
+      "id": "Pindahkan ke draf untuk diedit",
+      "vi": "Chuyển vào bản nháp để chỉnh sửa",
+      "km": "ផ្ទេរទៅសេចក្ដីព្រាងដើម្បីកែសម្រួល",
+      "my": "မူကြမ်းထဲသို့ ရွှေ့ပြီး တည်းဖြတ်မည်",
+      "th": "ย้ายไปฉบับร่างเพื่อแก้ไข",
+      "de": "Zum Bearbeiten in die Entwürfe verschieben"
+  },
+
   "纯文本": {
       "zh-Hant": "純文字",
       "en": "Plain text",

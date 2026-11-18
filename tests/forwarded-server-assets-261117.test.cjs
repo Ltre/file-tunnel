@@ -78,3 +78,81 @@ test('a twice-forwarded media copy reads its immediate predecessor without grant
     assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'middle-C', 'private-original', f.message.id), false);
     assert.deepEqual(f.errors, []);
 });
+
+for (const type of ['file', 'collection']) test('persisted destination copy remains readable when a recovery request has no record hint (' + type + ')', async t => {
+    const f = await fixture(t, type);
+    await f.transfer.request(f.file.id, 'forwarder', { ...f.file });
+    assert.equal(f.events.length, 1);
+    assert.equal(f.events[0].data.recordMessageId, undefined);
+    assert.equal(f.events[0].accepted, true, JSON.stringify(f.errors));
+    assert.equal(f.gate.canReadForwardedFile('target-B', 'outsider', 'source-A', f.file.id), false);
+    assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'wrong-source', f.file.id), false);
+    assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', 'private-original'), false);
+    f.infraStore.markHistoryDeleted('target-B', f.message.id);
+    assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', f.file.id), false);
+});
+
+test('a persisted ordinary reference cannot manufacture forwarded ownership without a source grant', async t => {
+    const f = await fixture(t, 'file');
+    const forged = { ...f.message, id: 'untrusted-record' };
+    f.infraStore.markHistoryDeleted('target-B', f.message.id);
+    f.infraStore.recordHistoryMessage('target-B', forged, { source: 'message' });
+    assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', f.file.id), false);
+});
+
+test('target-only receiver restores real bytes through the authorized no-hint request and existing Relay handlers', async t => {
+    const f = await fixture(t, 'file'), { registerFileAssetHandlers } = require('../server/file-assets');
+    const sessions = f.gate.sessions, deviceSockets = new Map(), wire = [], stored = new Map();
+    sessions.set('source-A', { devices: new Map([['forwarder', {}]]), fileAssets: new Map() });
+    f.transfer.deps.store = async file => stored.set(file.id, file);
+    f.transfer.deps.onProgress = () => {};
+    f.transfer.deps.onReceived = async () => {};
+    const incoming = { 'file-asset-relay-start': 'handleRelayStart', 'file-asset-relay-chunk': 'handleRelayChunk', 'file-asset-relay-complete': 'handleRelayComplete' };
+    function endpoint(sessionId, deviceId) {
+        const handlers = new Map(), socket = { id: deviceId, data: {}, on: (name, run) => handlers.set(name, run),
+            to: () => ({ emit() {} }), timeout() { return this; }, emit(name, data, ack) {
+                wire.push({ name, deviceId, data });
+                if (deviceId === 'target-only-viewer' && incoming[name]) {
+                    f.transfer[incoming[name]](data).then(result => ack?.(null, result), error => ack?.(error));
+                } else ack?.(null, { ok: true });
+            } };
+        deviceSockets.set(deviceId, socket);
+        registerFileAssetHandlers(socket, { sessions, deviceSockets, getSessionId: () => sessionId, getDeviceId: () => deviceId,
+            sanitize: String, historyLog() {}, isValidId: value => typeof value === 'string' && !!value });
+        return handlers;
+    }
+    const provider = endpoint('source-A', 'forwarder'), viewer = endpoint('target-B', 'target-only-viewer');
+    provider.get('file-asset-available')({ sessionId: 'source-A', asset: f.file });
+    await f.transfer.request(f.file.id, 'forwarder', { ...f.file });
+    assert.equal(f.events[0].accepted, true, JSON.stringify(f.errors));
+    assert.equal(f.events[0].data.sourceAccessGrant, '');
+    viewer.get('file-asset-request')(f.events[0].data);
+    const request = wire.find(item => item.name === 'file-asset-request' && item.deviceId === 'forwarder').data;
+    const call = (name, data) => new Promise(resolve => provider.get(name)({ sessionId: 'source-A', to: 'target-only-viewer', requestId: request.requestId, ...data }, resolve));
+    const payload = Uint8Array.from({ length: f.file.size }, (_, index) => index % 251);
+    t.after(() => f.transfer.cancel(f.file.id));
+    assert.equal((await call('file-asset-relay-start', { asset: f.file })).ok, true);
+    assert.equal((await call('file-asset-relay-chunk', { assetId: f.file.id, chunk: payload.buffer })).ok, true);
+    assert.equal((await call('file-asset-relay-complete', { assetId: f.file.id })).ok, true);
+    assert.deepEqual(Buffer.from(stored.get(f.file.id).data), Buffer.from(payload));
+    assert.equal(sessions.get('source-A').devices.has('target-only-viewer'), false);
+    assert.deepEqual(f.errors, []);
+});
+
+test('legacy external-file copy treats empty MIME as the indexed unknown type without relaxing ownership proof', async t => {
+    const f = await fixture(t, 'file');
+    f.infraStore.markHistoryDeleted('target-B', f.message.id);
+    const file = { ...f.file, type: '', isExternalFile: true };
+    const original = { id: 'source-record', type: 'file', sender: 'forwarder', fileInfo: { ...file, id: 'original-file' } };
+    f.infraStore.recordHistoryMessage('source-A', original, { source: 'history-reconcile' });
+    f.infraStore.recordFileAsset('source-A', f.transfer.metadata(file), { sourceDeviceId: 'forwarder' });
+    const copy = { ...f.message, id: 'legacy-copy', fileInfo: file };
+    f.infraStore.recordHistoryMessage('target-B', copy, { source: 'history-reconcile' });
+    assert.equal(f.infraStore.get('SELECT mime_type FROM file_assets WHERE session_id = ? AND file_id = ?', ['source-A', file.id]).mime_type, 'application/octet-stream');
+    assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', file.id, copy.id), true);
+    assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', file.id), true);
+    f.infraStore.recordFileAsset('source-A', { ...file, type: 'text/x-different' }, { sourceDeviceId: 'forwarder' });
+    assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', file.id, copy.id), false, 'different known MIME still fails');
+    f.infraStore.recordFileAsset('source-A', file, { sourceDeviceId: 'another-device' });
+    assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', file.id), false, 'unknown MIME never grants another sender ownership');
+});

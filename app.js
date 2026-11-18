@@ -7639,7 +7639,12 @@ async function addMessageToChat(message, isOwn, options = {}) {
         });
         return existingElement;
     }
-    const existingFileElement = message?.type === 'file' && message.fileInfo?.id
+    // Mirrored webpages share content, but each forward keeps its own record
+    // anchor. Asset-level deduplication must not swallow a sibling on update.
+    const independentWebZipRecord = message.forwardedFrom?.sessionId && message.forwardedFrom.sessionId !== sessionId &&
+        message.forwardedFrom.messageId && message.fileInfo?.creatorDeviceId &&
+        (message.fileInfo.webZip || /\.html\.zip$/i.test(message.fileInfo.name || ''));
+    const existingFileElement = !independentWebZipRecord && message?.type === 'file' && message.fileInfo?.id
         ? Array.from(container.querySelectorAll('.message[data-file-id]'))
             .find(element => element.dataset.fileId === message.fileInfo.id)
         : null;
@@ -18212,6 +18217,9 @@ function initTunnelControlCenter(dialog) {
     const before = dialog.querySelector('[data-control-side="before"]'), after = dialog.querySelector('[data-control-side="after"]');
     const wide = window.matchMedia('(min-width: 1024px)');
     const animations = new Map(), slots = new Map();
+    let scrollFrame = 0, scrollTime = 0;
+    const clearDragSelection = () => { try { window.getSelection?.()?.removeAllRanges(); } catch (_) {} };
+    dialog.addEventListener('selectstart', event => event.preventDefault());
     const label = document.createElement('div'); label.className = 'control-center-drag-label'; label.hidden = true; dialog.append(label);
     for (const [id, icon, title, target] of actions) {
         const tile = document.createElement('button'); tile.type = 'button'; tile.className = 'control-center-tile';
@@ -18244,6 +18252,8 @@ function initTunnelControlCenter(dialog) {
         before.replaceChildren(...(wide.matches ? order.filter(id => id !== 'tunnels') : order.slice(0, divider)).map(id => tiles.get(id)));
         after.replaceChildren(...(wide.matches ? [] : order.slice(divider + 1)).map(id => tiles.get(id)));
         for (const tile of tiles.values()) slots.set(tile, tile.getBoundingClientRect());
+        // Moving the captured node between rows can release native capture.
+        if (drag?.active) { try { drag.tile.setPointerCapture(drag.id); } catch (_) {} }
         if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) for (const [tile, old] of rects) {
             if (!old.width || tile === drag?.tile) continue;
             const next = slots.get(tile), x = old.left - next.left, y = old.top - next.top;
@@ -18252,6 +18262,7 @@ function initTunnelControlCenter(dialog) {
     };
     const reset = () => {
         if (!drag) return;
+        cancelAnimationFrame(scrollFrame); scrollFrame = 0; scrollTime = 0;
         clearTimeout(drag.timer); drag.tile.classList.remove('is-dragging');
         drag.ghost?.remove();
         if (drag.tile.hasPointerCapture?.(drag.id)) drag.tile.releasePointerCapture(drag.id);
@@ -18261,6 +18272,7 @@ function initTunnelControlCenter(dialog) {
     };
     const activate = () => {
         if (!drag) return;
+        clearDragSelection();
         // Narrow panels can move after the tunnel scroll buttons settle.
         // Start from their current layout, not slots measured at mount time.
         for (const animation of animations.values()) animation.cancel();
@@ -18280,17 +18292,36 @@ function initTunnelControlCenter(dialog) {
         dialog.append(drag.ghost);
         label.textContent = '当前选中：' + drag.tile.title; label.hidden = false;
     };
+    const autoScroll = time => {
+        scrollFrame = 0;
+        if (!drag?.active || wide.matches) return;
+        const scroller = dialog.querySelector('.control-center'), rect = scroller.getBoundingClientRect();
+        const direction = drag.pointerY < rect.top + 40 ? -1 : drag.pointerY > rect.bottom - 40 ? 1 : 0;
+        const elapsed = scrollTime ? Math.min(32, time - scrollTime) : 16;
+        scrollTime = time;
+        const previous = scroller.scrollTop;
+        scroller.scrollTop += direction * 12 * elapsed / 16;
+        const offset = previous - scroller.scrollTop;
+        if (!offset) { scrollTime = 0; return; }
+        for (const [tile, slot] of slots) slots.set(tile, { left:slot.left, right:slot.right, width:slot.width, height:slot.height, top:slot.top+offset, bottom:slot.bottom+offset });
+        drag.reorderedAt = null;
+        // Recheck the moving content under a held finger, without requiring a
+        // new native pointermove to reach the offscreen first/last rows.
+        drag.move({ pointerId:drag.id, clientX:drag.pointerX, clientY:drag.pointerY, preventDefault() {} });
+    };
     for (const tile of tiles.values()) {
         tile.addEventListener('contextmenu', event => event.preventDefault());
         tile.addEventListener('pointerdown', event => {
             if (event.button > 0 || !event.isPrimary) { reset(); return; }
-            drag = { tile, id: event.pointerId, x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, active: false, touch: event.pointerType === 'touch' };
+            clearDragSelection();
+            drag = { tile, id: event.pointerId, x: event.clientX, y: event.clientY, lastX: event.clientX, lastY: event.clientY, pointerX:event.clientX, pointerY:event.clientY, move, active: false, touch: event.pointerType === 'touch' };
             try { tile.setPointerCapture(event.pointerId); } catch (_) {}
             if (drag.touch) drag.timer = setTimeout(activate, 500); else activate();
         });
         const move = event => {
             if (!drag || event.pointerId !== drag.id) return;
             if (drag.tile !== tile) return;
+            drag.pointerX = event.clientX; drag.pointerY = event.clientY;
             const distance = Math.hypot(event.clientX - drag.x, event.clientY - drag.y);
             if (!drag.active) {
                 if (distance < 8) return;
@@ -18300,6 +18331,7 @@ function initTunnelControlCenter(dialog) {
                 clearTimeout(drag.timer); activate();
             }
             event.preventDefault();
+            clearDragSelection();
             if (distance < 8) return;
             drag.moved = true;
             const bounds = before.getBoundingClientRect();
@@ -18317,7 +18349,9 @@ function initTunnelControlCenter(dialog) {
                     for (const [candidate, rect] of slots) {
                         if (candidate === tile) continue;
                         const x = rect.left+rect.width/2, y = rect.top+rect.height/2;
-                        const contact = Math.abs(dx) >= Math.abs(dy)
+                        const contact = !wide.matches
+                            ? left+drag.rect.width+4>=rect.left && left-4<=rect.right && top+drag.rect.height+4>=rect.top && top-4<=rect.bottom
+                            : Math.abs(dx) >= Math.abs(dy)
                             ? dx*(x-cx)>0 && Math.abs(y-cy)<rect.height/2 && left+drag.rect.width+4>=rect.left && left-4<=rect.right
                             : dy*(y-cy)>0 && Math.abs(x-cx)<rect.width/2 && top+drag.rect.height+4>=rect.top && top-4<=rect.bottom;
                         const distance = Math.hypot(x-cx,y-cy);
@@ -18345,13 +18379,8 @@ function initTunnelControlCenter(dialog) {
                     order = next; drag.reorderedAt = { x:event.clientX, y:event.clientY }; render();
                 }
             }
-            const scroller = dialog.querySelector('.control-center'), rect = scroller.getBoundingClientRect();
             if (wide.matches) return;
-            const previousScroll = scroller.scrollTop;
-            if (event.clientY < rect.top + 40) scroller.scrollTop -= 12;
-            else if (event.clientY > rect.bottom - 40) scroller.scrollTop += 12;
-            const scrollOffset = previousScroll - scroller.scrollTop;
-            if (scrollOffset) for (const [tile,slot] of slots) slots.set(tile, { left:slot.left, right:slot.right, width:slot.width, height:slot.height, top:slot.top+scrollOffset, bottom:slot.bottom+scrollOffset });
+            if (!scrollFrame) scrollFrame = requestAnimationFrame(autoScroll);
         };
         const finish = event => { if (drag?.tile === tile && drag.id === event.pointerId) reset(); };
         window.addEventListener('pointermove', move, { capture: true, passive: false });

@@ -8,6 +8,9 @@ const { spawn } = require('node:child_process');
 const { AsyncLocalStorage } = require('node:async_hooks');
 
 const SERVICES = ['telegram','youtube','twitter','facebook','line','instagram','tiktok','bilibili','netease','other'];
+// Only remote operations need an async exit scope. Local validation and guard
+// setup must retain their synchronous return/throw contract for disk readers.
+const TELEGRAM_REMOTE_METHODS = new Set(['call','uploadPhysical','pushChunk','finalizeGroups','uploadThumbnail','prefetchPartLocation','readPart','validate','upload','read','check','cleanupTemporaryMessages','remove','syncCaption']);
 const clone = value => JSON.parse(JSON.stringify(value));
 function serviceFor(value) {
     let host; try { host = new URL(value).hostname.toLowerCase(); } catch (_) { return 'other'; }
@@ -219,6 +222,10 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
     function wrapService(service,target){
         const wrapped=new Map();
         return new Proxy(target,{get(object,key){const value=Reflect.get(object,key,object);if(typeof value!=='function')return value;
+            if(service==='telegram' && !TELEGRAM_REMOTE_METHODS.has(key)){
+                if(!wrapped.has(key))wrapped.set(key,(...args)=>Reflect.apply(value,object,args));
+                return wrapped.get(key);
+            }
             if(!wrapped.has(key))wrapped.set(key,function(...args){return serviceScope(service,()=>{
                 const work=()=>Reflect.apply(value,object,args);
                 return ['readPart','prefetchPartLocation'].includes(key) || key==='call' && /^get[A-Z]/.test(String(args[1]||''))

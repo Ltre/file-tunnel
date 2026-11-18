@@ -12,7 +12,8 @@ test('a persisted forwarded record outside live history grants exactly its copie
     const source=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');
     vm.runInNewContext(source.slice(source.indexOf('function canReadForwardedFile('),source.indexOf('function getSessionPermissionPayload(')),context);
     const allowed=(record='older-record',fileId='copy-file',session='A',device='viewer')=>context.canReadForwardedFile('B',device,session,fileId,record);
-    assert.equal(allowed(''),false,'no arbitrary database scan or broader source membership');
+    assert.equal(allowed(''),true,'an absent hint resolves only the exact authorized destination file reference');
+    assert.equal(allowed('', 'private-file'),false,'no broader source membership');
     assert.equal(allowed(),true,'the real persisted destination record remains readable');
     assert.equal(allowed('other'),false);assert.equal(allowed(undefined,'private-file'),false);assert.equal(allowed(undefined,undefined,'other-source'),false);assert.equal(allowed(undefined,undefined,undefined,'outsider'),false);
     readable=false;assert.equal(allowed(),false);readable=true;
