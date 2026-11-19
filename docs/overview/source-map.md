@@ -391,7 +391,7 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 
 ### 开发日志与需求归属
 
-按 261013-1/2、261014-1/2/3、261015-1/2、261016-1、261017-1/2 顺序阅读 `docs/devlog/dev-2610-features.md`，区分“实际修改/测试”“讨论但未开发”（例如 261014-1 的 Cloudflare R2 缓存讨论）及只有规划图的 `prompts/ideas/streaming-console-QA-261016.md`。**串流控制台多版原型图不是已实现的独立串流子系统。**
+按 261013-1/2、261014-1/2/3、261015-1/2、261016-1、261017-1/2 顺序阅读 `docs/devlog/dev-2610-features.md`，区分“实际修改/测试”和“讨论但未开发”（例如 261014-1 的 Cloudflare R2 缓存讨论）。`prompts/ideas/streaming-console-QA-261016.md` 与多版 UI 原型是早期规划材料，本身不能证明功能已经交付；但串流控制台核心后来已在当前分支合入，实际实现入口见第 18 节及 [streaming-console.md](./streaming-console.md)。
 
 ## 17. 2026-10-17—19 最新已合入变化的路径索引
 
@@ -408,7 +408,7 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 
 以上回归文件均位于 `tests/`，完整开发记录在 `docs/devlog/dev-2610-features.md` 261017-3 至 261019-2。仓库根目录新增 `AGENTS.md`，属于协作约定而非新增业务端点。
 
-**范围界限**：`prompts/ideas/streaming-console-phase1-guide-261019.md`、`streaming-console-phase2-guide-261019.md`、`streaming-console-QA-261016.md` 及相应 UI 原型属于当前分支**已存的规划材料**；在没有对应已合入的功能代码前，不把串流台 Phase 1/2 记为已实现。
+**范围界限**：`prompts/ideas/streaming-console-phase1-guide-261019.md`、`streaming-console-phase2-guide-261019.md`、`streaming-console-QA-261016.md` 及相应 UI 原型是原始规划/验收材料；串流控制台核心已在后续当前分支代码中实现，见第 18 节与 [streaming-console.md](./streaming-console.md)。这些材料超出当前 `server/streaming-*.js`、`client/streaming-*.js` 的构想仍属于计划，不能反向扩大已交付范围。
 
 ## 18. 2026-10-20—11-06 当前源码新增导航
 
@@ -448,7 +448,7 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 
 | 已合入能力/行为 | 当前代码入口 | 主要证据 |
 |---|---|---|
-| 上游服务出口与 Trojan/sing-box | `server/upstream-exits.js`、`server/upstream-exit-routes.js`、`client/upstream-exits.js/.css`、`client/upstream-exit-select.js`、`pages/upstream-exits.html`、`tools/sing-box/**` | [upstream-exits.md](./upstream-exits.md)、[admin-security-deployment.md](./admin-security-deployment.md)、`tests/upstream-*.cjs` |
+| 上游服务出口与 Trojan/sing-box | `server/upstream-exits.js`、`server/upstream-exit-routes.js`、`client/upstream-exits.js/.css`、`client/upstream-exit-select.js`、`pages/upstream-exits.html`、`tools/sing-box/**` | [upstream-exits.md](./upstream-exits.md)、[admin-security-deployment.md](./admin-security-deployment.md)、`tests/upstream-*.cjs`、[用户手册第 29 章](../guide/Drop2Tunnel-User-Manual.zh-CN.md) |
 | SNS/YouTube 任务出口和候选锁定 | `server.js`、`server/sns-downloader.js`、`server/youtube-premium.js`、`pages/sns-dl.html`、`pages/youtube-premium-dl.html` | [download-transcode.md](./download-transcode.md)、`tests/upstream-cache-261114.test.cjs`、`upstream-candidates-261119.test.cjs` |
 | Telegram 远程操作出口适配 | `server.js`、`server/disk-telegram.js`、`server/upstream-exits.js` | [telegram-drive.md](./telegram-drive.md)、`tests/disk-admin-download-261118.test.cjs` |
 | P2P attempt 放弃撤回、传输基线恢复和实际线路诊断 | `client/file-assets.js`、`server/file-assets.js`、`app.js` | [transfer-cache.md](./transfer-cache.md)、`tests/transfer-baseline-261116.test.cjs`、`file-route-diagnostics-261111.test.cjs`、`multi-source-route-261119.test.cjs` |
@@ -459,3 +459,12 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 | 德语包与草稿多语言 | `client/i18n/de.json`、`client/i18n-catalog.js`、`client/i18n-bootstrap.js`、`server/i18n.js` | [pwa-ui/localization.md](./pwa-ui/localization.md)、`tests/requirements-261119.browser.cjs` |
 
 以上仅索引本轮已合入的当前分支文件；历史 Prompt/Devlog 中的其它分支状态不作为本轮事实来源。
+
+
+### 本轮新增的需求、QA 与验收资料（不是独立实现入口）
+
+- 上游出口需求演进：`prompts/ideas/upstream-select-proxy-261113-v1.md` 至 `v5.md`、`prompts/ideas/QA-before-upstream-select-proxy-261113.txt`。对照当前行为时以 [upstream-exits.md](./upstream-exits.md) 和实际源码为准。
+- Cloudflare TURN 研究：`prompts/ideas/CloudflareTURN-261119.md`、`prompts/ideas/[QA]CloudflareTURN-261119.txt`。它们是方案与 QA 材料，不代表本轮已经接入 Cloudflare TURN。
+- Web ZIP / S3 静态链接安全：`prompts/ideas/Security of webzip and S3 static links 261118.md`、`prompts/ideas/[QA]Security of webzip and S3 static links 261118.txt`。需求建议与已实现代码须逐项区分。
+- 隧道传输验收基线：`docs/other/[尚未决定采用] 隧道传输链路核心验收基线 v1.0.md`、`v1.1.md` 明确尚未决定采用，不可作为当前协议的规范性依据。
+- 版本对照与故障证据：`docs/devlog/version-compare-261116_1754-0de94882c998bd6d1556e80954fa3840835e0746.md`、`version-compare-261118_0555-0de94882c998bd6d1556e80954fa3840835e0746.md` 及对应 QA 文本；用于解释历史版本差异、失败证据与修复边界，最终行为仍由当前源码决定。

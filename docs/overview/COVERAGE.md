@@ -93,9 +93,9 @@
 - 网盘待转存恢复前预检、辅助上传进度流并发上限、默认分区名标记；系统备份发布前逐段远端清单复核；
 - 网页 ZIP 来源签名证明和离线来源 grant 校验、FFmpeg 按输出时间计算任务进度、磁链 Relay 接收端 ACK、控制中心通知/账号入口及 IME 输入修正。
 
-逐文件核对同一分支两端的 Git tree：`pages/**` 仍为 **30** 个；`client/**` 101 → **116**（新增 15）；`server/**` 94 → **95**（新增 1）；`tests/**` 299 → **332**（新增 33，另有 11 个测试/夹具文件修改）；`tools/**` 50 → **52**（新增 2，另有部署构建脚本修改）。本轮没有新增页面，所有新增客户端、服务端、测试和工具文件均在下方或模块测试索引中归属。
+第六轮（2026-11-17）当时逐文件核对同一分支两端的 Git tree：`pages/**` 为 **30** 个；`client/**` 101 → **116**（新增 15）；`server/**` 94 → **95**（新增 1）；`tests/**` 299 → **332**（新增 33，另有 11 个测试/夹具文件修改）；`tools/**` 50 → **52**（新增 2，另有部署构建脚本修改）。以上为第六轮历史快照，不代表第七轮后的当前计数。
 
-第七轮只在当前 `dev/doc-overview` 分支比较上一轮源码锚点 `80c092aa1e50124f730e918215f1e7fa7d55a52a` → `1da33930cfb0f7022114825e2cb300ce18ff4eae`，共 **23 个提交、137 个非 `docs/overview/**` 变更文件**（68 新增、67 修改、2 删除）；没有检视其它分支。新增上游出口管理、P2P 基线恢复与线路诊断、Web ZIP 同源副本同步、下载兜底、移动端 History/拖动和德语包等，详见第 5.10、6.10、7.2 节及对应模块文档。
+第七轮只在当前 `dev/doc-overview` 分支比较上一轮源码锚点 `80c092aa1e50124f730e918215f1e7fa7d55a52a` → `1da33930cfb0f7022114825e2cb300ce18ff4eae`，共 **23 个提交、137 个非 `docs/overview/**` 变更文件**（68 新增、67 修改、2 删除）；没有检视其它分支。同一分支 Git tree 复核：Pages **30 → 31**、Client **116 → 121**（新增 6、移除旧 `fa.json` 1）、Server **95 → 98**、Tests **332 → 358**（新增 26、修改 14）、Tools **52 → 58**（新增 6）。新增上游出口管理、P2P 基线恢复与线路诊断、Web ZIP 同源副本同步、下载兜底、移动端 History/拖动和德语包等，详见第 5.10、6.10、7.2 节及对应模块文档。
 
 所以：
 
@@ -496,6 +496,8 @@
 
 2026-10 后续已整理至 261019-2：二维码与旧成员资格、媒体结果删除和收藏目录、网盘源端失联、YouTube 手写格式及服务端转存。测试对应 `tests/features-261017-3/4.test.cjs`、`features-261018-1.test.cjs`、`features-261019-1.test.cjs`、`features-261019-2*.test.cjs` 及 browser fixture。
 
+2026-11 当前增量证据包括 `docs/devlog/dev-2611.md`、`docs/devlog/version-compare-261116_1754-0de94882c998bd6d1556e80954fa3840835e0746.md`、`docs/devlog/version-compare-261118_0555-0de94882c998bd6d1556e80954fa3840835e0746.md` 及对应 `[QA]...txt`。它们记录版本差异、失败证据、修复边界和开发阶段测试；不能将隔离环境通过等同于真实 Android、正式 Telegram 或所有上游服务验收。用户操作说明同步见 `docs/guide/Drop2Tunnel-User-Manual.zh-CN.md` 第 29 章。
+
 ## 10. 计划/Idea 的处理
 
 以下存在于 Prompt/Idea，但在当前源码锚点中不能写成当前实现：
@@ -503,6 +505,10 @@
 - 完整 AWS S3 服务、分布式业务锁与真实公网端到端验收；
 - 旧 JSON 迁移与 public/private 来源调整已有工具，但正式环境需人工确认；
 - 串流台核心在本轮**已实现**；其原 261016—261019 规划、图片原型只有超出当前 `server/streaming-*.js`、`client/streaming-*.js` 的能力仍属于需求，不能再笼统标为未合入；
+- `prompts/ideas/upstream-select-proxy-261113-v1.md` 至 `v5.md` 及 `QA-before-upstream-select-proxy-261113.txt` 是出口需求演进和 QA 记录；当前实际行为以本轮源码及 [upstream-exits.md](./upstream-exits.md) 为准，不把任一中间版本当作最终实现规格；
+- `prompts/ideas/CloudflareTURN-261119.md` 与 `[QA]CloudflareTURN-261119.txt` 属于 TURN 方案研究/验证材料；本轮新增的是 Idea/QA 文档，不能据此声称当前已接入 Cloudflare TURN 服务；
+- `prompts/ideas/Security of webzip and S3 static links 261118.md` 及对应 `[QA]...txt` 是安全需求/QA 材料；当前 Web ZIP 同源副本行为只按 `server/web-zip-sync.js` 等实际代码描述，不把文档中的全部建议视为已实现；
+- `docs/other/[尚未决定采用] 隧道传输链路核心验收基线 v1.0.md`、`v1.1.md` 明确标注尚未决定采用，不作为当前产品协议或验收标准；
 - 2026-10 的全量强制 HTTPS、Cloudflare 迁移等讨论没有因方案文件进入仓库就成为现行网关策略；
 - `prompts/dev-prompt-logs/dev-2610.md` 等 Idea 须逐项与当前代码核实，不能整体判定。
 

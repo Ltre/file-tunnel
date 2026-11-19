@@ -98,7 +98,8 @@ SNS 和 YouTube Premium 页面在格式解析表单中提供“网络出口”�
 
 ## 7. 管理页面与接口
 
-管理页：`/upstream-exits`。页面/API 均要求管理员 Session：
+管理页：`/upstream-exits`。页面/API 均要求管理员 Session。后台操作步骤另见[《Drop2Tunnel 用户手册》第 29 章](../guide/Drop2Tunnel-User-Manual.zh-CN.md)：
+
 
 - `GET /api/upstream-exits`：读取节点、服务策略及运行状态；
 - `POST /api/upstream-exits/nodes`、`PUT/DELETE /api/upstream-exits/nodes/:id`：节点管理；
