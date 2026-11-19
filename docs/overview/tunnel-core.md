@@ -1,7 +1,7 @@
 # 隧道核心、设备、历史同步与权限
 
-> **源码基线 Commit**：`71e58b07350a0ef3b480fa82272177863de74448`  
-> **文档更新时间**：`2026-11-07`
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**： 2026-11-19
 
 ## 子模块文档
 
@@ -428,3 +428,10 @@
 - 2026-11-06 路由与消息代码增加进程异常时的回退和统一扫码脚本；同一时期的 Windows 进程异常调查发现系统提交内存严重接近上限，但**未定位业务进程原生 fast-fail 的确切调用点**，不能将路由可用性修复等同于“崩溃已修复”。
 
 相关源码：`server/tunnel-permissions.js`、`server/tunnel-access.js`、`server/infra-store.js`、`server.js`、`app.js`、`client/tunnel-entry.js`、`client/tunnel-code-scanner.js`。测试见 `tests/history-scope-261102-2.*`、`tunnel-permissions-261103.test.cjs`、`admin-device-access-261103-2.*`、`route-261106-3.browser.cjs`。
+
+
+## 18. 2026-11-19：控制中心触摸排序与返回栈
+
+- 窄屏控制中心触摸移动超过约 8 px 即进入拖动，长按仍可启动；容器上下边缘自动滚动，拖动时最小化 DOM 移动，避免整组重建使其它磁贴/隧道区域闪烁。
+- 控制中心以独立 History entry 管理开合；浏览器 Back 优先关闭面板，点击需要跳转的磁贴前先处理面板历史，避免返回栈错位。
+- 具体阈值、拖动插入、Markdown 阅读/编辑浮层的窄屏 Back 及回归入口见 [pwa-ui.md](./pwa-ui.md)。
