@@ -1,7 +1,7 @@
 # 测试体系、人工验收与历史回归索引
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：`2026-11-17`
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**：`2026-11-19`
 
 ## 1. 为什么本项目尤其依赖回归资料
 
@@ -487,3 +487,35 @@ AI 后续做 bisect/调研时，应把 commit title 中的这些自然语言作�
 - Telegram App 的 OIDC 回调隔离测试通过，但真实 Android Telegram App 线上灰度返回仍待人工验证。
 - 没有部署生产环境，也没有使用真实正式 Telegram 账号和生产数据完成演练。
 - 本轮 Overview 维护只检查并整理分支已合入代码/测试，没有重新运行 Node、Playwright、真实 WebRTC、磁链或 Android 测试。
+
+
+## 20. 2026-11-11—19：上游出口、P2P 基线、网页副本与 UI 新增回归
+
+### 本轮新增测试文件（26）
+
+| 范围 | 新增测试 |
+|---|---|
+| 上游出口与原生运行时 | `upstream-exits-261114.test.cjs`、`upstream-native-261114.test.cjs`、`upstream-cache-261114.test.cjs`、`upstream-candidates-261119.test.cjs` |
+| P2P 基线、线路与进度 | `transfer-baseline-261116.test.cjs`、`file-route-diagnostics-261111.test.cjs`、`file-progress-261114.test.cjs`、`whole-file-progress-261116.test.cjs`、`transfer-progress-261117.browser.cjs`、`multi-source-route-261119.test.cjs`、`direct-route-261116.test.cjs`、`relay-complete-261116.test.cjs` |
+| 缓存与跨隧道来源 | `cache-metadata-261111.browser.cjs`、`forwarded-server-assets-261117.test.cjs`、`recovery-261115-2.test.cjs`、`recovery-261115-2.browser.cjs` |
+| Web ZIP 同源副本 | `web-zip-copies-261117.test.cjs`、`web-zip-records-261118.browser.cjs` |
+| 控制中心与 Markdown 历史 | `control-center-drag-261118.browser.cjs`、`control-center-forward-261117.browser.cjs`、`markdown-navigation-261116.browser.cjs`、`requirements-261119.browser.cjs` |
+| SNS / Bilibili | `sns-bilibili-261117.test.cjs`、`sns-media-route-261117.browser.cjs` |
+| 网盘管理员下载 | `disk-admin-download-261118.test.cjs` |
+| 其它回归 | `bugb-261114.browser.cjs` |
+
+本轮另修改 14 个既有测试：`admin-form-cache-261109.browser.cjs`、`admin-form-cache-261109.test.cjs`、`control-center-261107.browser.cjs`、`control-center-drive.test.cjs`、`file-asset-audit-isolation.test.cjs`、`i18n-packs-261109.test.cjs`、`markdown-images-261103-1.browser.cjs`、`markdown-preview-261102.browser.cjs`、`p2p-connection-regression.test.cjs`、`p2p-live-261108.browser.cjs`、`persisted-forward-261108.test.cjs`、`transfer-feedback-261101-3.browser.cjs`、`transfer-feedback-261101-3.test.cjs`、`youtube-premium.test.cjs`。
+
+### 开发日志报告的最终相关验证
+
+- Node 22.16.0 单元/集成批次 **112/112 通过**，包含出口候选规则、真实 sing-box/Trojan TLS 夹具、缓存、P2P 基线、进度、多源标签及多语言；不是全仓所有测试。
+- Node 22 + 系统 Chrome **35/35 通过**，覆盖窄屏拖动、草稿多语言、出口设置保存/重载、Service Worker 更新和按需语言包。
+- 隔离 Chrome + 真实 WebRTC/Socket.IO 串行 **9/9 通过**；45 文件/220,000,000 字节及双供源大文件均逐字节核对。该环境使用本机隔离浏览器和内存缓存，不代表真实 Android、VPN 或磁盘吞吐。
+- Node 构建与发布 verify 通过。Windows x64 sing-box + 隔离 Trojan TLS 网关已验证；Linux 原生执行尚未验证。
+
+### 必须保留的未验收边界
+
+- 实体 Android 触摸拖动仍需用户现场复测；Chrome 模拟视口不是实体手机验收。
+- 用户现场偶发 Relay 根因和启动等待问题仍未完全查明；本轮修复的是可证实的多源路线误标，不代表整个现场故障已解决。
+- 没有逐一使用真实登录凭据/正式节点验证所有上游服务；本机 Trojan TLS 夹具不等于所有用户节点均可连接。
+- 本次 Overview 文档更新没有重新运行 Node、Chrome、WebRTC、Telegram 或 Linux 原生测试；以上数字均引用当前分支开发日志的最终阶段记录。
