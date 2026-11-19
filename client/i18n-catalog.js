@@ -4,6 +4,18 @@
     // Parameter values, authored content and protocol identifiers are not keys.
     const languages = [["zh-Hans","中文简体"],["zh-Hant","中文繁體"],["en","English"],["ja","日本語"],["fr","Français"],["ru","Русский"],["es","Español"],["it","Italiano"],["ko","한국어"],["ms","Bahasa Melayu"],["id","Bahasa Indonesia"],["vi","Tiếng Việt"],["km","ភាសាខ្មែរ"],["my","မြန်မာဘာသာ"],["th","ไทย"],["de","Deutsch"]];
     const catalog = {
+  "原记录": {
+    "zh-Hant": "原紀錄", "en": "Original record", "ja": "元の記録", "fr": "Enregistrement d’origine", "ru": "Исходная запись", "es": "Registro original", "it": "Record originale", "ko": "원본 기록", "ms": "Rekod asal", "id": "Catatan asli", "vi": "Bản ghi gốc", "km": "កំណត់ត្រាដើម", "my": "မူရင်းမှတ်တမ်း", "th": "บันทึกต้นฉบับ", "de": "Ursprünglicher Eintrag"
+  },
+  "发布": {
+    "zh-Hant": "發佈", "en": "Publish", "ja": "公開", "fr": "Publier", "ru": "Опубликовать", "es": "Publicar", "it": "Pubblica", "ko": "게시", "ms": "Terbitkan", "id": "Terbitkan", "vi": "Xuất bản", "km": "បោះផ្សាយ", "my": "ထုတ်ဝေမည်", "th": "เผยแพร่", "de": "Veröffentlichen"
+  },
+  "来源隧道：{0}": {
+    "zh-Hant": "來源隧道：{0}", "en": "Source tunnel: {0}", "ja": "元のトンネル：{0}", "fr": "Tunnel d’origine : {0}", "ru": "Исходный туннель: {0}", "es": "Túnel de origen: {0}", "it": "Tunnel di origine: {0}", "ko": "원본 터널: {0}", "ms": "Terowong sumber: {0}", "id": "Terowongan sumber: {0}", "vi": "Đường hầm nguồn: {0}", "km": "ផ្លូវរូងប្រភព៖ {0}", "my": "မူရင်းဥမင်: {0}", "th": "อุโมงค์ต้นทาง: {0}", "de": "Quelltunnel: {0}"
+  },
+  "{0} 个文件": {
+    "zh-Hant": "{0} 個檔案", "en": "{0} files", "ja": "{0} 個のファイル", "fr": "{0} fichiers", "ru": "Файлов: {0}", "es": "{0} archivos", "it": "{0} file", "ko": "파일 {0}개", "ms": "{0} fail", "id": "{0} file", "vi": "{0} tệp", "km": "ឯកសារ {0}", "my": "ဖိုင် {0} ခု", "th": "{0} ไฟล์", "de": "{0} Dateien"
+  },
   "转入草稿箱编辑": {
       "zh-Hant": "轉入草稿匣編輯",
       "en": "Move to drafts and edit",

@@ -48,10 +48,25 @@
     function showServices(){const host=document.getElementById('serviceSettings');for(const form of host.querySelectorAll('form'))serviceDrafts.set(form.dataset.serviceId,form.capture());host.replaceChildren();const tabs=document.getElementById('serviceTabs');tabs.replaceChildren();for(const service of data.services){const tab=el('button',service.id==='youtube'?'YT':names[service.id]);tab.type='button';tab.id='service-tab-'+service.id;tab.setAttribute('role','tab');tab.setAttribute('aria-selected',String(service.id===selectedService));tab.setAttribute('aria-controls','serviceSettings');tab.onclick=()=>{selectedService=service.id;showServices();};tab.onkeydown=event=>{if(!['ArrowUp','ArrowDown','Home','End'].includes(event.key))return;event.preventDefault();const index=data.services.findIndex(item=>item.id===service.id),next=event.key==='Home'?0:event.key==='End'?data.services.length-1:(index+(event.key==='ArrowDown'?1:-1)+data.services.length)%data.services.length;selectedService=data.services[next].id;showServices();document.getElementById('service-tab-'+selectedService).focus();};tab.tabIndex=service.id===selectedService?0:-1;tabs.append(tab);}host.setAttribute('aria-labelledby','service-tab-'+selectedService);for(const saved of data.services.filter(item=>item.id===selectedService)){const service={...saved,...serviceDrafts.get(saved.id)},form=el('form');form.dataset.serviceId=service.id;form.append(el('h2','访问'+names[service.id]+'的网络出口设置'));
         const defaultLabel=el('label','默认出口'),choice=el('select');exitOptions(choice,service.defaultExit);defaultLabel.append(choice);form.append(defaultLabel);
         const modeLabel=el('label','候选节点切换顺序'),mode=el('select');for(const [id,text]of [['ordered','指定顺序'],['random','随机顺序']]){const option=el('option',text);option.value=id;mode.append(option);}mode.value=service.mode;modeLabel.append(mode);form.append(modeLabel);
-        const direct=checkbox(form,'本机直连参与节点轮询',service.includeDirect);const order=el('ol');order.className='exit-order';let ids=[...new Set([...service.order,...data.nodes.map(n=>n.id),'direct'])];
-        function renderOrder(){order.replaceChildren();const visible=ids.filter(id=>id!=='direct'||direct.checked);for(const id of visible){const node=id==='direct'?{name:'本机直连'}:data.nodes.find(n=>n.id===id);if(!node)continue;const li=el('li');li.append(el('span',node.name));for(const [sign,delta]of [['↑',-1],['↓',1]]){const b=el('button',sign);b.type='button';b.disabled=mode.value==='random'||!visible[visible.indexOf(id)+delta];b.setAttribute('aria-label',node.name+(delta<0?'上移':'下移'));b.onclick=()=>{const at=ids.indexOf(id),next=ids.indexOf(visible[visible.indexOf(id)+delta]);if(next<0)return;[ids[at],ids[next]]=[ids[next],ids[at]];renderOrder();};li.append(b);}order.append(li);}}
-        direct.onchange=mode.onchange=renderOrder;renderOrder();form.append(order);const save=el('button','保存此服务设置');save.className='primary';save.type='submit';form.append(save);
-        form.capture=()=>({defaultExit:choice.value,mode:mode.value,includeDirect:direct.checked,order:ids.filter(id=>id!=='direct'||direct.checked),revision:service.revision});
+        const order=el('ol');order.className='exit-order';let ids=[...new Set([...service.order,...data.nodes.map(n=>n.id),'direct'])].filter(id=>id==='direct'||data.nodes.some(node=>node.id===id));
+        const enabled=new Set((service.enabledNodes || []).filter(id=>ids.includes(id)));if(service.includeDirect)enabled.add('direct');
+        form.append(Object.assign(el('p','仅勾选的出口参与失败后的轮询；默认出口或任务指定出口仍优先尝试。'),{className:'muted'}));
+        function renderOrder(){
+            order.replaceChildren();const chosen=ids.filter(id=>enabled.has(id));
+            for(const id of ids){
+                const node=id==='direct'?{name:'本机直连'}:data.nodes.find(n=>n.id===id);if(!node)continue;
+                const li=el('li'),label=el('label'),check=el('input');label.className='check';check.type='checkbox';check.checked=enabled.has(id);check.dataset.exitId=id;
+                label.append(check,el('span',node.name));li.append(label);
+                check.onchange=()=>{if(check.checked)enabled.add(id);else enabled.delete(id);renderOrder();order.querySelectorAll('input').forEach(input=>{if(input.dataset.exitId===id)input.focus();});};
+                for(const [sign,delta]of [['↑',-1],['↓',1]]){
+                    const b=el('button',sign);b.type='button';b.hidden=!enabled.has(id);b.disabled=mode.value==='random'||!chosen[chosen.indexOf(id)+delta];b.setAttribute('aria-label',node.name+(delta<0?'上移':'下移'));
+                    b.onclick=()=>{const at=ids.indexOf(id),next=ids.indexOf(chosen[chosen.indexOf(id)+delta]);if(next<0)return;[ids[at],ids[next]]=[ids[next],ids[at]];renderOrder();};li.append(b);
+                }
+                order.append(li);
+            }
+        }
+        mode.onchange=renderOrder;renderOrder();form.append(order);const save=el('button','保存此服务设置');save.className='primary';save.type='submit';form.append(save);
+        form.capture=()=>({defaultExit:choice.value,mode:mode.value,includeDirect:enabled.has('direct'),order:ids.filter(id=>enabled.has(id)),enabledNodes:ids.filter(id=>id!=='direct'&&enabled.has(id)),revision:service.revision});
         if(savingServices.has(service.id))for(const control of form.elements)control.disabled=true;
         form.onsubmit=async event=>{
             event.preventDefault();if(savingServices.has(service.id))return;

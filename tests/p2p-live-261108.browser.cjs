@@ -5,7 +5,7 @@ const {registerFileAssetHandlers}=require('../server/file-assets');
 const {chromium}=require(path.join(os.homedir(),'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'));
 const root=path.resolve(__dirname,'..'),read=file=>fs.readFileSync(path.join(root,file),'utf8'),appSource=read('app.js'),serverSource=read('server.js');
 const part=(source,start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));
-async function runPeerScenario(t, bulk = false, abandoned = false, reverse = false, multi = false, forced = false, relayProvider = true, largeRejoin = false) {
+async function runPeerScenario(t, bulk = false, abandoned = false, reverse = false, multi = false, forced = false, relayProvider = true, largeRejoin = false, allRelay = false) {
     const app=express(),sessionId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',ids=['00000000-0000-4000-8000-000000000001','ffffffff-ffff-4fff-8fff-ffffffffffff',...(multi?['88888888-8888-4888-8888-888888888888']:[])];
     const devices=new Map(),sessions=new Map([[sessionId,{devices,fileAssets:new Map()}]]),deviceSockets=new Map(),events=[];
     app.use('/client',express.static(path.join(root,'client')));
@@ -14,7 +14,7 @@ async function runPeerScenario(t, bulk = false, abandoned = false, reverse = fal
     const cache=new Map(),cacheTimes=new Map(),events=[],progress=[],historyLog=(event,details)=>events.push({event,details});let fileAssetTransfer;
     function handleDataChannelMessage(){} function setupEditorAssetDataChannel(){}
     ${part(appSource,'// ==================== WebRTC P2P ====================','// ==================== Editor image assets ====================')}
-    fileAssetTransfer=new FileAssetTransfer({getSocket:()=>state.socket,getSessionId:()=>${JSON.stringify(sessionId)},getPeer:id=>state.peers.get(id),connectPeer:connectToPeerForFileAsset,ensurePeerOffer:ensurePeerOfferForFileAsset,load:async id=>cache.get(id),store:async file=>{cache.set(file.id,file);cacheTimes.set(file.id,Date.now());},onProgress(id,name,percent,transport){window.firstProgressAt??=performance.now();progress.push({id,percent,transport,at:Date.now()});},log:(event,details)=>events.push({event,details}),onUnavailable(){},onReceived:file=>{document.getElementById('state').textContent=file.id;}});
+    fileAssetTransfer=new FileAssetTransfer({getSocket:()=>state.socket,getSessionId:()=>${JSON.stringify(sessionId)},getPeer:id=>state.peers.get(id),connectPeer:connectToPeerForFileAsset,ensurePeerOffer:ensurePeerOfferForFileAsset,load:async id=>cache.get(id),store:async file=>{cache.set(file.id,file);cacheTimes.set(file.id,Date.now());},onProgress(id,name,percent,transport){window.firstProgressAt??=performance.now();progress.push({id,percent,transport,at:Date.now(),activeRoutes:[...(fileAssetTransfer?.multiSourceTransfers.get(id)?.ranges.values()||[])].filter(r=>r.active&&!r.completed&&!r.retryScheduled&&r.from&&r.transport).map(r=>r.transport)});},log:(event,details)=>events.push({event,details}),onUnavailable(){},onReceived:file=>{document.getElementById('state').textContent=file.id;}});
     const getFromStore=async(_store,id)=>cache.get(id),shouldAutoRequestFileAssetCache=file=>!file?.data,summarizeHistoryMessage=message=>message.id,getCollectionFiles=message=>message.collection.files;
     ${part(appSource,'async function requestMissingFileAssetCache(','async function handleMessage(')}
     state.socket.on('connect',()=>state.socket.emit('join-session',{deviceId:state.deviceId}));state.socket.on('session-history',async data=>{window.historyReceivedAt=performance.now();window.ready=true;for(const message of data.messages||[]){state.devices.set(message.sender,{});await requestMissingFileAssetCache(message,'fixture-history');}});state.socket.on('signal',queuePeerSignal);
@@ -34,6 +34,7 @@ async function runPeerScenario(t, bulk = false, abandoned = false, reverse = fal
         const c=await browser.newPage(),file='dddddddd-dddd-4ddd-8ddd-dddddddddddd',size=largeRejoin?115384320:12*1024*1024;
         await Promise.all([a.goto(base+'/?id='+ids[0]),b.goto(base+'/?id='+ids[1]),c.goto(base+'/?id='+ids[2])]);await Promise.all([a.waitForFunction(()=>window.ready),b.waitForFunction(()=>window.ready),c.waitForFunction(()=>window.ready)]);
         await a.evaluate(({file,size})=>fixture.provide(file,size),{file,size});await c.evaluate(async({file,size,to,relayProvider})=>{await fixture.provide(file,size);if(relayProvider)fixture.transfer.p2pUnavailablePeers.set(to,Date.now()+60000);},{file,size,to:ids[1],relayProvider});
+        if(allRelay)await a.evaluate(to=>fixture.transfer.p2pUnavailablePeers.set(to,Date.now()+60000),ids[1]);
         for(let n=0;n<100&&(sessions.get(sessionId).fileAssets.get(file)?.providers.size||0)<2;n++)await new Promise(resolve=>setTimeout(resolve,10));
         if(largeRejoin){await b.reload();await b.waitForFunction(()=>window.ready);assert.equal(await b.evaluate(file=>fixture.cache.has(file),file),false);}
         await b.evaluate(({file,from,size,forced})=>fixture.transfer.request(file,from,{id:file,name:file+'.bin',size,type:'application/octet-stream'},forced?{force:true,requestId:'force-'+('restore-token-'.repeat(20))}:{}),{file,from:ids[0],size,forced});
@@ -43,7 +44,14 @@ async function runPeerScenario(t, bulk = false, abandoned = false, reverse = fal
         for(const sender of [a,c])await sender.waitForFunction(file=>fixture.progress.some(row=>row.id===file&&row.percent===100),file,{timeout:5000});
         const sending=[...await a.evaluate(()=>fixture.progress),...await c.evaluate(()=>fixture.progress)].filter(row=>row.id===file);
         assert.equal(sending.filter(row=>row.percent===100&&row.at<cachedAt).length,0,'a range ACK cannot finish the file row before the whole receiver cache exists');
-        t.diagnostic(JSON.stringify({...result,prematureFileCompletions:0}));assert.equal(result.valid,true);assert.equal(result.bytes,size);assert.ok(result.routes.includes('p2p'));
+        const receiving=await b.evaluate(file=>fixture.progress.filter(row=>row.id===file&&row.transport.startsWith('receiving-multi-source')),file);
+        for(const row of receiving){
+            const routes=new Set(row.activeRoutes);if(!routes.size)continue;
+            const expected=routes.has('socket-relay')?routes.has('p2p')?'receiving-multi-source-mixed':'receiving-multi-source-relay':'receiving-multi-source';
+            assert.equal(row.transport,expected,'receiver progress describes the actual active ranges');
+        }
+        if(allRelay)assert.ok(receiving.length&&receiving.every(row=>row.transport==='receiving-multi-source-relay'),'Relay-only downloads never claim P2P');
+        t.diagnostic(JSON.stringify({...result,prematureFileCompletions:0}));assert.equal(result.valid,true);assert.equal(result.bytes,size);assert.equal(result.routes.includes('p2p'),!allRelay);
         if(relayProvider){assert.ok(result.routes.includes('socket-relay'));assert.ok(events.some(x=>x.event==='file-asset-relay-started'));}
         else{assert.ok(result.routes.every(route=>route==='p2p'));assert.equal(events.filter(x=>x.event==='file-asset-relay-started').length,0);}
         return;
@@ -101,3 +109,4 @@ test('a forced three-peer restore retains long request-token compatibility over 
 test('two real source peers deliver over P2P to one receiver without completing either file row at a range boundary',{timeout:40000},t=>runPeerScenario(t,false,false,false,true,false,false));
 
 test('a rejoining receiver restores a 115384320-byte file from two native P2P sources and verifies every byte and final completion',{timeout:180000},t=>runPeerScenario(t,false,false,false,true,false,false,true));
+test('a three-peer Relay-only restore keeps actual receiving path labels and verifies every byte',{timeout:40000},t=>runPeerScenario(t,false,false,false,true,false,true,false,true));

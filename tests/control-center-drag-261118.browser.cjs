@@ -27,6 +27,35 @@ after(async()=>{await browser?.close();server?.closeAllConnections();if(server)a
 async function touch(page){const cdp=await page.context().newCDPSession(page);return async(type,x,y)=>cdp.send('Input.dispatchTouchEvent',{type,touchPoints:type==='touchEnd'?[]:[{x,y}]});}
 const center=box=>({x:box.x+box.width/2,y:box.y+box.height/2});
 
+test('a slowly advancing finger does not repeatedly swap back into the slot it has just left',async()=>{
+ const page=await browser.newPage({viewport:{width:424,height:854},hasTouch:true});try{
+  await page.goto(base);await page.locator('#open').click();await page.waitForTimeout(250);
+  const send=await touch(page),start=center(await page.locator('[data-control-tile="refresh"]').boundingBox()),target=center(await page.locator('[data-control-tile="magnet"]').boundingBox()),orders=[];
+  await send('touchStart',start.x,start.y);await page.waitForTimeout(550);
+  for(let dx=10;dx<=target.x-start.x;dx+=10){await send('touchMove',start.x+dx,start.y);await page.waitForTimeout(45);orders.push(await page.locator('[data-control-side="before"]').evaluate(n=>[...n.children].slice(0,2).map(n=>n.dataset.controlTile).join(',')));}
+  const folder=path.join(root,'.npm-cache/261119-control-center');fs.mkdirSync(folder,{recursive:true});await page.screenshot({path:path.join(folder,'narrow-drag.png')});
+  await send('touchEnd');assert.ok(orders.length>2);assert.ok(orders.every(order=>order==='magnet,refresh'),'forward motion must not undo the previous insertion: '+JSON.stringify(orders));
+ }finally{await page.close();}
+});
+
+test('narrow drag keeps unrelated tiles mounted and small finger tremors do not reverse a settled insertion',async()=>{
+ const page=await browser.newPage({viewport:{width:424,height:854},hasTouch:true});try{
+  await page.goto(base);await page.locator('#open').click();await page.waitForTimeout(250);
+  await page.evaluate(()=>{
+   window.detachedTiles=[];window.dragOrders=[];
+   new MutationObserver(records=>{for(const record of records)for(const node of record.removedNodes)if(node.dataset?.controlTile)detachedTiles.push(node.dataset.controlTile);dragOrders.push([...document.querySelectorAll('[data-control-tile]')].map(n=>n.dataset.controlTile).join(','));}).observe(document.querySelector('[data-control-side="before"]'),{childList:true});
+  });
+  const send=await touch(page),start=center(await page.locator('[data-control-tile="refresh"]').boundingBox()),target=center(await page.locator('[data-control-tile="magnet"]').boundingBox());
+  await send('touchStart',start.x,start.y);await page.waitForTimeout(550);await send('touchMove',target.x,target.y);await page.waitForTimeout(220);
+  const settled=await page.locator('[data-control-side="before"]').evaluate(n=>[...n.children].map(n=>n.dataset.controlTile));
+  for(const dx of [-5,5,-5,5,-5,5]){await send('touchMove',target.x+dx,target.y);await page.waitForTimeout(40);}
+  const result=await page.evaluate(()=>({detached:detachedTiles,orders:dragOrders,order:[...document.querySelector('[data-control-side="before"]').children].map(n=>n.dataset.controlTile)}));
+  await send('touchEnd');
+  assert.equal(result.detached.includes('account'),false,'unrelated tiles must not be detached on each insertion: '+JSON.stringify(result));
+  assert.deepEqual(result.order,settled,'small movements within the occupied slot must not swap neighboring tiles back and forth');
+ }finally{await page.close();}
+});
+
 test('a held finger at the upper edge keeps scrolling until a lower tile reaches the first row',async()=>{
  const page=await browser.newPage({viewport:{width:320,height:420},hasTouch:true});try{
   await page.goto(base);await page.evaluate(()=>localStorage.setItem('tunnelControlCenterOrder',JSON.stringify([...normalizeControlCenterOrder([]).filter(id=>!['account','tunnels'].includes(id)),'tunnels','account'])));await page.locator('#open').click();

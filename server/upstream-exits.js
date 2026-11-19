@@ -67,7 +67,7 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
     const publicNode = node => Object.fromEntries(['id','name','server','port','serverName','verifyTls','remark','revision'].map(key=>[key,node[key]]).concat([['hasPassword',Boolean(node.password)]]));
     function publicConfig() {
         return { nodes: config.nodes.map(publicNode), services: SERVICES.map(id => ({ id, configured: Boolean(config.services[id]),
-            defaultExit: 'direct', mode: 'ordered', order: [], includeDirect: false, revision: 0, ...config.services[id] })),
+            defaultExit: 'direct', mode: 'ordered', order: [], enabledNodes: [], includeDirect: false, revision: 0, ...config.services[id] })),
             runtimes: [...runtimes.values()].map(r => ({ name: r.node.name, running: Boolean(r.worker?.alive()), starting: !r.worker && Boolean(r.starting), activeTasks: r.refs })) };
     }
     function saveNode(id, input) {
@@ -98,8 +98,10 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
         if (!ids.has(input.defaultExit) || !['random','ordered'].includes(input.mode)) throw Error('请选择有效的默认出口和轮询方式');
         const order = [...new Set(Array.isArray(input.order) ? input.order : [])];
         if (order.some(value => !ids.has(value))) throw Error('候选顺序包含已删除的节点，请刷新后重试');
+        const enabledNodes = [...new Set(Array.isArray(input.enabledNodes) ? input.enabledNodes : order.filter(value=>value!=='direct'))];
+        if (enabledNodes.some(value => value==='direct' || !ids.has(value))) throw Error('候选顺序包含已删除的节点，请刷新后重试');
         const before = config; config = clone(config);
-        config.services[id] = { defaultExit: input.defaultExit, mode: input.mode, order, includeDirect: input.includeDirect === true, revision: (previous?.revision || 0) + 1 };
+        config.services[id] = { defaultExit: input.defaultExit, mode: input.mode, order, enabledNodes, includeDirect: input.includeDirect === true, revision: (previous?.revision || 0) + 1 };
         try { write(); } catch (error) { config = before; throw error; }
         return publicConfig().services.find(item => item.id === id);
     }
@@ -160,8 +162,10 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
         const policy = ctx.policy || {defaultExit:'direct',mode:'ordered',includeDirect:false,order:[]};
         const first = ctx.requested || policy.defaultExit;
         if(first !== 'direct' && !ctx.snapshot.nodes.some(n=>n.id===first))throw Error('指定出口节点不存在，请重新选择');
-        const allowed = [...ctx.snapshot.nodes.map(n=>n.id),...(policy.includeDirect?['direct']:[])];
-        let others = [...new Set([...(policy.order || []),...allowed])].filter(id=>id!==first && allowed.includes(id));
+        const allowed = [...(policy.enabledNodes || []).filter(id=>ctx.snapshot.nodes.some(n=>n.id===id)),...(policy.includeDirect?['direct']:[])];
+        // Older UI saved all nodes as an ordering, without explicit selection.
+        // Do not treat that implicit list as consent to enable every candidate.
+        let others = [...new Set([...(policy.order || []),...(policy.enabledNodes || []),...(policy.includeDirect?['direct']:[])])].filter(id=>id!==first && allowed.includes(id));
         if(policy.mode==='random')for(let i=others.length-1;i>0;i--){const j=crypto.randomInt(i+1);[others[i],others[j]]=[others[j],others[i]];}
         return [first,...others];
     }

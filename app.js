@@ -385,7 +385,8 @@ function progressElementId(progressKey) {
 
 function getFileProgressStatus(transport = '') {
     const route = String(transport || '');
-    if (route.startsWith('sending-multi-source-relay')) return 'multi-source Socket.IO relay';
+    if (route.startsWith('receiving-multi-source-mixed')) return 'multi-source P2P / Socket.IO relay';
+    if (route.startsWith('receiving-multi-source-relay') || route.startsWith('sending-multi-source-relay')) return 'multi-source Socket.IO relay';
     if (route.startsWith('receiving-multi-source') || route.startsWith('sending-multi-source')) return 'multi-source P2P';
     if (route.startsWith('sending-relay') || route.startsWith('receiving-relay')) return 'Socket.IO relay';
     if (route.startsWith('sending') || route.startsWith('receiving') || route === 'p2p') return 'P2P';
@@ -18249,8 +18250,18 @@ function initTunnelControlCenter(dialog) {
         for (const animation of animations.values()) animation.cancel();
         animations.clear();
         const divider = order.indexOf('tunnels');
-        before.replaceChildren(...(wide.matches ? order.filter(id => id !== 'tunnels') : order.slice(0, divider)).map(id => tiles.get(id)));
-        after.replaceChildren(...(wide.matches ? [] : order.slice(divider + 1)).map(id => tiles.get(id)));
+        // Move only nodes whose slots changed. Detaching both entire rows on
+        // each insertion invalidates the panel layout and touch compositing.
+        const place = (container, ids) => {
+            let cursor = container.firstElementChild;
+            for (const id of ids) {
+                const tile = tiles.get(id);
+                if (tile === cursor) cursor = cursor.nextElementSibling;
+                else container.insertBefore(tile, cursor);
+            }
+        };
+        place(before, wide.matches ? order.filter(id => id !== 'tunnels') : order.slice(0, divider));
+        place(after, wide.matches ? [] : order.slice(divider + 1));
         for (const tile of tiles.values()) slots.set(tile, tile.getBoundingClientRect());
         // Moving the captured node between rows can release native capture.
         if (drag?.active) { try { drag.tile.setPointerCapture(drag.id); } catch (_) {} }
@@ -18337,7 +18348,7 @@ function initTunnelControlCenter(dialog) {
             const bounds = before.getBoundingClientRect();
             const left = wide.matches ? Math.min(bounds.right-drag.rect.width, Math.max(bounds.left,drag.rect.left+event.clientX-drag.x)) : drag.rect.left+event.clientX-drag.x;
             const top = wide.matches ? Math.min(bounds.bottom-drag.rect.height, Math.max(bounds.top,drag.rect.top+event.clientY-drag.y)) : drag.rect.top+event.clientY-drag.y;
-            drag.ghost.style.left = `${left}px`; drag.ghost.style.top = `${top}px`;
+            drag.ghost.style.transform = `translate3d(${left-drag.rect.left}px,${top-drag.rect.top}px,0)`;
             let hovered;
             {
                 // Use layout slots rather than animated rectangles so a tile
@@ -18345,16 +18356,21 @@ function initTunnelControlCenter(dialog) {
                 const dx = event.clientX-drag.lastX, dy = event.clientY-drag.lastY;
                 const cx = left+drag.rect.width/2, cy = top+drag.rect.height/2;
                 if (!drag.reorderedAt || Math.hypot(event.clientX-drag.reorderedAt.x,event.clientY-drag.reorderedAt.y) >= 8) {
-                    let nearest = Infinity;
+                    const ownSlot = slots.get(tile);
+                    // The placeholder remains a valid destination. A finger
+                    // resting there must not keep chasing adjacent moving tiles.
+                    let nearest = !wide.matches && ownSlot && drag.reorderedAt
+                        ? Math.hypot(ownSlot.left+ownSlot.width/2-cx,ownSlot.top+ownSlot.height/2-cy)-6
+                        : Infinity;
                     for (const [candidate, rect] of slots) {
                         if (candidate === tile) continue;
                         const x = rect.left+rect.width/2, y = rect.top+rect.height/2;
+                        const distance = Math.hypot(x-cx,y-cy);
                         const contact = !wide.matches
-                            ? left+drag.rect.width+4>=rect.left && left-4<=rect.right && top+drag.rect.height+4>=rect.top && top-4<=rect.bottom
+                            ? (!dx && !dy || distance<=6 || dx*(x-cx)+dy*(y-cy)>0) && left+drag.rect.width+4>=rect.left && left-4<=rect.right && top+drag.rect.height+4>=rect.top && top-4<=rect.bottom
                             : Math.abs(dx) >= Math.abs(dy)
                             ? dx*(x-cx)>0 && Math.abs(y-cy)<rect.height/2 && left+drag.rect.width+4>=rect.left && left-4<=rect.right
                             : dy*(y-cy)>0 && Math.abs(x-cx)<rect.width/2 && top+drag.rect.height+4>=rect.top && top-4<=rect.bottom;
-                        const distance = Math.hypot(x-cx,y-cy);
                         if (contact && distance < nearest) { nearest = distance; hovered = candidate; }
                     }
                 }

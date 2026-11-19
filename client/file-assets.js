@@ -997,11 +997,19 @@
         }
 
         reportMultiSourceProgress(transfer) {
-            const activeBytes = Array.from(transfer.ranges.values())
-                .filter(range => !range.completed)
-                .reduce((total, range) => total + range.receivedSize, 0);
+            let activeBytes = 0, allCompleted = true;
+            const activeRoutes = new Set(), completedRoutes = new Set();
+            for (const range of transfer.ranges.values()) {
+                if (range.completed) { if (range.transport) completedRoutes.add(range.transport); continue; }
+                allCompleted = false;
+                activeBytes += range.receivedSize;
+                if (range.active && !range.retryScheduled && range.from && range.transport) activeRoutes.add(range.transport);
+            }
+            const routes = activeRoutes.size ? activeRoutes : allCompleted ? completedRoutes : activeRoutes;
+            if (!routes.size) return;
+            const suffix = routes.has('socket-relay') ? routes.has('p2p') ? '-mixed' : '-relay' : '';
             const progress = Math.min(99, Math.floor((transfer.completedBytes + activeBytes) * 100 / transfer.asset.size));
-            this.deps.onProgress(transfer.asset.id, transfer.asset.name, progress, 'receiving-multi-source');
+            this.deps.onProgress(transfer.asset.id, transfer.asset.name, progress, 'receiving-multi-source' + suffix);
         }
 
         async completeMultiSourceDownload(assetId, transfer) {
