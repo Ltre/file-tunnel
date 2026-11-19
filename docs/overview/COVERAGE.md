@@ -1,9 +1,9 @@
 # 初始 Overview 覆盖验收
 
-> **当前实现源码锚点 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **当前实现源码锚点 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
 > **历史覆盖起点 Commit**：`192ecbcb9ea27a9754f8622041165f9712a8fbf4`  
 > **第一个实际代码版本 Commit**：`0224de3d07f2160055eef58dd1907235aed3aef4`  
-> **文档更新时间**：`2026-11-17`
+> **文档更新时间**：`2026-11-19`
 
 ## 1. 本文件解决什么问题
 
@@ -95,9 +95,11 @@
 
 逐文件核对同一分支两端的 Git tree：`pages/**` 仍为 **30** 个；`client/**` 101 → **116**（新增 15）；`server/**` 94 → **95**（新增 1）；`tests/**` 299 → **332**（新增 33，另有 11 个测试/夹具文件修改）；`tools/**` 50 → **52**（新增 2，另有部署构建脚本修改）。本轮没有新增页面，所有新增客户端、服务端、测试和工具文件均在下方或模块测试索引中归属。
 
+第七轮只在当前 `dev/doc-overview` 分支比较上一轮源码锚点 `80c092aa1e50124f730e918215f1e7fa7d55a52a` → `1da33930cfb0f7022114825e2cb300ce18ff4eae`，共 **23 个提交、137 个非 `docs/overview/**` 变更文件**（68 新增、67 修改、2 删除）；没有检视其它分支。新增上游出口管理、P2P 基线恢复与线路诊断、Web ZIP 同源副本同步、下载兜底、移动端 History/拖动和德语包等，详见第 5.10、6.10、7.2 节及对应模块文档。
+
 所以：
 
-> 第五轮 Overview 代码事实终点为 `71e58b07350a0ef3b480fa82272177863de74448`；第六轮现已推进到 `f2c8b033c50d5a7c50f0ee4950222595d49c40a4`。初始 `b422e438...` 只作为历史冻结锚点保留。
+> 第五轮 Overview 代码事实终点为 `71e58b07350a0ef3b480fa82272177863de74448`；第六轮现已推进到 `f2c8b033c50d5a7c50f0ee4950222595d49c40a4`；第七轮现已推进到 `1da33930cfb0f7022114825e2cb300ce18ff4eae`。初始 `b422e438...` 只作为历史冻结锚点保留。
 
 ## 4. 当前页面覆盖表
 
@@ -108,6 +110,7 @@
 | `pages/admin-auth.html` | `admin-security-deployment.md` |
 | `pages/admin.html` | `admin-security-deployment.md` |
 | `pages/admin-layout.html` | `admin-security-deployment.md` |
+| `pages/upstream-exits.html` | `upstream-exits.md`、`admin-security-deployment.md` |
 | `pages/admin-devices.html` | `admin-security-deployment.md` |
 | `pages/admin-magnets.html` | `admin-security-deployment.md` |
 | `pages/admin-tunnels.html` | `admin-security-deployment.md`、`tunnel-core.md` |
@@ -134,7 +137,7 @@
 | `pages/web-workshop-guide.html` | `web-workshop.md` |
 | `pages/web-zip-preview.html` | `web-workshop.md` |
 
-**验收结果：当前 30 个 `pages/**` 页面全部有明确 Overview 归属。**
+**验收结果：当前 31 个 `pages/**` 页面全部有明确 Overview 归属。**
 
 ## 5. 当前客户端模块覆盖表
 
@@ -238,7 +241,18 @@
 | `client/i18n-bootstrap.js` | `pwa-ui/localization.md` |
 | `client/i18n/{es,fa,fr,id,it,ja,km,ko,ms,my,ru,th,vi,zh-Hant}.json` | `pwa-ui/localization.md` |
 
-**验收结果：当前 116 个 `client/**` 文件全部有明确模块归属。**
+**第六轮验收结果：116 个 `client/**` 文件均有明确模块归属；本轮增量后当前为 121 个。**
+
+### 5.10 2026-11-11—19 新增客户端 6 项
+
+| 新文件 | 对应 Overview |
+|---|---|
+| `client/task-list-loading.js/.css` | `download-transcode.md`（下载任务列表加载/删除反馈） |
+| `client/upstream-exit-select.js` | `upstream-exits.md`、`download-transcode.md` |
+| `client/upstream-exits.js/.css` | `upstream-exits.md`、`admin-security-deployment.md` |
+| `client/i18n/de.json` | `pwa-ui/localization.md`；同时移除旧 `client/i18n/fa.json`，德语替代波斯语，语言总数仍为 16 |
+
+**验收结果：当前 121 个 `client/**` 文件均有明确模块归属。**
 
 ## 6. 当前服务端模块覆盖表
 
@@ -349,7 +363,14 @@
 
 - `server/admin-form-cache.js` → `admin-security-deployment.md`、`download-transcode.md`（管理员下载表单云端保存、revision 冲突及原子 JSON 存储）。
 
-**验收结果：当前 95 个 `server/**` 文件全部有明确模块归属。**
+**第六轮验收结果：95 个 `server/**` 文件均有明确模块归属；本轮增量后当前为 98 个。**
+
+### 6.10 2026-11-11—19 新增服务端 3 项
+
+- `server/upstream-exits.js`、`server/upstream-exit-routes.js` → [upstream-exits.md](./upstream-exits.md)、`architecture.md`、`admin-security-deployment.md`；
+- `server/youtube-reference-language.js` → `download-transcode.md`（仅 YouTube 可选参考信息的地区语言回退）。
+
+**验收结果：当前 98 个 `server/**` 文件均有明确模块归属。**
 
 ## 7. 工具链覆盖
 
@@ -400,7 +421,14 @@
 
 ### 7.1 测试树增量
 
-本轮 `tests/**` 从 299 增至 332 个文件：新增 33 个测试文件，另修改 11 个既有测试/夹具。新增测试按模块列于 [tests-and-regressions.md](./tests-and-regressions.md)，不是 33 项全部独立的新业务功能；其中包含对旧网盘账号、挂载、登录和部署路径补回的回归覆盖。
+第六轮 `tests/**` 从 299 增至 332 个文件：新增 33 个测试文件，另修改 11 个既有测试/夹具；本轮增量后当前为 358 个。新增测试按模块列于 [tests-and-regressions.md](./tests-and-regressions.md)，不是 33 项全部独立的新业务功能；其中包含对旧网盘账号、挂载、登录和部署路径补回的回归覆盖。
+
+### 7.2 2026-11-11—19 新增工具文件 6 项
+
+- `tools/sing-box/README.md`、`manifest.json`、`win-x64/sing-box.exe`、`win-x64/LICENSE`、`linux-x64/sing-box`、`linux-x64/LICENSE` → [upstream-exits.md](./upstream-exits.md)、`admin-security-deployment.md`；
+- `tools/deploy/build.mjs`、`tools/deploy/verify.mjs` 同步修改：构建复制 sing-box 运行文件，发布校验识别上游出口管理路由。
+
+**当前目录计数：Pages 31、Client 121、Server 98、Tests 358、Tools 58。**
 
 ## 8. 根入口覆盖
 

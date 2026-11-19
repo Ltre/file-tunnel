@@ -6,10 +6,10 @@
 
 本套总览的初始创建阶段已经完成并冻结。长期维护工作在 `dev/doc-overview` 进行；当前已完整覆盖的应用源码事实为：
 
-- 源码 Commit：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`
-- 源码提交时间：`2026-11-16T16:43:54Z`
+- 源码 Commit：`1da33930cfb0f7022114825e2cb300ce18ff4eae`
+- 源码提交时间：`2026-11-19`（本轮合并提交）
 - 首轮整理日期：2026-09-26
-- 文档更新时间：2026-11-17
+- 文档更新时间：2026-11-19
 
 精确增量锚点见 [VERSION.md](./VERSION.md)。
 
@@ -26,15 +26,16 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 - Telegram Bot、Telegram 内容管理、Telegram 虚拟网盘；
 - Passkey/OIDC、多账号、第三方网盘/S3 API、分区、协同挂载、分享、静态开放、共享 Content 与审核；
 - SNS、YouTube Premium、手写格式、音轨修复、FFmpeg 转码、已完成成品的服务器端直接转存，以及独立视频画面提取与多媒体收藏；
-- 网页 ZIP / 网页工坊（含可离线 Markdown 页面）；
+- 按服务配置上游网络出口，支持 Trojan / sing-box 按需运行、任务级出口选择、首次有效内容后锁定及受控候选切换；
+- 网页 ZIP / 网页工坊（含可离线 Markdown 页面、同源转发副本统一授权与同步）；
 - Light Transfer 光媒；
 - VClient 常驻缓存节点；
 - 已合入的串流控制台、节目编排与观看/操控/来源授权；
 - 七主题、独立系统备份、SNS 帖子 Markdown 与后台隧道设备权限；
 - PWA / Service Worker / 移动工作区；
-- 16 语言按需加载、系统语言确认及发布时语言包一致性检查；
+- 16 语言按需加载（当前包含德语 `de`）、系统语言确认及发布时语言包一致性检查；
 - SNS / YouTube 下载表单跨浏览器云端草稿、revision 冲突保护；
-- 多条记录逐项转发确认、未知结果核对、P2P 明确放弃和缓存安全清理。
+- 多条记录逐项转发确认、未知结果核对、P2P 基线故障处理、实际线路诊断、多源进度和缓存安全清理。
 - 独立后台布局、设备/磁链统计、持久磁链登记、安全、构建和部署。
 
 后续修改任何子系统，都不应只读单个 UI 文件。大量功能通过 `app.js`、`server.js`、`client/*`、`server/*`、Service Worker、IndexedDB、Socket.IO 与外部服务交叉。
@@ -61,7 +62,7 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 
 ### 文件传输、缓存与媒体
 
-- [transfer-cache.md](./transfer-cache.md) — 传输记录、文件资产、P2P/Relay、明确放弃与回退、批量转发确认、多源恢复、缓存盘点/安全清理、资源管理器。
+- [transfer-cache.md](./transfer-cache.md) — 传输记录、文件资产、P2P/Relay 基线、实际线路诊断、多源恢复、批量转发确认、缓存盘点/安全清理、资源管理器。
   - [transfer-cache/magnet-download.md](./transfer-cache/magnet-download.md) — Drop2Tunnel 自定义磁链、种子发现、独立下载器与磁链缓存。
   - [transfer-cache/folder-archive-directory-mirror.md](./transfer-cache/folder-archive-directory-mirror.md) — 文件夹 ZIP、合辑打包与 File System Access 目录镜像。
 - [media-player-realtime.md](./media-player-realtime.md) — 图片/视频/音频预览、音乐播放器、摄像头、语音、对讲、联系人呼叫、远程预览。
@@ -77,7 +78,8 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 ### 内容生产与下载处理
 
 - [web-workshop.md](./web-workshop.md) — 网页工坊、`.html.zip`、草稿、编辑权限、Service Worker Runtime、发布与资源导入。
-- [download-transcode.md](./download-transcode.md) — SNS、YouTube Premium、metadata、跨浏览器表单云存储、Telegram 转发、音轨修复、FFmpeg 时间戳进度。
+- [download-transcode.md](./download-transcode.md) — SNS、YouTube Premium、metadata、任务级网络出口、跨浏览器表单云存储、Telegram 转发、音轨修复、FFmpeg 时间戳进度。
+- [upstream-exits.md](./upstream-exits.md) — 上游服务出口、Trojan 节点、候选策略、任务路由锁定、sing-box 生命周期与安全边界。
   - [download-transcode/sns-cookie-sync.md](./download-transcode/sns-cookie-sync.md) — SNS Cookie 管理、多服务器自动同步扩展与私人 Premium Cookie。
 
 ### 平台与运维
@@ -85,7 +87,7 @@ Drop2Tunnel 是一个自托管、浏览器优先的跨设备“隧道”协作�
 - [pwa-ui.md](./pwa-ui.md) — PWA、Service Worker、主题、宽屏三栏、移动 workspace、Overlay、全局 UI 状态。
   - [pwa-ui/localization.md](./pwa-ui/localization.md) — 16 语言、启动包与按需语言 JSON、系统语言确认、构建一致性与 i18n 审计。
   - [pwa-ui/themes.md](./pwa-ui/themes.md) — 七主题、双栏/三栏、轻量路由与共享扫码组件。
-- [admin-security-deployment.md](./admin-security-deployment.md) — 管理后台布局/拆页、设备权限与日志、磁链统计、TOTP、Secrets、数据占用、Nginx/CDN、构建部署。
+- [admin-security-deployment.md](./admin-security-deployment.md) — 管理后台布局/拆页、设备权限与日志、磁链统计、TOTP、Secrets、上游出口配置、数据占用、Nginx/CDN、构建部署。
 - [system-backup.md](./system-backup.md) — 管理员 FULL/CORE 数据备份、SQLite 在线快照、分段清单、重试及恢复限制。
 - [vclient.md](./vclient.md) — VClient 常驻缓存节点、控制面、资产供源、服务器 Shell 推送。
 - [tests-and-regressions.md](./tests-and-regressions.md) — 自动测试、人工验收、失败版本和故障注入原则。
