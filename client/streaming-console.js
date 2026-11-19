@@ -544,11 +544,11 @@
         const loading = document.createElement('p'); loading.className = 'sc-page-loading'; loading.setAttribute('role','status'); loading.textContent = t('正在加载串流台界面…'); main.append(loading); main.setAttribute('aria-busy','true');
         try {
             if (['discover', 'local', 'bookmarks', 'creator'].includes(ui.view)) {
-                const heading = title(({ discover: '发现', local: '我创建的', bookmarks: '我订阅的', creator: '创作者公开台' })[ui.view]);
+                const heading = title(({ discover: '发现', local: '我创建的', bookmarks: '我收藏的', creator: '创作者公开台' })[ui.view]);
                 heading.className = 'sc-list-heading'; const tools = document.createElement('span'); tools.className = 'sc-list-tools';
                 if (ui.view !== 'creator') {
                     const label = document.createElement('label'), selector = document.createElement('select'); label.className = 'sc-list-sort'; label.append(document.createTextNode(t('排序')));
-                    const choices = { local: [['updatedAt', '修改时间'], ['createdAt', '创建时间'], ['name', '名称']], bookmarks: [['subscribedAt', '订阅时间'], ['name', '名称']], discover: [['discoveredAt', '发现时间'], ['createdAt', '创建时间'], ['updatedAt', '修改时间'], ['name', '名称']] }[ui.view];
+                    const choices = { local: [['updatedAt', '修改时间'], ['createdAt', '创建时间'], ['name', '名称']], bookmarks: [['subscribedAt', '收藏时间'], ['name', '名称']], discover: [['discoveredAt', '发现时间'], ['createdAt', '创建时间'], ['updatedAt', '修改时间'], ['name', '名称']] }[ui.view];
                     for (const [value, text] of choices) selector.add(new Option(t(text), value));
                     ui.sort ||= {}; selector.value = ui.sort[ui.view] || choices[0][0]; selector.onchange = () => { ui.sort[ui.view] = selector.value; saveUi(); refreshList().catch(error); }; label.append(selector); tools.append(label);
                 }
@@ -697,7 +697,7 @@
             lastList = result.stations; let list = main.querySelector('.sc-station-list');
             if (!list) { list = document.createElement('div'); list.className = 'sc-station-list'; main.append(list); }
             list.replaceChildren();
-            if (!result.stations.length) { const p = document.createElement('p'); p.textContent = t(view === 'bookmarks' ? '暂无已订阅的串流台' : '暂无可见串流台'); list.append(p); }
+            if (!result.stations.length) { const p = document.createElement('p'); p.textContent = t(view === 'bookmarks' ? '暂无已收藏的串流台' : '暂无可见串流台'); list.append(p); }
             const own = s => Boolean((currentUser?.id || selected) && s.ownerId === (currentUser?.id || selected));
             if (view === 'local' && (currentUser?.id || selected) && !result.stations.some(own)) { const empty = document.createElement('p'); empty.textContent = t('该账号尚未在本机创建串流台。'); list.append(empty); }
             const stations = view === 'local' ? [...result.stations.filter(own), ...result.stations.filter(s => !own(s))] : result.stations;
@@ -719,7 +719,7 @@
                         const result = await request('/stations/' + s.id + '/bookmark', s.subscribed ? 'DELETE' : 'PUT', undefined, { accountId: selected });
                         if (selected !== account() || revision !== listRequest || version !== renderVersion) return;
                         s.subscribed = result.subscribed; subscription.textContent = t(result.subscribed ? '退订' : '订阅');
-                        notice(result.subscribed ? '已订阅' : '已取消订阅');
+                        notice(result.subscribed ? '已收藏' : '已取消收藏');
                     });
                     actions.append(subscription);
                 }
@@ -729,7 +729,7 @@
                     if (own(s) || !s.ownerId) actions.append(button('邀请与可见性', () => s.manageable ? navigate('access', s.id) : accountDialog()), button('观看者黑名单', () => s.manageable ? navigate('blacklist', s.id) : accountDialog()));
                     if (!s.ownerId && currentUser) actions.append(button('认领', async () => { if (!(window.TunnelI18n?.confirm || confirm)(t('确认将此串流台认领到当前账号？'))) return; await request('/stations/' + s.id + '/ownership', 'POST', { action: 'claim' }); await sync(); }));
                     if (s.manageable || s.locked) actions.append(button('删除台', async () => { if (!(window.TunnelI18n?.confirm || confirm)(t('删除台及其配置，保留原始来源文件？'))) return; await request('/stations/' + s.id, 'DELETE'); localStorage.removeItem(key('station:' + s.id)); delete ui.drafts[s.id]; saveUi(); await global.StreamingCache?.updateStation(config.deviceId(),s.id,[]); for (const [k, p] of players) if (k.startsWith(s.id + ':')) { p.close(); players.delete(k); } await refreshList(); }));
-                } else if (view === 'bookmarks') actions.append(button('取消订阅', async () => { await request('/stations/' + s.id + '/bookmark', 'DELETE'); await refreshList(); }));
+                } else if (view === 'bookmarks') actions.append(button('取消收藏', async () => { await request('/stations/' + s.id + '/bookmark', 'DELETE'); await refreshList(); }));
                 if (s.owner) actions.append(button('创作者主页', () => { ui.creatorName = s.owner.name; navigate('creator', s.owner.id); }));
                 row.append(actions); list.append(row);
             }
@@ -1561,11 +1561,11 @@
         if (!controlling) { const label=document.createElement('span');label.className='sc-viewer-title';label.textContent=heading.textContent;heading.replaceChildren(coverImage(snapshot,'sc-viewer-cover-small'),label); }
         const actions = document.createElement('div'); actions.className = 'sc-actions'; main.append(actions);
         const fixedAccount = account();
-        const subscribedLabel = controlling ? '已订阅' : '退订';
+        const subscribedLabel = controlling ? '已收藏' : '退订';
         const subscription = button(snapshot.subscribed ? subscribedLabel : '订阅', async () => {
             const result = await request('/stations/' + snapshot.id + '/bookmark', snapshot.subscribed ? 'DELETE' : 'PUT', undefined, { accountId: fixedAccount });
             if (fixedAccount !== account()) return;
-            snapshot.subscribed = result.subscribed; subscription.textContent = t(result.subscribed ? subscribedLabel : '订阅'); notice(result.subscribed ? '已订阅' : '已取消订阅');
+            snapshot.subscribed = result.subscribed; subscription.textContent = t(result.subscribed ? subscribedLabel : '订阅'); notice(result.subscribed ? '已收藏' : '已取消收藏');
         });
         actions.append(subscription, button(controlling ? '复制观看链接' : '复制链接', async () => { await copyText(location.origin + '/?stream=' + snapshot.id); notice('观看链接已复制'); }), button('返回列表', returnToList));
         if (controlling) actions.append(button('以观众视角查看', () => navigate('watch', snapshot.id)));

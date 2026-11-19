@@ -40,6 +40,18 @@ async function prime(page) {
 }
 async function frame(page) { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); }
 
+test('tunnel Markdown typography keeps code and tables scrollable and uses inherited theme text',async t=>{
+ const page=await pageFor(t);await page.setViewportSize({width:1100,height:850});
+ for(const theme of ['lumen','orbit']){
+  await page.evaluate(theme=>{document.body.dataset.theme=theme;message.markdown='# Markdown preview\n\nA readable paragraph with **emphasis** and `inline code`.\n\n## Heading\n\n> A block quote\n\n- First item\n- Second item\n\n```js\n'+('const value = 123; '.repeat(18))+'\n```\n\n| Name | Value |\n| --- | --- |\n| Example | 42 |';openReader();},theme);
+  await page.locator('.tunnel-markdown-document pre').waitFor();
+  const style=await page.evaluate(()=>{const el=document.querySelector('.tunnel-markdown-document'),pre=el.querySelector('pre');return {lineHeight:parseFloat(getComputedStyle(el).lineHeight),fontSize:parseFloat(getComputedStyle(el).fontSize),whiteSpace:getComputedStyle(pre).whiteSpace,scroll:pre.scrollWidth>pre.clientWidth,table:!!el.querySelector('table'),overflows:el.getBoundingClientRect().right>innerWidth};});
+  assert.ok(style.lineHeight/style.fontSize>=1.65);assert.equal(style.whiteSpace,'pre');assert.equal(style.scroll,true);assert.equal(style.table,true);assert.equal(style.overflows,false);
+  await page.screenshot({path:path.resolve(__dirname,'../.npm-cache/261111-markdown-'+theme+'.png')});
+  await page.locator('.sc-markdown-reader header button').click();
+ }
+});
+
 test('already visible SNS images open in the reader without rereading all four bodies', async t => {
     const page = await pageFor(t); await prime(page);
     await page.evaluate(() => { mode = 'blocked'; openReader(); }); await frame(page);

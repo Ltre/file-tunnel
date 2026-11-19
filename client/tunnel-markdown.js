@@ -6,6 +6,83 @@
     let referenceReader = {};
     const inlineReferences = new WeakMap();
     const readers = new Map();
+    const HISTORY_KEY = 'tunnelMarkdownDialog';
+    const ACCOUNT_RETURN_KEY = 'tunnelMarkdownAccountReturn';
+    const OUTER_HISTORY_KEYS = ['globalAccountPanel', 'streamingConsole', 'streamingDialog', 'telegramDriveOpen', 'telegramDriveDialog', 'telegramDrivePreview', 'telegramDriveMenu', 'controlCenter', 'notificationCenter'];
+    const historyDialogs = new Map();
+    const accountsClosedByBack = new WeakSet();
+    let closingHistory;
+    function observeAccountClose() {
+        new MutationObserver(records => {
+            const entry = historyDialogs.get(history.state?.[HISTORY_KEY]);
+            if (!entry || entry.closed || history.state?.globalAccountPanel) return;
+            for (const record of records) for (const node of record.removedNodes) {
+                if (node.classList?.contains('account-overlay') && !accountsClosedByBack.has(node)) {
+                    entry.accountClosed = true;
+                    history.replaceState({ ...history.state, [ACCOUNT_RETURN_KEY]: entry.token }, '', location.href);
+                }
+            }
+        }).observe(document.body, { childList: true });
+    }
+    if (document.body) observeAccountClose(); else global.addEventListener('DOMContentLoaded', observeAccountClose, { once: true });
+    function bindDialogHistory(layer, close) {
+        if (!global.matchMedia?.('(max-width: 700px)').matches) return () => Promise.resolve();
+        const token = 'md-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+        const base = { ...(history.state || {}) }, entry = { token, base, layer, close };
+        try { history.pushState({ ...base, [HISTORY_KEY]: token }, '', location.href); }
+        catch (_) { return () => Promise.resolve(); }
+        historyDialogs.set(token, entry);
+        return fromHistory => {
+            if (entry.closed) return closingHistory?.promise || Promise.resolve();
+            entry.closed = true;
+            if (fromHistory) { historyDialogs.delete(token); return Promise.resolve(); }
+            if (history.state?.[HISTORY_KEY] !== token) return Promise.resolve();
+            // A newer panel may inherit our token. Keep its entry and skip the
+            // closed Markdown entry only when a later Back actually reaches it.
+            if (OUTER_HISTORY_KEYS.some(key => history.state?.[key] && history.state[key] !== base[key])) {
+                const next = { ...history.state }; delete next[HISTORY_KEY]; delete next[ACCOUNT_RETURN_KEY]; history.replaceState(next, '', location.href);
+                return Promise.resolve();
+            }
+            let resolve;
+            const promise = new Promise(done => { resolve = done; });
+            closingHistory = { token, promise, resolve };
+            history.back();
+            return promise;
+        };
+    }
+    global.addEventListener('popstate', event => {
+        if (closingHistory && event.state?.[HISTORY_KEY] !== closingHistory.token) {
+            const target = historyDialogs.get(event.state?.[HISTORY_KEY]);
+            if (target?.closed) {
+                historyDialogs.delete(target.token); history.back(); event.stopImmediatePropagation(); return;
+            }
+            const pending = closingHistory; closingHistory = null; historyDialogs.delete(pending.token);
+            event.stopImmediatePropagation(); pending.resolve(); return;
+        }
+        const target = historyDialogs.get(event.state?.[HISTORY_KEY]);
+        if (target?.closed) { historyDialogs.delete(target.token); history.back(); event.stopImmediatePropagation(); return; }
+        const open = [...historyDialogs.values()].filter(entry => !entry.closed && entry.layer.isConnected);
+        if (!open.length) return;
+        if (global.AccountUI?.isOpen?.()) {
+            const account = document.querySelector('.account-overlay'); if (account) accountsClosedByBack.add(account);
+            return;
+        }
+        const top = open.at(-1);
+        if (global.DiskUI?.ownsHistory?.() || global.StreamingConsole?.ownsHistory?.() ||
+            !top.base.controlCenter && document.querySelector('.control-center-overlay') ||
+            !top.base.notificationCenter && document.querySelector('#notificationCenter:not([hidden])')) return;
+        if (event.state?.[HISTORY_KEY] === top.token) {
+            // Account Close replaces its state instead of traversing back.
+            // Other same-token returns still belong to their own upper panel.
+            if (top.accountClosed && event.state?.[ACCOUNT_RETURN_KEY] !== top.token) { top.accountClosed = false; top.close(); event.stopImmediatePropagation(); }
+            return;
+        }
+        for (const entry of open.reverse()) {
+            if (event.state?.[HISTORY_KEY] === entry.token) break;
+            entry.close({ fromHistory: true });
+        }
+        event.stopImmediatePropagation();
+    }, true);
     function configureReferences({ authorization, canReadLocal, message, file, complete, cacheAttachment }) {
         const names = new Map(), flights = new Map();
         const rememberName = (url, name) => names.set(url, name.replace(/[\\/:*?"<>|]/g, '_'));
@@ -111,16 +188,20 @@
         if (entries.get(version)?.content !== message.markdown) entries.set(version, { version, content: String(message.markdown || ''), editorDeviceId: message.sender, editorDeviceName: message.senderName, editedAt: message.timestamp });
         return [...entries.values()].sort((a, b) => a.version - b.version);
     }
-    async function recordDialog(message, editing) {
+    async function recordDialog(message, editing, beforeOpen) {
+        if (closingHistory) await closingHistory.promise;
         message = await options.record?.(message.id) || message;
+        await beforeOpen?.();
         const layer = document.createElement('div'); layer.className = 'sc-dialog sc-markdown-dialog';
         const panel = document.createElement('section'), header = document.createElement('header'), heading = document.createElement('strong');
         panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); heading.textContent = t(editing ? '编辑 Markdown' : 'Markdown 修改历史');
         const button = (label, run) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = t(label); b.onclick = run; return b; };
-        const close = () => { layer.remove(); document.removeEventListener('keydown', escape, true); };
+        let releaseHistory = () => Promise.resolve();
+        const close = (event = {}) => { layer.remove(); document.removeEventListener('keydown', escape, true); return releaseHistory(event.fromHistory === true); };
         const escape = event => { if (event.key === 'Escape' && [...document.querySelectorAll('.sc-markdown-dialog')].at(-1) === layer) { event.preventDefault(); event.stopImmediatePropagation(); close(); } };
         document.addEventListener('keydown', escape, true);
         header.append(heading, button('关闭', close)); panel.append(header); layer.append(panel); document.body.append(layer);
+        releaseHistory = bindDialogHistory(layer, close);
         if (!editing) {
             const history = versions(message), controls = document.createElement('div'), left = document.createElement('select'), right = document.createElement('select');
             const grid = document.createElement('div'); grid.className = 'sc-markdown-diff';
@@ -172,21 +253,24 @@
         panel.append(input, status, actions); input.focus();
     }
     async function previewRecord(message) {
+        if (closingHistory) await closingHistory.promise;
         const layer = document.createElement('div'); layer.className = 'sc-dialog sc-markdown-dialog sc-markdown-reader';
         const panel = document.createElement('section'), header = document.createElement('header'), title = document.createElement('strong'), content = document.createElement('div'), status = document.createElement('p');
         title.textContent = t('Markdown 预览'); panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); content.className = 'sc-document message-content';
         let resolved; const controller = new AbortController(), body = recordBody(message), images = invitationImages(message);
-        const close = () => { readers.delete(layer); controller.abort(); resolved?.close(); layer.remove(); document.removeEventListener('keydown', escape, true); };
+        let releaseHistory = () => Promise.resolve();
+        const close = (event = {}) => { readers.delete(layer); controller.abort(); resolved?.close(); layer.remove(); document.removeEventListener('keydown', escape, true); return releaseHistory(event.fromHistory === true); };
         readers.set(layer, { id: message.id, close });
         const escape = event => { if (event.key === 'Escape' && [...document.querySelectorAll('.sc-markdown-dialog')].at(-1) === layer) { event.preventDefault(); event.stopImmediatePropagation(); close(); } };
         const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.textContent = t('关闭'); dismiss.onclick = close;
         const loading = document.createElement('div'); loading.className = 'sc-markdown-loading'; loading.textContent = t('正在加载 Markdown…'); loading.setAttribute('role', 'status');
         const actions = document.createElement('footer'); actions.className = 'sc-markdown-reader-actions';
         const action = (label, run) => { const node = document.createElement('button'); node.type = 'button'; node.textContent = t(label); node.onclick = async () => { node.disabled = true; try { await run(); } catch (error) { if (layer.isConnected) status.textContent = t('操作未完成，请检查状态后重试') + ' [' + error.message + ']'; } finally { node.disabled = false; } }; return node; };
-        if (options.edit) actions.append(action('编辑', async () => { await recordDialog(message, true); close(); }));
-        actions.append(action('历史', async () => { await recordDialog(message, false); close(); }), action('下载', () => exportRecord(message, false)), action('存到网盘', () => exportRecord(message, true)));
+        if (options.edit) actions.append(action('编辑', () => recordDialog(message, true, close)));
+        actions.append(action('历史', () => recordDialog(message, false, close)), action('下载', () => exportRecord(message, false)), action('存到网盘', () => exportRecord(message, true)));
         const retry = action('重试', () => load()); retry.hidden = true;
         header.append(title, dismiss); panel.append(header, loading, content, status, retry, actions); layer.append(panel); document.body.append(layer); document.addEventListener('keydown', escape, true);
+        releaseHistory = bindDialogHistory(layer, close);
         layer.addEventListener('click', event => { if (event.target === layer) close(); });
         async function load() {
             content.hidden = false; loading.hidden = true; content.setAttribute('aria-busy', 'true'); status.textContent = ''; retry.hidden = true;
@@ -257,6 +341,7 @@
         }
     }
     function render(target, body, mapping = new Map(), { onInvitation, images = [], pending = false } = {}) {
+        target.classList.add('tunnel-markdown-document');
         target.classList?.toggle('sc-markdown-plain', !global.marked || !global.DOMPurify);
         if (!global.marked || !global.DOMPurify) { target.textContent = body; return; }
         let source = String(body); const placeholders = new Map();

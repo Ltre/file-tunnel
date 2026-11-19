@@ -187,6 +187,9 @@ const FFMPEG_COMMAND = resolveMediaToolCommand('ffmpeg');
 const FFPROBE_COMMAND = resolveMediaToolCommand('ffprobe');
 let infraStore = null;
 let vclientControl = null;
+const upstreamExits = require('./server/upstream-exits').createUpstreamExits({ dataDir: SERVER_DATA_DIR, root: __dirname });
+upstreamExits.installFetch();
+require('./server/sns-post-markdown').setUpstreamAdapter(upstreamExits);
 const adminAuth = createAdminAuth({ dataDir: SERVER_DATA_DIR, issuer: 'Instant Tunnel Admin' });
 const tunnelAccess=require('./server/tunnel-access').createTunnelAccess(SERVER_DATA_DIR);
 const taskAutoCache=require('./server/task-auto-cache').createTaskAutoCache();
@@ -206,6 +209,7 @@ function logYoutubePremiumTaskEvent(event = {}) {
 
 const youtubePremiumService = createYoutubePremiumService({
     dataDir: SERVER_DATA_DIR,
+    runTask: upstreamExits.runTask,
     analyze: analyzeYoutubePremiumUrl,
     download: downloadYoutubePremiumTask,
     sanitizeError: sanitizeYoutubePremiumError,
@@ -227,6 +231,7 @@ function logSnsDownloadTaskEvent(event = {}) {
 
 const snsDownloadService = createSnsDownloadService({
     dataDir: SERVER_DATA_DIR,
+    runTask: upstreamExits.runTask,
     analyze: analyzeSnsDownloadUrl,
     download: downloadSnsDownloadTask,
     sanitizeError: sanitizeSnsDownloadError,
@@ -369,8 +374,8 @@ const diskOperations = createDiskOperations({ dataDir: SERVER_DATA_DIR });
 // The drive always targets the official Bot API and implements large logical
 // files itself. Other Telegram features may keep their existing endpoint.
 const telegramChatDictionary = createTelegramChatDictionary({ dataDir: SERVER_DATA_DIR });
-const diskTelegram = createDiskTelegram({ dataDir: SERVER_DATA_DIR, getBaseUrl: () => 'https://api.telegram.org',
-    resolveChatIdentifier: value => telegramChatDictionary.lookup(value)?.chatId || value });
+const diskTelegram = upstreamExits.wrapService('telegram', createDiskTelegram({ dataDir: SERVER_DATA_DIR, getBaseUrl: () => 'https://api.telegram.org',
+    resolveChatIdentifier: value => telegramChatDictionary.lookup(value)?.chatId || value }));
 const telegramChatResolver = createTelegramChatResolver({
     dictionary: telegramChatDictionary,
     getChat: (chatId, { token, baseUrl, signal }) => diskTelegram.call({ token, baseUrl, channelId: chatId }, 'getChat', { chat_id: chatId }, undefined, 0, { signal })
@@ -1337,6 +1342,7 @@ app.get('/web-workshop-guide.html', (req, res) => {
 });
 
 require('./server/admin-layout').registerAdminLayout(app, { requireAuth:adminAuth.requireAuth, root:__dirname });
+require('./server/upstream-exit-routes').registerUpstreamExitRoutes(app, { exits: upstreamExits, requireAuth: adminAuth.requireAuth, root: __dirname });
 
 //禁止直接从pages目录，以无校验态访问管理页面
 app.use([
@@ -3989,7 +3995,7 @@ function canReadForwardedFile(targetSessionId, deviceId, sourceSessionId, fileId
             if (message) entries = [...entries, { message }];
         } catch (_) { return false; }
     }
-    return entries.some(entry => {
+    const accepts = entry => {
         const message = entry.message;
         if (Array.isArray(target.deletedMessageIds) ? target.deletedMessageIds.includes(message?.id) : target.deletedMessageIds?.has?.(message?.id)) return false;
         const files = message?.type === 'file' ? [message.fileInfo] : message?.type === 'collection' ? message.collection?.files || [] : [];
@@ -4013,15 +4019,33 @@ function canReadForwardedFile(targetSessionId, deviceId, sourceSessionId, fileId
                 const origin = recorded.forwardedFrom;
                 if (origin?.sessionId !== sourceSessionId || !origin.messageId || origin.messageId !== message.forwardedFrom?.messageId || origin.sessionId !== message.forwardedFrom?.sessionId) return false;
                 const asset = infraStore.get('SELECT source_device_id, file_name, mime_type, file_size FROM file_assets WHERE session_id = ? AND file_id = ?', [sourceSessionId, fileId]);
-                if (!asset || asset.source_device_id !== saved.sender_device_id || asset.file_name !== copy.name || asset.mime_type !== copy.type || Number(asset.file_size) !== Number(copy.size)) return false;
+                // Provider metadata normalizes an empty browser MIME to the
+                // unknown binary type; old forwarded records may retain ''.
+                if (!asset || asset.source_device_id !== saved.sender_device_id || asset.file_name !== copy.name || (asset.mime_type || 'application/octet-stream') !== (copy.type || 'application/octet-stream') || Number(asset.file_size) !== Number(copy.size)) return false;
                 if (infraStore.get('SELECT 1 AS found FROM transfer_files WHERE session_id = ? AND file_id = ? LIMIT 1', [sourceSessionId, fileId])) return false;
                 const predecessor = infraStore.get('SELECT payload_json FROM transfer_records WHERE session_id = ? AND message_id = ?', [sourceSessionId, origin.messageId]);
                 if (!predecessor) return false;
                 const original = JSON.parse(predecessor.payload_json), originals = original.type === 'file' ? [original.fileInfo] : original.type === 'collection' ? original.collection?.files || [] : [];
-                return originals.some(value => value?.id && value.id !== fileId && value.name === copy.name && value.type === copy.type && Number(value.size) === Number(copy.size));
+                return originals.some(value => value?.id && value.id !== fileId && value.name === copy.name && (value.type || 'application/octet-stream') === (copy.type || 'application/octet-stream') && Number(value.size) === Number(copy.size));
             } catch (_) { return false; }
         });
-    }) || false;
+    };
+    if (entries.some(accepts)) return true;
+    if (recordMessageId || entries.some(entry => {
+        const message = entry.message;
+        const files = message?.type === 'file' ? [message.fileInfo] : message?.type === 'collection' ? message.collection?.files || [] : [];
+        return files.some(file => file?.id === fileId && file.backupSourceSessionId === sourceSessionId);
+    })) return false;
+    // Recovery requests from older clients or cached file metadata may lack a
+    // record hint. Look up only this destination's exact file references, then
+    // apply the same ownership proof, deletion and permission checks above.
+    try {
+        const rows = infraStore?.query?.('SELECT r.payload_json FROM transfer_records r JOIN transfer_files f ON f.session_id = r.session_id AND f.message_id = r.message_id WHERE r.session_id = ? AND f.file_id = ? AND r.deleted_at IS NULL AND f.removed_at IS NULL', [targetSessionId, fileId]) || [];
+        return rows.some(row => {
+            try { return accepts({ message: JSON.parse(row.payload_json) }); }
+            catch (_) { return false; }
+        });
+    } catch (_) { return false; }
 }
 
 function getSessionPermissionPayload(session, deviceId = '') {
@@ -5251,7 +5275,10 @@ function buildYoutubeReferenceInfo(meta = {}, sourceUrl = '', sourceLanguageMeta
     };
 }
 
-async function collectYoutubeReferenceInfo(rawUrl, options = {}) {
+async function collectYoutubeReferenceInfo(...args) {
+    return upstreamExits.scope(args[0], () => collectYoutubeReferenceInfoUnrouted(...args));
+}
+async function collectYoutubeReferenceInfoUnrouted(rawUrl, options = {}) {
     let meta = options.meta || await runYtDlpJson(rawUrl, {
         noPlaylist: true,
         cookiePath: options.cookiePath,
@@ -5267,18 +5294,20 @@ async function collectYoutubeReferenceInfo(rawUrl, options = {}) {
     }
     const language = guessYoutubeSourceLanguage(meta);
     let sourceLanguageMeta = null;
-    if (language) {
+    for (const referenceLanguage of require('./server/youtube-reference-language').referenceLanguages(meta, language)) {
         try {
             sourceLanguageMeta = await runYtDlpJson(rawUrl, {
                 noPlaylist: true,
                 cookiePath: options.cookiePath,
                 allowIgnoreNoFormatsFallback: false,
                 bypassCache: options.bypassCache === true,
-                youtubeLanguage: language,
+                youtubeLanguage: referenceLanguage,
                 signal: options.signal
             });
+            break;
         } catch (_) {
             sourceLanguageMeta = null;
+            if (options.signal?.aborted) break;
         }
     }
     const reference = buildYoutubeReferenceInfo(meta, rawUrl, sourceLanguageMeta || meta);
@@ -5318,7 +5347,7 @@ function buildYoutubeSongMetadata(meta = {}, sourceUrl = '') {
 function getYtDlpInvocation(args = []) {
     const command = process.env.YT_DLP_BIN || 'yt-dlp';
     const prefixArgs = String(process.env.YT_DLP_BIN_ARGS || '').split(/\s+/).filter(Boolean);
-    return { command, args: [...prefixArgs, ...args] };
+    return { command, args: [...prefixArgs, ...upstreamExits.cliArgs(args)] };
 }
 
 function copyYtDlpCookies(args) {
@@ -5394,6 +5423,9 @@ function classifySnsMedia(sourceUrl, meta = {}) {
 }
 
 function runYtDlpJson(url, options = {}) {
+    return upstreamExits.content(url, async () => { await upstreamExits.ready(); return upstreamExits.trace(url,()=>runYtDlpJsonUnrouted(url, options),'yt-dlp-metadata'); });
+}
+function runYtDlpJsonUnrouted(url, options = {}) {
     if (options.noCookie === undefined && /^https?:\/\/(?:(?:www|mobile|m)\.)?(?:twitter|x)\.com\//i.test(url)) {
         return runYtDlpJson(url, { ...options, noCookie: true }).catch(error => {
             // A no-video or network error is not a reason to spend an account Cookie.
@@ -6107,6 +6139,11 @@ function describeTelegramNetworkError(error) {
 }
 
 async function telegramFetchJson(method, init = {}, options = {}) {
+    return upstreamExits.serviceScope('telegram', () => /^get[A-Z]/.test(method)
+        ? upstreamExits.content('https://api.telegram.org', () => telegramFetchJsonUnrouted(method, init, options), () => true)
+        : telegramFetchJsonUnrouted(method, init, options));
+}
+async function telegramFetchJsonUnrouted(method, init = {}, options = {}) {
     const token = options.token || getTelegramBotToken();
     if (!token) throw new Error('telegram-bot-disabled');
     const apiBase = options.apiBaseUrl || getTelegramBotApiBaseUrl();
@@ -6868,7 +6905,17 @@ function spawnCapture(command, args, options = {}) {
     });
 }
 
-function spawnYtDlpCapture(args, options = {}) {
+async function spawnYtDlpCapture(args, options = {}) {
+    const sourceUrl = options.sourceUrl || args.find(value => /^https?:\/\//i.test(String(value))) || '';
+    return upstreamExits.content(sourceUrl, async () => {
+        await upstreamExits.ready();
+        return upstreamExits.trace(sourceUrl,()=>spawnYtDlpCaptureUnrouted(args, { ...options, onOutput(chunk) {
+            upstreamExits.observeCommand(chunk);
+            options.onOutput?.(chunk);
+        } }),'yt-dlp-download');
+    }, () => true);
+}
+function spawnYtDlpCaptureUnrouted(args, options = {}) {
     const cookies = copyYtDlpCookies(args);
     const invocation = getYtDlpInvocation(cookies.args);
     return spawnCapture(invocation.command, invocation.args, {
@@ -6973,7 +7020,7 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistIte
         if (options.downloadSections) args.splice(args.length - 1, 0, '--download-sections', String(options.downloadSections), '--force-keyframes-at-cuts');
         if (maxFileSize > 0) args.splice(args.indexOf('-o'), 0, '--max-filesize', String(maxFileSize));
         try {
-            await spawnYtDlpCapture(args, {
+            const downloadOptions = {
                 sourceUrl: url,
                 operation: attempt ? 'sns-media-download-format-fallback' : 'sns-media-download',
                 timeoutMs: Number(process.env.SOCIAL_YTDLP_DOWNLOAD_TIMEOUT_MS || 30 * 60 * 1000),
@@ -6986,7 +7033,21 @@ async function runYtDlpDownload(url, assetId, onProgress = () => {}, playlistIte
                         options.onStage?.('merging');
                     }
                 }
-            });
+            };
+            try {
+                await spawnYtDlpCapture(args, downloadOptions);
+            } catch (error) {
+                // Some Bilibili CDN/exit combinations reject a full GET with
+                // HTTP 567. Preserve the normal first request; retry that
+                // failure once with a complete range on the same exit.
+                if (options.signal?.aborted || !/^https?:\/\/(?:[a-z0-9-]+\.)*(?:bilibili\.com|b23\.tv)(?:[/?#]|$)/i.test(url) ||
+                    !/\bHTTP(?:\s+Error)?\s*:?\s*567\b/i.test(String(error?.message || ''))) throw error;
+                cleanupSnsWorkFiles(`${assetId}.`);
+                progressState.lastAt = 0;
+                await spawnYtDlpCapture([...args.slice(0, -1), '--add-headers', 'Range:bytes=0-', args.at(-1)], {
+                    ...downloadOptions, operation: 'sns-media-download-bilibili-range-fallback'
+                });
+            }
             lastFormatError = null;
             options.onDetail?.({
                 message: 'yt-dlp 媒体下载命令执行成功',
@@ -7359,7 +7420,10 @@ function buildSnsDefaultSelection(formats = [], mediaType = 'video') {
     };
 }
 
-async function analyzeSnsDownloadUrl(rawUrl, options = {}) {
+async function analyzeSnsDownloadUrl(...args) {
+    return upstreamExits.analyze(args[0], () => analyzeSnsDownloadUrlUnrouted(args[0],upstreamExits.parseOptions(args[1])));
+}
+async function analyzeSnsDownloadUrlUnrouted(rawUrl, options = {}) {
     const normalized = normalizeSnsDownloadUrl(rawUrl);
     const report = (message, details = {}, level = 'info') => options.onDetail?.({ message, details, level });
     let base = options.refresh === true ? null : snsDownloadMetadataCache.get(normalized.url)?.analysis;
@@ -7725,7 +7789,10 @@ async function enrichYoutubePremiumAnalysisOrdinals(analysis, options = {}) {
     };
 }
 
-async function analyzeYoutubePremiumUrl(rawUrl, options = {}) {
+async function analyzeYoutubePremiumUrl(...args) {
+    return upstreamExits.analyze(args[0], () => analyzeYoutubePremiumUrlUnrouted(args[0],upstreamExits.parseOptions(args[1])));
+}
+async function analyzeYoutubePremiumUrlUnrouted(rawUrl, options = {}) {
     const parsed = parseSupportedSocialUrl(String(rawUrl || '').trim());
     if (!parsed || !['youtube', 'ytmusic'].includes(parsed.platform) || isYouTubePlaylistOnly(parsed.parsed.href)) {
         throw new Error('youtube-url-required');
@@ -8340,7 +8407,11 @@ function ensureGeneratedSnsMessage(sessionId, session, taskRecord) {
     return generatedMessage;
 }
 
-async function fetchSnsMediaIntoTunnel(sessionId, messageId, mediaItemId, markdownOwnerId = '') {
+async function fetchSnsMediaIntoTunnel(...args) {
+    const item = getHistoryMessageEntry(sessions.get(args[0]), args[1])?.message?.snsMediaItems?.find(item => item?.id === args[2]);
+    return upstreamExits.scope(item?.sourceUrl || item?.mediaUrl || '', () => fetchSnsMediaIntoTunnelUnrouted(...args));
+}
+async function fetchSnsMediaIntoTunnelUnrouted(sessionId, messageId, mediaItemId, markdownOwnerId = '') {
     const session = sessions.get(sessionId);
     const entry = getHistoryMessageEntry(session, messageId);
     const message = entry?.message;
@@ -9112,7 +9183,12 @@ function addToSessionHistory(sessionId, session, message, context = {}) {
         return { stored: false, reason: 'duplicate', evicted: 0 };
     }
     const fileId = message?.type === 'file' ? message.fileInfo?.id : null;
-    if (fileId && session.history.some(entry => entry.message?.type === 'file' && entry.message.fileInfo?.id === fileId)) {
+    // Same-source webpage copies intentionally share an updated content asset.
+    // Their independent record anchors must survive a cold history rebuild.
+    const independentWebZipRecord = message.forwardedFrom?.sessionId && message.forwardedFrom.sessionId !== sessionId &&
+        message.forwardedFrom.messageId && message.fileInfo?.creatorDeviceId &&
+        (message.fileInfo.webZip || /\.html\.zip$/i.test(message.fileInfo.name || ''));
+    if (fileId && !independentWebZipRecord && session.history.some(entry => entry.message?.type === 'file' && entry.message.fileInfo?.id === fileId)) {
         // The bounded browser history de-duplicates the same file asset, but the audit
         // ledger must still retain every distinct transfer record/message id.
         persistHistoryAudit(
@@ -9302,6 +9378,7 @@ function scheduleSessionHistoryBroadcast(sessionId, reason = 'message-broadcast'
 // ==================== Socket.io 连接处理 ====================
 
 const snsPostPublisher = require('./server/sns-post-markdown').createTunnelSnsPostPublisher({
+    runTask: (source, work) => upstreamExits.scope(source.sourceUrl, work),
     assetDir: TELEGRAM_ASSET_DIR,
     trackProgress: true,
     session: id => sessions.get(id),
@@ -9331,6 +9408,17 @@ function readWebZipRecord(sessionId, messageId) {
     const session = sessions.get(sessionId);
     if (session?.deletedMessageIds?.includes(messageId)) return null;
     return getHistoryMessageEntry(session, messageId)?.message || infraStore?.getHistoryMessage(sessionId, messageId) || null;
+}
+
+function listWebZipRecords(sessionId) {
+    const session = sessions.get(sessionId), records = new Map(), deleted = new Set(session?.deletedMessageIds || []);
+    if (infraStore?.listHistoryRecords) for (let offset = 0; ; offset += 1000) {
+        const batch = infraStore.listHistoryRecords(sessionId, { limit:1000, offset });
+        for (const entry of batch) if (entry.message && !deleted.has(entry.message.id)) records.set(entry.message.id, entry.message);
+        if (batch.length < 1000) break;
+    }
+    for (const entry of session?.history || []) if (!deleted.has(entry.message.id)) records.set(entry.message.id, entry.message);
+    return [...records.values()];
 }
 
 function writeWebZipRecord(sessionId, previous, next, options = {}) {
@@ -9432,7 +9520,7 @@ function canSyncWebZipSource(deviceId, sourceSessionId, editingSessionId) {
 
 const webZipSync = require('./server/web-zip-sync').createWebZipSync({
     credentials: require('./server/web-zip-credentials').createWebZipCredentials({dataDir:SERVER_DATA_DIR}),
-    filename: path.join(SERVER_DATA_DIR, 'web-zip-sync.json'), readRecord: readWebZipRecord, writeRecord: writeWebZipRecord,
+    filename: path.join(SERVER_DATA_DIR, 'web-zip-sync.json'), readRecord: readWebZipRecord, listRecords:listWebZipRecords, writeRecord: writeWebZipRecord,
     isForwardedCopy: (sessionId,messageId,file,origin) => {
         const entry = getHistoryMessageEntry(sessions.get(sessionId),messageId);
         if (entry?.forwardedSourceSessionId === origin.sessionId && file.backupSourceSessionId === origin.sessionId && file.forwardedToSessionId === sessionId) return true;
@@ -11926,6 +12014,7 @@ async function shutdown(signal) {
     await systemBackup.close();
     const mediaStopDeadline = setTimeout(() => process.exit(1), 10000); mediaStopDeadline.unref();
     await mediaLibrary.close();
+    await upstreamExits.close();
     clearTimeout(mediaStopDeadline);
     flushInfraAuditQueue();
     diskAPI.close();

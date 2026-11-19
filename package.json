@@ -4,7 +4,7 @@
   "description": "即时传输隧道 - 安全的设备间P2P文件传输和协同编辑",
   "main": "server.js",
   "engines": {
-    "node": ">=24.15"
+    "node": ">=22.16.0"
   },
   "scripts": {
     "start": "node server.js",
@@ -38,6 +38,7 @@
     "socket.io": "^4.7.2",
     "socket.io-client": "^4.8.3",
     "sql.js": "^1.14.1",
+    "undici": "7.30.2",
     "ws": "8.21.0"
   },
   "devDependencies": {

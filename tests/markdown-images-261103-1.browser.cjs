@@ -54,7 +54,11 @@ test('SNS progress keeps one visible record and a late snapshot cannot replace t
     await update({ ...record, snsMarkdownRevision: 3, snsMarkdownProgress: { ...working.snsMarkdownProgress, stage: 'failed', error: 'SNS_POST_INTERRUPTED' } });
     assert.equal(await row.getByText('生成 Markdown 未完成').count(), 1);
     assert.equal(await row.getByRole('progressbar').count(), 0);
-    const finished = { ...record, markdown: '# Finished post', snsMarkdownRevision: 4 };
+    await update({ ...record, snsMarkdownRevision: 4, snsMarkdownProgress: { ...working.snsMarkdownProgress,
+        stage: 'failed', done: 0, total: 1, error: 'SNS_POST_MEDIA_UNAVAILABLE', httpStatus: 567 } });
+    assert.equal(await row.getByText('引用资源 0/1').count(), 1);
+    assert.match(await row.textContent(), /帖子媒体尚未成功保存到隧道.*HTTP 567/);
+    const finished = { ...record, markdown: '# Finished post', snsMarkdownRevision: 5 };
     await page.evaluate(async ([finished, stale]) => {
         await Promise.all([applyHistoryMessageUpdate(finished), applyHistoryMessageUpdate(stale)]);
     }, [finished, working]);

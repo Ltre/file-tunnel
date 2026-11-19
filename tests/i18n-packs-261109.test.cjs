@@ -14,3 +14,12 @@ test('generated language packs remain exactly consistent with the single authore
   for(const [key,values]of Object.entries(authored.window.Drop2TunnelI18nCatalog))assert.equal(pack.catalog[key],values[language]||values.en||key,language+':'+key);
  }
 });
+test('German covers the full catalog and Persian is absent from source configuration and generated assets',()=>{
+ const context={window:{}};vm.runInNewContext(fs.readFileSync(path.join(root,'client/i18n-catalog.js'),'utf8'),context);
+ const config=context.window.Drop2TunnelI18nConfig,catalog=context.window.Drop2TunnelI18nCatalog;
+ assert.ok(config.languages.some(([lang])=>lang==='de'));assert.ok(!config.languages.some(([lang])=>lang==='fa'));assert.ok(!config.dynamicLanguages.includes('fa'));
+ assert.equal(fs.existsSync(path.join(root,'client/i18n/fa.json')),false);
+ for(const[key,row]of Object.entries(catalog)){assert.equal(typeof row.de,'string',key);assert.ok(row.de.trim(),key);assert.equal(Object.hasOwn(row,'fa'),false,key);}
+ for(const key of ['打开','管理协同编辑','新建文件.txt','暂无未使用的邀请链接','合辑文件 {0}','收藏时间'])for(const lang of config.dynamicLanguages)assert.ok(catalog[key][lang],key+': '+lang);
+ const server=require('../server/i18n');assert.equal(server.normalizeLanguageCode('de-DE'),'de');assert.match(server.translateTelegramText('当前处于 A1B2C 隧道中转模式','de'),/A1B2C/);
+});

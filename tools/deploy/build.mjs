@@ -47,6 +47,9 @@ const SCRIPT_SOURCES = [
   'client/telegram-content.js',
   'client/telegram-target-forward.js',
   'client/admin-layout.js',
+  'client/task-list-loading.js',
+  'client/upstream-exits.js',
+  'client/upstream-exit-select.js',
   'client/admin-overview.js',
   'client/admin-tunnel-permissions.js',
   'client/tunnel-access-editor.js',
@@ -560,6 +563,7 @@ async function main() {
   if (await pathExists(path.join(ROOT, 'package-lock.json'))) await copyFileRelative('package-lock.json', outRoot);
   await copyFileRelative('tunnel-icon.svg', outRoot);
   await copyDirRelative('server', outRoot);
+  await copyDirRelative('tools/sing-box', outRoot);
   // These UMD modules are also required by the copied CommonJS server. Their
   // browser callers still use hashed assets; the backend needs fixed filenames.
   await copyFileRelative('client/disk-error-messages.js', outRoot);

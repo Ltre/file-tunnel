@@ -1,0 +1,472 @@
+
+Opening IndexedDB...
+browser-logs.js:217 IndexedDB opened successfully, version: 7
+browser-logs.js:217 Loading session data for: 17e1a6a0-f1f9-493a-9e80-08b801d8a142
+browser-logs.js:217 Loaded messages: 7
+browser-logs.js:217 Rendering file message: 23ddce85-68d8-428b-bba6-e689794405d2 Website_Information_Form.doc isSmall: undefined
+browser-logs.js:217 Rendering file message: 70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1 vvvv-s10在2u52R创建56.html.zip isSmall: undefined
+browser-logs.js:217 Rendering file message: 5e12b35b-2b12-4a6d-bdcf-bdb03d8d4590 261119-ControlCentor-drag-bug.mp4 isSmall: undefined
+2browser-logs.js:217 Rendering file message: 0e5a807c-c873-4001-9025-82ecb2a534c5 cffcßchopy-s10在2u52R创建56.html.zip isSmall: undefined
+browser-logs.js:217 Loading editor content...
+browser-logs.js:217 Socket connected
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Waiting for peer to initiate connection: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : checking
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : connecting
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '17e1a6a0-f1f9-493a-9e80-08b801d8a142', deviceId: 'bb4cc1d7-a57f-49da-8004-a0c5be3c90f4', dependency: 'webrtc-ice-services', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', url: 'stun:stun.stunprotocol.org:3478', …}
+3browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Waiting for peer to initiate connection: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '17e1a6a0-f1f9-493a-9e80-08b801d8a142', deviceId: 'bb4cc1d7-a57f-49da-8004-a0c5be3c90f4', dependency: 'webrtc-ice-services', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', url: 'stun:stun.stunprotocol.org:3478', …}
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:35:45.256Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', assetName: 'vvvv-s10在2u52R创建56.html.zip', size: 634, …}
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : checking
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:35:45.261Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwmkze3x-xay4zot6', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-start', at: '2026-11-18T20:35:45.262Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwmkze3x-xay4zot6'}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-return', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-returned', at: '2026-11-18T20:35:45.265Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwmkze3x-xay4zot6', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-created', at: '2026-11-18T20:35:45.266Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwmkze3x-xay4zot6', …}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-skip-negotiated', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45'}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-offer-ensured', at: '2026-11-18T20:35:45.268Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwmkze3x-xay4zot6', …}
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : connecting
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:35:45.361Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', assetName: 'cffcßchopy-s10在2u52R创建56.html.zip', size: 641, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:35:45.363Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwmkze7z-g2seujvm:force:discovery:0e5a807c-c873-4001-9025-82ecb2a534c5:1:1795034144446', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-start', at: '2026-11-18T20:35:45.364Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwmkze7z-g2seujvm:force:discovery:0e5a807c-c873-4001-9025-82ecb2a534c5:1:1795034144446'}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-return', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-returned', at: '2026-11-18T20:35:45.365Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwmkze7z-g2seujvm:force:discovery:0e5a807c-c873-4001-9025-82ecb2a534c5:1:1795034144446', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-created', at: '2026-11-18T20:35:45.365Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwmkze7z-g2seujvm:force:discovery:0e5a807c-c873-4001-9025-82ecb2a534c5:1:1795034144446', …}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-skip-negotiated', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45'}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-offer-ensured', at: '2026-11-18T20:35:45.366Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwmkze7z-g2seujvm:force:discovery:0e5a807c-c873-4001-9025-82ecb2a534c5:1:1795034144446', …}
+2browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-timeout', at: '2026-11-18T20:35:50.274Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwmkze3x-xay4zot6', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:35:50.277Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwmkze3x-xay4zot6', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:35:50.278Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwmkze3x-xay4zot6'}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-timeout', at: '2026-11-18T20:35:50.369Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwmkze7z-g2seujvm:force:discovery:0e5a807c-c873-4001-9025-82ecb2a534c5:1:1795034144446', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:35:50.370Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwmkze7z-g2seujvm:force:discovery:0e5a807c-c873-4001-9025-82ecb2a534c5:1:1795034144446', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:35:50.370Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwmkze7z-g2seujvm:force:discovery:0e5a807c-c873-4001-9025-82ecb2a534c5:1:1795034144446'}
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : disconnected
+browser-logs.js:217 P2P connection temporarily disconnected with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : failed
+browser-logs.js:217 Connection failed, attempting to reconnect...
+browser-logs.js:217 [file-asset-route] {phase: 'relay-failed', at: '2026-11-18T20:36:20.282Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwmkze3x-xay4zot6', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:36:20.283Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', assetName: 'transfer-smoke-test.txt', size: 45, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:36:20.285Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwmkzkj6-05ygcx5v', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-start', at: '2026-11-18T20:36:20.285Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwmkzkj6-05ygcx5v'}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: null}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-return', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-returned', at: '2026-11-18T20:36:20.288Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwmkzkj6-05ygcx5v', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-created', at: '2026-11-18T20:36:20.288Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwmkzkj6-05ygcx5v', …}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-sent', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', signalingState: 'have-local-offer', iceGatheringState: 'new'}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-offer-ensured', at: '2026-11-18T20:36:20.296Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwmkzkj6-05ygcx5v', …}
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '17e1a6a0-f1f9-493a-9e80-08b801d8a142', deviceId: 'bb4cc1d7-a57f-49da-8004-a0c5be3c90f4', dependency: 'webrtc-ice-services', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+pc.onicecandidateerror @ app.js:2374
+browser-logs.js:217 [file-asset-route] {phase: 'relay-failed', at: '2026-11-18T20:36:20.371Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwmkze7z-g2seujvm:force:discovery:0e5a807c-c873-4001-9025-82ecb2a534c5:1:1795034144446', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:36:20.371Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', assetName: 'Website_Information_Form.doc', size: 39936, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:36:20.372Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwmkze82-kvn9z1nt', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-start', at: '2026-11-18T20:36:20.373Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwmkze82-kvn9z1nt'}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-return', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-returned', at: '2026-11-18T20:36:20.373Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwmkze82-kvn9z1nt', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-wait-existing-negotiation', at: '2026-11-18T20:36:20.373Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwmkze82-kvn9z1nt', …}
+3browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Waiting for peer to initiate connection: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Sending ICE candidate to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '17e1a6a0-f1f9-493a-9e80-08b801d8a142', deviceId: 'bb4cc1d7-a57f-49da-8004-a0c5be3c90f4', dependency: 'webrtc-ice-services', peerDeviceId: '15ac45d3-ec7a-45f4-8a56-63373e8c7276', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+pc.onicecandidateerror @ app.js:2374
+browser-logs.js:217 ICE connection state for 15ac45d3-ec7a-45f4-8a56-63373e8c7276 : checking
+browser-logs.js:217 Connection state for 15ac45d3-ec7a-45f4-8a56-63373e8c7276 : connecting
+browser-logs.js:217 ICE connection state for 15ac45d3-ec7a-45f4-8a56-63373e8c7276 : connected
+browser-logs.js:217 P2P connection established with 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connection state for 15ac45d3-ec7a-45f4-8a56-63373e8c7276 : connected
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Data channel opened with 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Data channel timeout for 1f6df863-17d4-4a87-a2cb-78723711be45
+global.console.<computed> @ browser-logs.js:217
+check @ app.js:6228
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+setTimeout
+check @ app.js:6232
+(anonymous) @ app.js:6236
+waitForDataChannel @ app.js:6207
+sendRequestedAsset @ file-assets.js:1444
+await in sendRequestedAsset
+dispatchUploads @ file-assets.js:1231
+(anonymous) @ file-assets.js:1241
+Promise.finally
+dispatchUploads @ file-assets.js:1236
+handleRequest @ file-assets.js:1218
+(anonymous) @ app.js:2161
+(anonymous) @ index.js:136
+emitEvent @ socket.js:552
+onevent @ socket.js:539
+onpacket @ socket.js:507
+(anonymous) @ index.js:136
+(anonymous) @ manager.js:217
+Promise.then
+(anonymous) @ globals.js:4
+ondecoded @ manager.js:216
+(anonymous) @ index.js:136
+add @ index.js:142
+ondata @ manager.js:203
+(anonymous) @ index.js:136
+_onPacket @ socket.js:259
+(anonymous) @ index.js:136
+onPacket @ transport.js:99
+onData @ transport.js:91
+(anonymous) @ websocket.js:48
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-existing-negotiation-returned', at: '2026-11-18T20:36:21.924Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwmkze82-kvn9z1nt', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-created', at: '2026-11-18T20:36:21.925Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwmkze82-kvn9z1nt', …}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-skip-signaling-busy', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', signalingState: 'have-local-offer'}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-offer-ensured', at: '2026-11-18T20:36:21.926Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwmkze82-kvn9z1nt', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-timeout', at: '2026-11-18T20:36:25.299Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwmkzkj6-05ygcx5v', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:36:25.300Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwmkzkj6-05ygcx5v', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:36:25.300Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwmkzkj6-05ygcx5v'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-failed', at: '2026-11-18T20:36:25.311Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwmkzkj6-05ygcx5v', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:36:25.312Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124 - 副本.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:36:25.377Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwmkze8v-5e3jlrbm', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:36:25.377Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwmkze8v-5e3jlrbm', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:36:25.378Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwmkze8v-5e3jlrbm', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:36:25.378Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwmkze8v-5e3jlrbm'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-failed', at: '2026-11-18T20:36:25.379Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwmkze8v-5e3jlrbm', …}
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-timeout', at: '2026-11-18T20:36:26.931Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwmkze82-kvn9z1nt', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:36:26.933Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwmkze82-kvn9z1nt', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:36:26.934Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwmkze82-kvn9z1nt'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-failed', at: '2026-11-18T20:36:26.940Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwmkze82-kvn9z1nt', …}
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:11.136Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', assetName: 'transfer-smoke-test.txt', size: 45, …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:11.137Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', assetName: 'vvvv-s10在2u52R创建56.html.zip', size: 634, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:11.141Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwml18dh-vkv3fazb:force:retry:927e2358-3a0b-4e5c-9bed-e1775e9d0d74:1:1795034198931', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-start', at: '2026-11-18T20:37:11.142Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwml18dh-vkv3fazb:force:retry:927e2358-3a0b-4e5c-9bed-e1775e9d0d74:1:1795034198931'}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-return', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-returned', at: '2026-11-18T20:37:11.144Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwml18dh-vkv3fazb:force:retry:927e2358-3a0b-4e5c-9bed-e1775e9d0d74:1:1795034198931', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-created', at: '2026-11-18T20:37:11.145Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwml18dh-vkv3fazb:force:retry:927e2358-3a0b-4e5c-9bed-e1775e9d0d74:1:1795034198931', …}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:11.147Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwml18dh-vkv3fazb:force:retry:927e2358-3a0b-4e5c-9bed-e1775e9d0d74:1:1795034198931', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:11.148Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwml18dh-vkv3fazb:force:retry:927e2358-3a0b-4e5c-9bed-e1775e9d0d74:1:1795034198931'}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:11.151Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwml18di-niwouk2k', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:11.154Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwml18di-niwouk2k', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:11.155Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwml18di-niwouk2k', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:11.156Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwml18di-niwouk2k'}
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : checking
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : connecting
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '17e1a6a0-f1f9-493a-9e80-08b801d8a142', deviceId: 'bb4cc1d7-a57f-49da-8004-a0c5be3c90f4', dependency: 'webrtc-ice-services', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+pc.onicecandidateerror @ app.js:2374
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:11.363Z', assetId: '927e2358-3a0b-4e5c-9bed-e1775e9d0d74', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-927e2358-mwml18dh-vkv3fazb:force:retry:927e2358-3a0b-4e5c-9bed-e1775e9d0d74:1:1795034198931', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:11.366Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', assetName: 'cffcßchopy-s10在2u52R创建56.html.zip', size: 641, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:11.369Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwml18ho-4j2aal5b:force:1795034152648-fq0wkn', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:11.370Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwml18ho-4j2aal5b:force:1795034152648-fq0wkn', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:11.372Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwml18ho-4j2aal5b:force:1795034152648-fq0wkn', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:11.372Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwml18ho-4j2aal5b:force:1795034152648-fq0wkn'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:11.447Z', assetId: '70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-70e8d0b0-mwml18di-niwouk2k', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:11.450Z', assetId: 'fa86ef8c-c22d-4b77-96e0-672b9e41f03c', assetName: 'gui-config-ssnz.json', size: 20261, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:11.458Z', assetId: 'fa86ef8c-c22d-4b77-96e0-672b9e41f03c', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-fa86ef8c-mwml18di-yf7uf4hq', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:11.459Z', assetId: 'fa86ef8c-c22d-4b77-96e0-672b9e41f03c', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-fa86ef8c-mwml18di-yf7uf4hq', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:11.459Z', assetId: 'fa86ef8c-c22d-4b77-96e0-672b9e41f03c', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-fa86ef8c-mwml18di-yf7uf4hq', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:11.460Z', assetId: 'fa86ef8c-c22d-4b77-96e0-672b9e41f03c', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-fa86ef8c-mwml18di-yf7uf4hq'}
+2browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:11.685Z', assetId: '0e5a807c-c873-4001-9025-82ecb2a534c5', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0e5a807c-mwml18ho-4j2aal5b:force:1795034152648-fq0wkn', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:11.686Z', assetId: '0fe13482-f1f5-481d-927b-704a01aaa354', assetName: 'dzfp_24342000000124857272_方耿中_20240914100418 (1).pdf', size: 129958, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:11.690Z', assetId: '0fe13482-f1f5-481d-927b-704a01aaa354', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0fe13482-mwml18n7-3q9ph9gh', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:11.691Z', assetId: '0fe13482-f1f5-481d-927b-704a01aaa354', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0fe13482-mwml18n7-3q9ph9gh', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:11.692Z', assetId: '0fe13482-f1f5-481d-927b-704a01aaa354', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0fe13482-mwml18n7-3q9ph9gh', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:11.692Z', assetId: '0fe13482-f1f5-481d-927b-704a01aaa354', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0fe13482-mwml18n7-3q9ph9gh'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:11.752Z', assetId: 'fa86ef8c-c22d-4b77-96e0-672b9e41f03c', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-fa86ef8c-mwml18di-yf7uf4hq', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:11.755Z', assetId: 'e8e292cf-65fa-4d67-be9b-a64a7775f9eb', assetName: 'dzfp_24342000000124857272_方耿中_20240914100418.pdf', size: 129958, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:11.765Z', assetId: 'e8e292cf-65fa-4d67-be9b-a64a7775f9eb', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-e8e292cf-mwml18ql-npg6d1f3', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:11.769Z', assetId: 'e8e292cf-65fa-4d67-be9b-a64a7775f9eb', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-e8e292cf-mwml18ql-npg6d1f3', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:11.775Z', assetId: 'e8e292cf-65fa-4d67-be9b-a64a7775f9eb', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-e8e292cf-mwml18ql-npg6d1f3', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:11.776Z', assetId: 'e8e292cf-65fa-4d67-be9b-a64a7775f9eb', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-e8e292cf-mwml18ql-npg6d1f3'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:12.659Z', assetId: '0fe13482-f1f5-481d-927b-704a01aaa354', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-0fe13482-mwml18n7-3q9ph9gh', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:12.661Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', assetName: 'Website_Information_Form.doc', size: 39936, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:12.664Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwml19er-grmfk709', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:12.665Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwml19er-grmfk709', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:12.665Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwml19er-grmfk709', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:12.665Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwml19er-grmfk709'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:12.885Z', assetId: 'e8e292cf-65fa-4d67-be9b-a64a7775f9eb', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-e8e292cf-mwml18ql-npg6d1f3', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:12.887Z', assetId: '6371ca6f-2f43-40c4-950a-66011608a8bf', assetName: 'dzfp_24342000000124857272_方耿中_20240914100418 (2).pdf', size: 129958, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:12.917Z', assetId: '6371ca6f-2f43-40c4-950a-66011608a8bf', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-6371ca6f-mwml19nk-aneo1wgk', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:12.918Z', assetId: '6371ca6f-2f43-40c4-950a-66011608a8bf', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-6371ca6f-mwml19nk-aneo1wgk', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:12.919Z', assetId: '6371ca6f-2f43-40c4-950a-66011608a8bf', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-6371ca6f-mwml19nk-aneo1wgk', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:12.919Z', assetId: '6371ca6f-2f43-40c4-950a-66011608a8bf', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-6371ca6f-mwml19nk-aneo1wgk'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:12.959Z', assetId: '23ddce85-68d8-428b-bba6-e689794405d2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-23ddce85-mwml19er-grmfk709', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:12.962Z', assetId: '2d1b89f2-03a6-454d-b4ad-9e3364b59adf', assetName: '日本知名奶茶广告～プニャボ、ニャイゴチ-加长版.mkv', size: 508491, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:12.965Z', assetId: '2d1b89f2-03a6-454d-b4ad-9e3364b59adf', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-2d1b89f2-mwml18tr-kkja8xnp', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:12.966Z', assetId: '2d1b89f2-03a6-454d-b4ad-9e3364b59adf', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-2d1b89f2-mwml18tr-kkja8xnp', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:12.967Z', assetId: '2d1b89f2-03a6-454d-b4ad-9e3364b59adf', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-2d1b89f2-mwml18tr-kkja8xnp', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:12.968Z', assetId: '2d1b89f2-03a6-454d-b4ad-9e3364b59adf', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-2d1b89f2-mwml18tr-kkja8xnp'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:13.405Z', assetId: '6371ca6f-2f43-40c4-950a-66011608a8bf', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-6371ca6f-mwml19nk-aneo1wgk', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:13.408Z', assetId: '5e12b35b-2b12-4a6d-bdcf-bdb03d8d4590', assetName: '261119-ControlCentor-drag-bug.mp4', size: 707294, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:13.413Z', assetId: '5e12b35b-2b12-4a6d-bdcf-bdb03d8d4590', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-5e12b35b-mwml19zt-n286hjdo', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:13.415Z', assetId: '5e12b35b-2b12-4a6d-bdcf-bdb03d8d4590', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-5e12b35b-mwml19zt-n286hjdo', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:13.416Z', assetId: '5e12b35b-2b12-4a6d-bdcf-bdb03d8d4590', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-5e12b35b-mwml19zt-n286hjdo', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:13.416Z', assetId: '5e12b35b-2b12-4a6d-bdcf-bdb03d8d4590', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-5e12b35b-mwml19zt-n286hjdo'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:13.860Z', assetId: '2d1b89f2-03a6-454d-b4ad-9e3364b59adf', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-2d1b89f2-mwml18tr-kkja8xnp', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:13.862Z', assetId: 'c8b7a7a8-fa1d-4771-8e62-64ee0ae76516', assetName: 'Claude Setup.exe', size: 7512224, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:13.893Z', assetId: 'c8b7a7a8-fa1d-4771-8e62-64ee0ae76516', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c8b7a7a8-mwml1af3-5kippbum', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:13.894Z', assetId: 'c8b7a7a8-fa1d-4771-8e62-64ee0ae76516', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c8b7a7a8-mwml1af3-5kippbum', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:13.894Z', assetId: 'c8b7a7a8-fa1d-4771-8e62-64ee0ae76516', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c8b7a7a8-mwml1af3-5kippbum', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:13.895Z', assetId: 'c8b7a7a8-fa1d-4771-8e62-64ee0ae76516', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c8b7a7a8-mwml1af3-5kippbum'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:14.391Z', assetId: '5e12b35b-2b12-4a6d-bdcf-bdb03d8d4590', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-5e12b35b-mwml19zt-n286hjdo', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:14.394Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:14.431Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml18f0-vn93039i:part-0:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:14.432Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml18f0-vn93039i:part-0:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:14.433Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml18f0-vn93039i:part-0:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:14.433Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml18f0-vn93039i:part-0:0'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:18.562Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml18f0-vn93039i:part-0:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:18.563Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:18.598Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml19n7-yrnnwwqp:part-3:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-start', at: '2026-11-18T20:37:18.600Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml19n7-yrnnwwqp:part-3:0'}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-return', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-returned', at: '2026-11-18T20:37:18.602Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml19n7-yrnnwwqp:part-3:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-created', at: '2026-11-18T20:37:18.604Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml19n7-yrnnwwqp:part-3:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-skip-negotiated', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45'}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-offer-ensured', at: '2026-11-18T20:37:18.607Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml19n7-yrnnwwqp:part-3:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-timeout', at: '2026-11-18T20:37:23.609Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml19n7-yrnnwwqp:part-3:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:23.609Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml19n7-yrnnwwqp:part-3:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:23.609Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml19n7-yrnnwwqp:part-3:0'}
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:27.120Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml19n7-yrnnwwqp:part-3:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:27.121Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124 - 副本.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:27.203Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1arp-0481qoid:part-0:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:27.204Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1arp-0481qoid:part-0:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:27.205Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1arp-0481qoid:part-0:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:27.206Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1arp-0481qoid:part-0:0'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-failed', at: '2026-11-18T20:37:27.228Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1arp-0481qoid:part-0:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:27.229Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124 - 副本.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:27.308Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1eq0-lsls6mvz:part-3:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:27.308Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1eq0-lsls6mvz:part-3:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:27.309Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1eq0-lsls6mvz:part-3:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:27.309Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1eq0-lsls6mvz:part-3:0'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:27.993Z', assetId: 'c8b7a7a8-fa1d-4771-8e62-64ee0ae76516', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c8b7a7a8-mwml1af3-5kippbum', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:27.994Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:28.035Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1jzb-ej5gqkrd:part-5:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:28.035Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1jzb-ej5gqkrd:part-5:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:28.035Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1jzb-ej5gqkrd:part-5:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:28.035Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1jzb-ej5gqkrd:part-5:0'}
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : disconnected
+browser-logs.js:217 P2P connection temporarily disconnected with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : failed
+browser-logs.js:217 Connection failed, attempting to reconnect...
+global.console.<computed> @ browser-logs.js:217
+pc.onconnectionstatechange @ app.js:2422
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:31.353Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1eq0-lsls6mvz:part-3:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:31.354Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124 - 副本.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:31.384Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1nzb-xwgvg61b:part-4:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-start', at: '2026-11-18T20:37:31.385Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1nzb-xwgvg61b:part-4:0'}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: null}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-return', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-returned', at: '2026-11-18T20:37:31.388Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1nzb-xwgvg61b:part-4:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-created', at: '2026-11-18T20:37:31.389Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1nzb-xwgvg61b:part-4:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-sent', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', signalingState: 'have-local-offer', iceGatheringState: 'new'}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-offer-ensured', at: '2026-11-18T20:37:31.395Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1nzb-xwgvg61b:part-4:0', …}
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '17e1a6a0-f1f9-493a-9e80-08b801d8a142', deviceId: 'bb4cc1d7-a57f-49da-8004-a0c5be3c90f4', dependency: 'webrtc-ice-services', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+pc.onicecandidateerror @ app.js:2374
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : checking
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : connecting
+2browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:32.015Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1jzb-ej5gqkrd:part-5:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:32.016Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:32.044Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1oif-nhc51yqk:part-6:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-start', at: '2026-11-18T20:37:32.045Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1oif-nhc51yqk:part-6:0'}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-return', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-returned', at: '2026-11-18T20:37:32.046Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1oif-nhc51yqk:part-6:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-created', at: '2026-11-18T20:37:32.047Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1oif-nhc51yqk:part-6:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-skip-negotiated', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45'}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-offer-ensured', at: '2026-11-18T20:37:32.048Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1oif-nhc51yqk:part-6:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-timeout', at: '2026-11-18T20:37:36.395Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1nzb-xwgvg61b:part-4:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:36.396Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1nzb-xwgvg61b:part-4:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:36.396Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1nzb-xwgvg61b:part-4:0'}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-timeout', at: '2026-11-18T20:37:37.048Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1oif-nhc51yqk:part-6:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:37.049Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1oif-nhc51yqk:part-6:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:37.049Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1oif-nhc51yqk:part-6:0'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:37.964Z', assetId: 'c5908f95-e3c4-4d06-a02d-be3e8adaa5ba', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-c5908f95-mwml1oif-nhc51yqk:part-6:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:37:37.965Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124 - 副本.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:37:37.991Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1plg-zkppqf43:part-5:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-cooldown-hit', at: '2026-11-18T20:37:37.992Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1plg-zkppqf43:part-5:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:37:37.992Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1plg-zkppqf43:part-5:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:37:37.993Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1plg-zkppqf43:part-5:0'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:38.265Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1nzb-xwgvg61b:part-4:0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:37:40.265Z', assetId: '685a302d-a92a-4830-adda-292ebf6f99c2', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-685a302d-mwml1plg-zkppqf43:part-5:0', …}
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : disconnected
+browser-logs.js:217 P2P connection temporarily disconnected with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : failed
+browser-logs.js:217 Connection failed, attempting to reconnect...
+global.console.<computed> @ browser-logs.js:217
+pc.onconnectionstatechange @ app.js:2422
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Waiting for peer to initiate connection: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '17e1a6a0-f1f9-493a-9e80-08b801d8a142', deviceId: 'bb4cc1d7-a57f-49da-8004-a0c5be3c90f4', dependency: 'webrtc-ice-services', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+pc.onicecandidateerror @ app.js:2374
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : checking
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : connecting
+3browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] {phase: 'request-received', at: '2026-11-18T20:38:02.918Z', assetId: 'f60972b0-23e2-484a-a852-de587784773d', assetName: '日本知名奶茶广告～プニャボ、ニャイゴチ-核心版.mkv', size: 256541, …}
+browser-logs.js:217 [file-asset-route] {phase: 'provider-cache-check', at: '2026-11-18T20:38:02.920Z', assetId: 'f60972b0-23e2-484a-a852-de587784773d', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-f60972b0-mwml2cay-t177asg6:force:retry:f60972b0-23e2-484a-a852-de587784773d:1:1795034278928', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-start', at: '2026-11-18T20:38:02.921Z', assetId: 'f60972b0-23e2-484a-a852-de587784773d', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-f60972b0-mwml2cay-t177asg6:force:retry:f60972b0-23e2-484a-a852-de587784773d:1:1795034278928'}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-connect-peer-for-file-asset-return', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-connect-returned', at: '2026-11-18T20:38:02.922Z', assetId: 'f60972b0-23e2-484a-a852-de587784773d', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-f60972b0-mwml2cay-t177asg6:force:retry:f60972b0-23e2-484a-a852-de587784773d:1:1795034278928', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-created', at: '2026-11-18T20:38:02.922Z', assetId: 'f60972b0-23e2-484a-a852-de587784773d', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-f60972b0-mwml2cay-t177asg6:force:retry:f60972b0-23e2-484a-a852-de587784773d:1:1795034278928', …}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-start', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', peer: {…}}
+browser-logs.js:217 [file-asset-route] {phase: 'app-ensure-offer-skip-negotiated', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45'}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-offer-ensured', at: '2026-11-18T20:38:02.923Z', assetId: 'f60972b0-23e2-484a-a852-de587784773d', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-f60972b0-mwml2cay-t177asg6:force:retry:f60972b0-23e2-484a-a852-de587784773d:1:1795034278928', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-file-channel-timeout', at: '2026-11-18T20:38:07.924Z', assetId: 'f60972b0-23e2-484a-a852-de587784773d', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-f60972b0-mwml2cay-t177asg6:force:retry:f60972b0-23e2-484a-a852-de587784773d:1:1795034278928', …}
+browser-logs.js:217 [file-asset-route] {phase: 'p2p-degrade-to-relay', at: '2026-11-18T20:38:07.925Z', assetId: 'f60972b0-23e2-484a-a852-de587784773d', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-f60972b0-mwml2cay-t177asg6:force:retry:f60972b0-23e2-484a-a852-de587784773d:1:1795034278928', …}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-start', at: '2026-11-18T20:38:07.925Z', assetId: 'f60972b0-23e2-484a-a852-de587784773d', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-f60972b0-mwml2cay-t177asg6:force:retry:f60972b0-23e2-484a-a852-de587784773d:1:1795034278928'}
+browser-logs.js:217 [file-asset-route] {phase: 'relay-completed', at: '2026-11-18T20:38:08.491Z', assetId: 'f60972b0-23e2-484a-a852-de587784773d', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', requestId: 'req-f60972b0-mwml2cay-t177asg6:force:retry:f60972b0-23e2-484a-a852-de587784773d:1:1795034278928', …}
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : disconnected
+browser-logs.js:217 P2P connection temporarily disconnected with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : failed
+browser-logs.js:217 Connection failed, attempting to reconnect...
+global.console.<computed> @ browser-logs.js:217
+pc.onconnectionstatechange @ app.js:2422
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Waiting for peer to initiate connection: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : checking
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : connecting
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '17e1a6a0-f1f9-493a-9e80-08b801d8a142', deviceId: 'bb4cc1d7-a57f-49da-8004-a0c5be3c90f4', dependency: 'webrtc-ice-services', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+pc.onicecandidateerror @ app.js:2374
+3browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : disconnected
+browser-logs.js:217 P2P connection temporarily disconnected with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : failed
+browser-logs.js:217 Connection failed, attempting to reconnect...
+global.console.<computed> @ browser-logs.js:217
+pc.onconnectionstatechange @ app.js:2422
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Waiting for peer to initiate connection: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '17e1a6a0-f1f9-493a-9e80-08b801d8a142', deviceId: 'bb4cc1d7-a57f-49da-8004-a0c5be3c90f4', dependency: 'webrtc-ice-services', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+pc.onicecandidateerror @ app.js:2374
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : checking
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : connecting
+3browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : disconnected
+browser-logs.js:217 P2P connection temporarily disconnected with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : failed
+browser-logs.js:217 Connection failed, attempting to reconnect...
+global.console.<computed> @ browser-logs.js:217
+pc.onconnectionstatechange @ app.js:2422
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Waiting for peer to initiate connection: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : checking
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : connecting
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '17e1a6a0-f1f9-493a-9e80-08b801d8a142', deviceId: 'bb4cc1d7-a57f-49da-8004-a0c5be3c90f4', dependency: 'webrtc-ice-services', peerDeviceId: '1f6df863-17d4-4a87-a2cb-78723711be45', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+pc.onicecandidateerror @ app.js:2374
+3browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45

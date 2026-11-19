@@ -9,6 +9,8 @@ const https = require('node:https');
 const net = require('node:net');
 const tls = require('node:tls');
 const twitterMedia = require('./twitter-post-media');
+let upstreamAdapter;
+function setUpstreamAdapter(adapter) { upstreamAdapter = adapter; }
 
 const SOURCE_DOMAINS = ['youtube.com', 'youtu.be', 'tiktok.com', 'facebook.com', 'fb.watch', 'instagram.com',
     'threads.com', 'threads.net', 'line.me', 'twitter.com', 'x.com', 'bilibili.com', 'b23.tv', 'music.163.com', '163cn.tv', '163cn.link'];
@@ -207,7 +209,11 @@ async function proxySocket(value, url, addresses, timeoutMs) {
 }
 
 /** Public-DNS-pinned request: page/redirect URLs are constrained separately; cookies never follow to a CDN. */
-async function readPublicUrl(value, { maxBytes = 2 * 1024 * 1024, cookie = '', timeoutMs = 20000, proxy: proxyOverride,
+async function readPublicUrl(value, options = {}) {
+    if (upstreamAdapter && options.proxy === undefined) return upstreamAdapter.publicProxy(value, proxy => readPublicUrlUnrouted(value, { ...options, ...(proxy === undefined ? {} : { proxy }) }));
+    return readPublicUrlUnrouted(value, options);
+}
+async function readPublicUrlUnrouted(value, { maxBytes = 2 * 1024 * 1024, cookie = '', timeoutMs = 20000, proxy: proxyOverride,
     twitterNetwork = false, dnsBootstrap = false, accept = 'text/html,application/json,image/*;q=0.8' } = {}) {
     const href = safeHttpUrl(value);
     if (!href) return Promise.reject(Error('SNS_POST_URL_UNSUPPORTED'));
@@ -459,7 +465,8 @@ async function inspectSnsPost(source, { runMetadata, cookieFileForUrl, request, 
     }
     if (isTwitter && incomplete()) {
         try {
-            const browser = await (readBrowserPost || require('./twitter-post-browser').readBrowserPost)(source.sourceUrl, { cookie: cookieHeader(cookieFileForUrl?.(source.sourceUrl), source.sourceUrl), proxy: configuredProxy(new URL(source.sourceUrl)) });
+            const read = proxy => (readBrowserPost || require('./twitter-post-browser').readBrowserPost)(source.sourceUrl, { cookie: cookieHeader(cookieFileForUrl?.(source.sourceUrl), source.sourceUrl), proxy: proxy === undefined ? configuredProxy(new URL(source.sourceUrl)) : proxy });
+            const browser = await (upstreamAdapter ? upstreamAdapter.publicProxy(source.sourceUrl, read) : read());
             webpage = twitterMedia.mergeParts([webpage, browser]);
             recoveredEntries = twitterMedia.mergeMetas(recoveredEntries, browser.videoMetas);
         } catch (_) { /* A crawler failure must not erase media already obtained. */ }
@@ -521,7 +528,7 @@ function buildPostMarkdown({ source, metadata, media, avatar, notes = [] }) {
 }
 
 /** All external operations are injected. Authorization is checked again after every long wait. */
-function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}, acquire, image, publish, updatePublished, existing, sender, cleanup, trackProgress = false, onError = () => {} }) {
+function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}, acquire, image, publish, updatePublished, existing, sender, cleanup, trackProgress = false, runTask = (_source, work) => work(), onError = () => {} }) {
     const jobs = new Map();
     function start({ sessionId, messageId, sourceId, deviceId }) {
         authorize(sessionId, deviceId);
@@ -554,7 +561,7 @@ function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}
         }
         const ready = Promise.resolve().then(() => report({ stage: 'inspect', frameworkReady: false, done: 0, total: null }, !found));
         const job = { id, sessionId, started: true, ready };
-        job.promise = ready.then(async () => {
+        job.promise = ready.then(() => runTask(source, async () => {
             const metadata = await inspect(source);
             authorize(sessionId, deviceId);
             await prepare(sessionId, messageId, source, metadata);
@@ -623,12 +630,15 @@ function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}
             }
             else await publish(sessionId, message, deviceId);
             return message;
-        }).catch(async error => {
+        })).catch(async error => {
             try { if (ownerId) await cleanup(sessionId, ownerId); }
             finally {
                 if (progress && record(sessionId, id)) {
-                    const code = /^(?:SNS_(?:POST|X)_[A-Z0-9_]+|permission-denied)$/.test(error.message) ? error.message : 'SNS_POST_FAILED';
-                    await report({ ...progress, stage: 'failed', error: code });
+                    const httpStatus = Number(String(error.message || '').match(/\bHTTP(?:\s+Error)?\s*:?\s*(\d{3})\b/i)?.[1]);
+                    const code = /^(?:SNS_(?:POST|X)_[A-Z0-9_]+|permission-denied)$/.test(error.message) ? error.message
+                        : progress.stage === 'resources' && httpStatus >= 400 && httpStatus <= 599 ? 'SNS_POST_MEDIA_UNAVAILABLE' : 'SNS_POST_FAILED';
+                    await report({ ...progress, stage: 'failed', error: code,
+                        ...(httpStatus >= 400 && httpStatus <= 599 ? { httpStatus } : {}) });
                 }
             }
             throw error;
@@ -644,11 +654,14 @@ function createSnsPostPublisher({ authorize, record, inspect, prepare = () => {}
 function createTunnelSnsPostPublisher(options) {
     const { record, session, authorize, publish, sender } = options;
     return createSnsPostPublisher({
-        authorize, record, publish, sender, updatePublished: options.update, cleanup: options.cleanup, trackProgress: options.trackProgress,
+        authorize, record, publish, sender, runTask: options.runTask, updatePublished: options.update, cleanup: options.cleanup, trackProgress: options.trackProgress,
         existing: (sessionId, messageId, sourceId) => (session(sessionId)?.history || []).map(entry => entry.message || entry)
             .find(message => message?.type === 'markdown' && message.snsAcquisition?.source === 'sns-post-markdown' &&
                 message.snsAcquisition.sourceMessageId === messageId && message.snsAcquisition.sourceId === sourceId),
-        inspect: source => inspectSnsPost(source, { runMetadata: options.metadata, cookieFileForUrl: options.cookieFileForUrl, request: options.request, readBrowserPost: options.readBrowserPost }),
+        inspect: source => {
+            const work = () => inspectSnsPost(source, { runMetadata: options.metadata, cookieFileForUrl: options.cookieFileForUrl, request: options.request, readBrowserPost: options.readBrowserPost });
+            return upstreamAdapter ? upstreamAdapter.content(source.sourceUrl, work, value => Boolean(value.mediaParsed || value.images?.length || value.title)) : work();
+        },
         prepare(sessionId, messageId, source, metadata) {
             if (!metadata.mediaParsed && !metadata.images?.length) return;
             const message = record(sessionId, messageId);
@@ -688,5 +701,5 @@ function createTunnelSnsPostPublisher(options) {
     });
 }
 
-module.exports = { sourceUrl, publicAddress, twitterAddresses, cookieHeader, configuredProxy, readPublicUrl, extractPostMetadata, readWebPost, readTwitterPost, readSnsPostContent, readPostImage, inspectSnsPost, createSnsPostImagePublisher,
+module.exports = { setUpstreamAdapter, sourceUrl, publicAddress, twitterAddresses, cookieHeader, configuredProxy, readPublicUrl, extractPostMetadata, readWebPost, readTwitterPost, readSnsPostContent, readPostImage, inspectSnsPost, createSnsPostImagePublisher,
     buildPostMarkdown, createSnsPostPublisher, createTunnelSnsPostPublisher };

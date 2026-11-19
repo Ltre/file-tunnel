@@ -67,20 +67,26 @@ function createAssetRecord(asset, providerId = 'provider-one') {
     };
 }
 
-test('explicit P2P abandonment is forwarded only by the assigned provider for its current request and exact attempt', () => {
-    for (const [provider, requestId, abandonedAttemptId, expected] of [
-        ['provider-one', 'req-current', 'req-current-p2p-full', true],
-        ['provider-one', 'req-current', 'req-other-p2p-full', false],
-        ['provider-one', 'req-old', 'req-old-p2p-full', false],
-        ['unrelated-provider', 'req-current', 'req-current-p2p-full', false]
+test('transfer status retains assigned-provider and current-request checks without forwarding obsolete abandonment fields', () => {
+    for (const [provider, requestId, abandonedAttemptId] of [
+        ['provider-one', 'req-current', 'req-current-p2p-full'],
+        ['provider-one', 'req-current', 'req-other-p2p-full'],
+        ['provider-one', 'req-old', 'req-old-p2p-full'],
+        ['unrelated-provider', 'req-current', 'req-current-p2p-full']
     ]) {
         const asset = createAsset(), record = createAssetRecord(asset), target = createSocket(), socket = createSocket();
         record.assignments.set(asset.id + ':receiver:full', 'provider-one'); record.assignmentMeta.set(asset.id + ':receiver:full', { providerId: 'provider-one', requestId: 'req-current' });
         const handlers = registerHarness({ socket, sessionId: 'session', session: { devices: new Map(), fileAssets: new Map([[asset.id, record]]) }, currentDeviceId: provider, deviceSockets: new Map([['receiver', target]]) });
         handlers.get('file-asset-transfer-status')({ sessionId: 'session', assetId: asset.id, to: 'receiver', status: 'failed', requestId, abandonedAttemptId });
         const notice = target.emitted.find(item => item.event === 'file-asset-transfer-status');
-        assert.equal(Boolean(notice?.payload.abandonedAttemptId), expected);
-        if (expected) assert.equal(notice.payload.abandonedAttemptId, abandonedAttemptId);
+        const isCurrent = provider === 'provider-one' && requestId === 'req-current';
+        assert.equal(Boolean(notice), isCurrent);
+        if (notice) {
+            assert.equal(notice.payload.status, 'failed');
+            assert.equal(notice.payload.requestId, 'req-current');
+            assert.equal('abandonedAttemptId' in notice.payload, false);
+        }
+        assert.equal(record.assignments.has(asset.id + ':receiver:full'), !isCurrent);
     }
 });
 

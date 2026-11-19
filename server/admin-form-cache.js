@@ -34,6 +34,7 @@ function createAdminFormStore(dataDir) {
         if (!value || typeof value !== 'object' || !/^[\w-]{16,100}$/.test(value.clientKey || '') || !value.form || Array.isArray(value.form)) throw fail('admin-form-invalid', 400);
         const form = Object.fromEntries(Object.entries(value.form).filter(([key]) => FIELDS.has(key)));
         if (Object.values(form).some(item => typeof item !== 'string' && typeof item !== 'boolean')) throw fail('admin-form-invalid', 400);
+        if (!['url', 'remark', 'downloadSections', 'manualFormat'].some(key => String(form[key] || '').trim())) throw fail('admin-form-empty', 400);
         const analysis = value.analysis ?? null;
         if (analysis && (typeof analysis !== 'object' || !Array.isArray(analysis.formats))) throw fail('admin-form-formats-invalid', 400);
         const result = { clientKey: value.clientKey, form, analysis, ids: Array.isArray(value.ids) ? value.ids.map(String) : null };
@@ -56,10 +57,15 @@ function createAdminFormStore(dataDir) {
                 // A repeated initial save has the same stable identity. Return
                 // the accepted snapshot; never overwrite it with a late retry.
                 if (previous) return previous;
-                const sequence = await read(path.join(folder, '.sequence.json'));
-                id = Math.max(Number(sequence?.next) || 1, ...forms.map(form => form.id + 1));
+                const occupied = new Set(forms.map(form => form.id));
+                const localIds = Array.isArray(value.localIds) ? value.localIds : [];
+                if (localIds.length > 10000 || localIds.some(item => !Number.isSafeInteger(item) || item < 1)) throw fail('admin-form-id-invalid', 400);
+                const preferred = value.preferredId;
+                if (preferred != null && (!Number.isSafeInteger(preferred) || preferred < 1)) throw fail('admin-form-id-invalid', 400);
+                id = preferred && !occupied.has(preferred) ? preferred : 1;
+                const unavailable = new Set([...occupied, ...localIds]);
+                while (unavailable.has(id)) id++;
                 if (!Number.isSafeInteger(id)) throw fail('admin-form-id-exhausted', 507);
-                await write(path.join(folder, '.sequence.json'), { next: id + 1 });
             }
             const record = { ...data, id: Number(id), revision: randomUUID(), updatedAt: Date.now() };
             await write(fileFor(kind, id), record);

@@ -68,7 +68,8 @@ function fromPost(raw,id,verified=false) {
     if(photos(pictures).length>20)throw Error('SNS_POST_IMAGE_LIMIT');
     if(new Set(videos.map((item,index)=>videoId(item.id_str||item.id||item.media_key)||'video-'+index)).size>40)throw Error('SNS_POST_MEDIA_LIMIT');
     const body=String(post.note_tweet?.note_tweet_results?.result?.text||post.details?.full_text||legacy.full_text||post.text||'').trim().slice(0,100000);
-    return {images:photos(pictures),videoMetas:videos.map(videoMeta).filter(Boolean),videoIds:videos.map((item,index)=>videoId(item.id_str||item.id||item.media_key)||'video-'+index),
+    const playable=videos.map(videoMeta);
+    return {images:photos(pictures),videoMetas:playable.filter(Boolean),videoIds:videos.map((item,index)=>videoId(item.id_str||item.id||item.media_key)||(playable[index]?identity(playable[index]):'video-'+index)),
         inventoryKnown:collections.length>0,requiresLogin:false,body,structuredBody:Boolean(body),
         ...authorInfo(post.core?.user_results?.result || post.user || {})};
 }

@@ -1,0 +1,758 @@
+Opening IndexedDB...
+browser-logs.js:217 IndexedDB opened successfully, version: 7
+browser-logs.js:217 Loading session data for: 1796bdb9-5044-400b-9a5b-6ec0c0d8b35e
+browser-logs.js:217 Loaded messages: 0
+browser-logs.js:217 Loading editor content...
+browser-logs.js:217 Socket connected
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Waiting for peer to initiate connection: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Waiting for peer to initiate connection: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connection already in progress with 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Connection already in progress with 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Rendering file message: a25fe684-1d06-4a27-9856-4d343e129052 粘贴图片-20261107-084342.png isSmall: undefined
+browser-logs.js:217 Rendering file message: 4f71076c-da97-4710-b187-43ff34500814 kkk我的网页.html.zip isSmall: undefined
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:28.746Z', assetId: '4f71076c-da97-4710-b187-43ff34500814', assetName: 'kkk我的网页.html.zip', size: 625, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connection already in progress with 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Connection already in progress with 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Rendering file message: 6d8c70a7-a463-47ed-a9f2-94edb44bad02 我的网页.html.zip isSmall: undefined
+browser-logs.js:217 ICE connection state for 28043e58-bc52-477e-bd40-a53bfd25a4a7 : checking
+browser-logs.js:217 Sending ICE candidate to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connection state for 28043e58-bc52-477e-bd40-a53bfd25a4a7 : connecting
+browser-logs.js:217 Rendering file message: 4d1ff26b-383e-470c-baa3-e57546cf3ad7 zl5gs创建,之后被s10在别的隧道编辑.html.zip isSmall: undefined
+browser-logs.js:217 ICE connection state for 290f32a6-80de-4f70-812f-11a38834551a : checking
+browser-logs.js:217 Sending ICE candidate to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Connection state for 290f32a6-80de-4f70-812f-11a38834551a : connecting
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:28.894Z', assetId: '4d1ff26b-383e-470c-baa3-e57546cf3ad7', assetName: 'zl5gs创建,之后被s10在别的隧道编辑.html.zip', size: 655, …}
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '1796bdb9-5044-400b-9a5b-6ec0c0d8b35e', deviceId: 'dda7d5fe-c7f3-4ff4-b7e1-f44148c1dedd', dependency: 'webrtc-ice-services', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', url: 'stun:stun.cloudflare.com:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+(anonymous) @ app.js:2374
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '1796bdb9-5044-400b-9a5b-6ec0c0d8b35e', deviceId: 'dda7d5fe-c7f3-4ff4-b7e1-f44148c1dedd', dependency: 'webrtc-ice-services', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', url: 'stun:stun.cloudflare.com:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+(anonymous) @ app.js:2374
+browser-logs.js:217 Rendering file message: 354627f8-ede7-466e-bf68-f54b6d2a1a53 中山美穗 - 生意気.m4a isSmall: undefined
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '1796bdb9-5044-400b-9a5b-6ec0c0d8b35e', deviceId: 'dda7d5fe-c7f3-4ff4-b7e1-f44148c1dedd', dependency: 'webrtc-ice-services', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', url: 'stun:stun.l.google.com:19302', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+(anonymous) @ app.js:2374
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '1796bdb9-5044-400b-9a5b-6ec0c0d8b35e', deviceId: 'dda7d5fe-c7f3-4ff4-b7e1-f44148c1dedd', dependency: 'webrtc-ice-services', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', url: 'stun:stun.l.google.com:19302', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+(anonymous) @ app.js:2374
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '1796bdb9-5044-400b-9a5b-6ec0c0d8b35e', deviceId: 'dda7d5fe-c7f3-4ff4-b7e1-f44148c1dedd', dependency: 'webrtc-ice-services', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', url: 'stun:stun1.l.google.com:19302', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+(anonymous) @ app.js:2374
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '1796bdb9-5044-400b-9a5b-6ec0c0d8b35e', deviceId: 'dda7d5fe-c7f3-4ff4-b7e1-f44148c1dedd', dependency: 'webrtc-ice-services', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', url: 'stun:stun1.l.google.com:19302', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+(anonymous) @ app.js:2374
+browser-logs.js:217 ICE connection state for 28043e58-bc52-477e-bd40-a53bfd25a4a7 : connected
+browser-logs.js:217 P2P connection established with 28043e58-bc52-477e-bd40-a53bfd25a4a7
+frame_ant.js:2  POST http://10.0.0.24/api/tunnel-markdown/reference 404 (Not Found)
+o @ frame_ant.js:2
+window.fetch @ frame_ant.js:2
+window.fetch @ inspector.js:7
+(anonymous) @ tunnel-markdown.js:43
+readReference @ tunnel-markdown.js:60
+await in readReference
+resolve @ tunnel-markdown.js:306
+mount @ tunnel-markdown.js:354
+addMessageToChat @ app.js:7827
+handleSessionHistory @ app.js:7190
+await in handleSessionHistory
+(anonymous) @ app.js:7048
+enqueueSessionHistory @ app.js:7050
+(anonymous) @ app.js:2122
+(anonymous) @ index.js:136
+emitEvent @ socket.js:552
+onevent @ socket.js:539
+onpacket @ socket.js:507
+(anonymous) @ index.js:136
+(anonymous) @ manager.js:217
+Promise.then
+(anonymous) @ globals.js:4
+ondecoded @ manager.js:216
+(anonymous) @ index.js:136
+add @ index.js:142
+ondata @ manager.js:203
+(anonymous) @ index.js:136
+_onPacket @ socket.js:259
+(anonymous) @ index.js:136
+onPacket @ transport.js:99
+onData @ transport.js:91
+(anonymous) @ websocket.js:48
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Data channel opened with 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connection state for 28043e58-bc52-477e-bd40-a53bfd25a4a7 : connected
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '1796bdb9-5044-400b-9a5b-6ec0c0d8b35e', deviceId: 'dda7d5fe-c7f3-4ff4-b7e1-f44148c1dedd', dependency: 'webrtc-ice-services', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+(anonymous) @ app.js:2374
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '1796bdb9-5044-400b-9a5b-6ec0c0d8b35e', deviceId: 'dda7d5fe-c7f3-4ff4-b7e1-f44148c1dedd', dependency: 'webrtc-ice-services', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+(anonymous) @ app.js:2374
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '1796bdb9-5044-400b-9a5b-6ec0c0d8b35e', deviceId: 'dda7d5fe-c7f3-4ff4-b7e1-f44148c1dedd', dependency: 'webrtc-ice-services', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+(anonymous) @ app.js:2374
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] {sessionId: '1796bdb9-5044-400b-9a5b-6ec0c0d8b35e', deviceId: 'dda7d5fe-c7f3-4ff4-b7e1-f44148c1dedd', dependency: 'webrtc-ice-services', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', url: 'stun:stun.stunprotocol.org:3478', …}
+global.console.<computed> @ browser-logs.js:217
+externalDependencyClientLog @ app.js:621
+reportExternalIceDependency @ app.js:2337
+(anonymous) @ app.js:2374
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:29.036Z', assetId: '4d1ff26b-383e-470c-baa3-e57546cf3ad7', assetName: 'zl5gs创建,之后被s10在别的隧道编辑.html.zip', size: 655, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:25:29.038Z', assetId: '4d1ff26b-383e-470c-baa3-e57546cf3ad7', assetName: 'zl5gs创建,之后被s10在别的隧道编辑.html.zip', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+2browser-logs.js:217 Sending ICE candidate to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:25:29.333Z', assetId: '4d1ff26b-383e-470c-baa3-e57546cf3ad7', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:29.337Z', assetId: '4f71076c-da97-4710-b187-43ff34500814', assetName: 'kkk我的网页.html.zip', size: 625, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:25:29.339Z', assetId: '4f71076c-da97-4710-b187-43ff34500814', assetName: 'kkk我的网页.html.zip', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Rendering file message: 3246fb54-f79d-4571-9f55-131d46624746 录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv isSmall: undefined
+browser-logs.js:217 Rendering file message: 92bab79a-5c88-43c6-8d51-42838bd41436 反诈工作空间安装软件.mp4.139.mkv isSmall: undefined
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:25:29.533Z', assetId: '4f71076c-da97-4710-b187-43ff34500814', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Rendering file message: idmIBEfdqhgRrTofFG-7Sg Ivy - 你永远都不知道机遇到底什么时候来！  没和他握手的人，最后应该肠子都悔青了…….mp4 isSmall: undefined
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:29.742Z', assetId: 'a25fe684-1d06-4a27-9856-4d343e129052', assetName: '粘贴图片-20261107-084342.png', size: 157547, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:29.743Z', assetId: '5559c886-1ab3-4103-a4e3-23054fde9c68', assetName: 'npx发布构想计划-261027.md', size: 17372, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:29.744Z', assetId: '22b618bf-ad3a-451a-8195-2989f4ecf311', assetName: 'Website_Information_Form.doc', size: 39936, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-manifest-request-sent', at: '2026-11-16T09:25:29.745Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 ICE connection state for 290f32a6-80de-4f70-812f-11a38834551a : connected
+browser-logs.js:217 P2P connection established with 290f32a6-80de-4f70-812f-11a38834551a
+2browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:30.854Z', assetId: '5559c886-1ab3-4103-a4e3-23054fde9c68', assetName: 'npx发布构想计划-261027.md', size: 17372, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-manifest-received', at: '2026-11-16T09:25:31.263Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-multi-source-started', at: '2026-11-16T09:25:31.266Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:25:31.268Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:25:31.270Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-1', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:25:31.277Z', assetId: '5559c886-1ab3-4103-a4e3-23054fde9c68', assetName: 'npx发布构想计划-261027.md', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:31.350Z', assetId: 'a25fe684-1d06-4a27-9856-4d343e129052', assetName: '粘贴图片-20261107-084342.png', size: 157547, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:31.485Z', assetId: '44b40837-5c01-4e72-887a-5691d10d522d', assetName: '20261011_072918.jpg', size: 9010, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:25:31.617Z', assetId: '5559c886-1ab3-4103-a4e3-23054fde9c68', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Connection state for 290f32a6-80de-4f70-812f-11a38834551a : connected
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:25:32.666Z', assetId: 'a25fe684-1d06-4a27-9856-4d343e129052', assetName: '粘贴图片-20261107-084342.png', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:33.291Z', assetId: '44b40837-5c01-4e72-887a-5691d10d522d', assetName: '20261011_072918.jpg', size: 9010, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:25:33.293Z', assetId: '44b40837-5c01-4e72-887a-5691d10d522d', assetName: '20261011_072918.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:33.294Z', assetId: '8a54cfff-76e6-4854-a2cb-23ac3f8ff412', assetName: 'gui-config-ssnz.json', size: 20261, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:25:33.325Z', assetId: '44b40837-5c01-4e72-887a-5691d10d522d', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Data channel opened with 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Received data channel from 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:33.459Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:33.466Z', assetId: '7243f8cc-783c-4750-bd1c-8237a17497ce', assetName: '20260925_061432.jpg', size: 73930, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:33.468Z', assetId: '8a54cfff-76e6-4854-a2cb-23ac3f8ff412', assetName: 'gui-config-ssnz.json', size: 20261, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:25:33.561Z', assetId: '8a54cfff-76e6-4854-a2cb-23ac3f8ff412', assetName: 'gui-config-ssnz.json', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:25:33.564Z', assetId: 'a25fe684-1d06-4a27-9856-4d343e129052', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:33.566Z', assetId: '9c336a12-cf37-47e8-b296-7befedfb7036', assetName: '20260925_061435.jpg', size: 74115, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:25:33.629Z', assetId: '8a54cfff-76e6-4854-a2cb-23ac3f8ff412', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:33.691Z', assetId: '59facf5d-9083-4504-888c-f2b26e4085bf', assetName: '20260925_061427.jpg', size: 83454, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:33.742Z', assetId: '682ee20f-738a-4ee3-9f59-b80d7042a2a1', assetName: '20260925_061430.jpg', size: 84780, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:33.766Z', assetId: 'bc600c77-f961-4f8b-a4e4-ebec465373ee', assetName: '20261105_175720.jpg', size: 86944, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:33.889Z', assetId: 'ef1bc870-5980-4867-a702-4fa6f6d54bad', assetName: '20260925_061426.jpg', size: 88729, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:33.984Z', assetId: 'de555037-e327-4765-85f6-96ec967ba5dc', assetName: '20260925_061607.jpg', size: 91874, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:34.270Z', assetId: 'bccdd247-31db-4b3d-8744-a2178406b087', assetName: '20260925_061601.jpg', size: 93064, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:34.407Z', assetId: '22b618bf-ad3a-451a-8195-2989f4ecf311', assetName: 'Website_Information_Form.doc', size: 39936, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:25:34.724Z', assetId: '22b618bf-ad3a-451a-8195-2989f4ecf311', assetName: 'Website_Information_Form.doc', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:34.729Z', assetId: 'de14bafe-db09-4471-9b58-51e64edf9249', assetName: '20261010_191947.jpg', size: 95699, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:34.732Z', assetId: '7243f8cc-783c-4750-bd1c-8237a17497ce', assetName: '20260925_061432.jpg', size: 73930, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:25:34.760Z', assetId: '22b618bf-ad3a-451a-8195-2989f4ecf311', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:25:35.326Z', assetId: '7243f8cc-783c-4750-bd1c-8237a17497ce', assetName: '20260925_061432.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:35.334Z', assetId: '219b1e7b-dcff-47a0-a87d-0bcb57d4243e', assetName: '20260925_061438.jpg', size: 96368, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:25:35.375Z', assetId: '7243f8cc-783c-4750-bd1c-8237a17497ce', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:35.428Z', assetId: 'bccdd247-31db-4b3d-8744-a2178406b087', assetName: '20260925_061601.jpg', size: 93064, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:25:35.590Z', assetId: 'bccdd247-31db-4b3d-8744-a2178406b087', assetName: '20260925_061601.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:35.672Z', assetId: 'de14bafe-db09-4471-9b58-51e64edf9249', assetName: '20261010_191947.jpg', size: 95699, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:25:36.003Z', assetId: 'de14bafe-db09-4471-9b58-51e64edf9249', assetName: '20261010_191947.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:36.057Z', assetId: '7344b7fd-a5ce-4c85-83ae-95625bbec667', assetName: '20261011_072922.jpg', size: 97174, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:36.063Z', assetId: '0b6ee210-3031-4eee-b00c-03e6b800c165', assetName: '20261011_072924.jpg', size: 99476, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:36.120Z', assetId: 'daf07cd7-4055-4206-b4c8-45f15cb0d07a', assetName: '20261011_072926.jpg', size: 101414, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:25:36.138Z', assetId: 'bccdd247-31db-4b3d-8744-a2178406b087', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:25:36.187Z', assetId: 'de14bafe-db09-4471-9b58-51e64edf9249', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:36.255Z', assetId: 'c850c28d-ef8f-4d31-b5c9-e41f9977363c', assetName: '20261011_072920.jpg', size: 105148, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:25:36.366Z', assetId: '6d8c70a7-a463-47ed-a9f2-94edb44bad02', assetName: '我的网页.html.zip', size: 114548, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:36.669Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Received data channel from 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:43.804Z', assetId: '219b1e7b-dcff-47a0-a87d-0bcb57d4243e', assetName: '20260925_061438.jpg', size: 96368, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:25:48.173Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-2', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:25:48.173Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-0', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:25:48.476Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:25:52.740Z', assetId: '219b1e7b-dcff-47a0-a87d-0bcb57d4243e', assetName: '20260925_061438.jpg', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:25:58.780Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-3', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:00.187Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:26:03.356Z', assetId: '7344b7fd-a5ce-4c85-83ae-95625bbec667', assetName: '20261011_072922.jpg', size: 97174, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:04.139Z', assetId: '7344b7fd-a5ce-4c85-83ae-95625bbec667', assetName: '20261011_072922.jpg', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:26:04.362Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-5', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:04.813Z', assetId: '9c336a12-cf37-47e8-b296-7befedfb7036', assetName: '20260925_061435.jpg', size: 74115, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-complete', at: '2026-11-16T09:26:04.861Z', assetId: '7344b7fd-a5ce-4c85-83ae-95625bbec667', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:26:05.404Z', assetId: '6d8c70a7-a463-47ed-a9f2-94edb44bad02', assetName: '我的网页.html.zip', size: 114548, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:05.878Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-2', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:06.078Z', assetId: '59facf5d-9083-4504-888c-f2b26e4085bf', assetName: '20260925_061427.jpg', size: 83454, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:06.371Z', assetId: '6d8c70a7-a463-47ed-a9f2-94edb44bad02', assetName: '我的网页.html.zip', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:26:06.375Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:06.378Z', assetId: '9c336a12-cf37-47e8-b296-7befedfb7036', assetName: '20260925_061435.jpg', size: 74115, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:06.765Z', assetId: '9c336a12-cf37-47e8-b296-7befedfb7036', assetName: '20260925_061435.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:07.191Z', assetId: '219b1e7b-dcff-47a0-a87d-0bcb57d4243e', assetName: '20260925_061438.jpg', size: 96368, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:07.227Z', assetId: '9c336a12-cf37-47e8-b296-7befedfb7036', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:09.529Z', assetId: '682ee20f-738a-4ee3-9f59-b80d7042a2a1', assetName: '20260925_061430.jpg', size: 84780, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-complete', at: '2026-11-16T09:26:09.643Z', assetId: '6d8c70a7-a463-47ed-a9f2-94edb44bad02', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:11.796Z', assetId: '682ee20f-738a-4ee3-9f59-b80d7042a2a1', assetName: '20260925_061430.jpg', size: 84780, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:12.435Z', assetId: '682ee20f-738a-4ee3-9f59-b80d7042a2a1', assetName: '20260925_061430.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:12.841Z', assetId: 'bc600c77-f961-4f8b-a4e4-ebec465373ee', assetName: '20261105_175720.jpg', size: 86944, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:12.881Z', assetId: '682ee20f-738a-4ee3-9f59-b80d7042a2a1', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:13.842Z', assetId: 'bc600c77-f961-4f8b-a4e4-ebec465373ee', assetName: '20261105_175720.jpg', size: 86944, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:14.327Z', assetId: 'bc600c77-f961-4f8b-a4e4-ebec465373ee', assetName: '20261105_175720.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:14.529Z', assetId: 'ef1bc870-5980-4867-a702-4fa6f6d54bad', assetName: '20260925_061426.jpg', size: 88729, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:14.573Z', assetId: 'bc600c77-f961-4f8b-a4e4-ebec465373ee', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:15.577Z', assetId: 'ef1bc870-5980-4867-a702-4fa6f6d54bad', assetName: '20260925_061426.jpg', size: 88729, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:15.610Z', assetId: 'ef1bc870-5980-4867-a702-4fa6f6d54bad', assetName: '20260925_061426.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:26:15.784Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-4', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:15.784Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-3', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:15.791Z', assetId: 'de555037-e327-4765-85f6-96ec967ba5dc', assetName: '20260925_061607.jpg', size: 91874, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:15.828Z', assetId: 'ef1bc870-5980-4867-a702-4fa6f6d54bad', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:16.362Z', assetId: 'de555037-e327-4765-85f6-96ec967ba5dc', assetName: '20260925_061607.jpg', size: 91874, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:16.679Z', assetId: 'de555037-e327-4765-85f6-96ec967ba5dc', assetName: '20260925_061607.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:16.853Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:16.879Z', assetId: '0b6ee210-3031-4eee-b00c-03e6b800c165', assetName: '20261011_072924.jpg', size: 99476, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:16.920Z', assetId: 'de555037-e327-4765-85f6-96ec967ba5dc', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:17.764Z', assetId: '0b6ee210-3031-4eee-b00c-03e6b800c165', assetName: '20261011_072924.jpg', size: 99476, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:18.095Z', assetId: '0b6ee210-3031-4eee-b00c-03e6b800c165', assetName: '20261011_072924.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:18.995Z', assetId: 'daf07cd7-4055-4206-b4c8-45f15cb0d07a', assetName: '20261011_072926.jpg', size: 101414, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:19.040Z', assetId: '0b6ee210-3031-4eee-b00c-03e6b800c165', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:21.074Z', assetId: 'daf07cd7-4055-4206-b4c8-45f15cb0d07a', assetName: '20261011_072926.jpg', size: 101414, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:21.581Z', assetId: 'daf07cd7-4055-4206-b4c8-45f15cb0d07a', assetName: '20261011_072926.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:22.280Z', assetId: 'c850c28d-ef8f-4d31-b5c9-e41f9977363c', assetName: '20261011_072920.jpg', size: 105148, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:22.321Z', assetId: 'daf07cd7-4055-4206-b4c8-45f15cb0d07a', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:24.147Z', assetId: '59facf5d-9083-4504-888c-f2b26e4085bf', assetName: '20260925_061427.jpg', size: 83454, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:26:29.103Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-6', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:29.103Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-4', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:29.475Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:30.740Z', assetId: '59facf5d-9083-4504-888c-f2b26e4085bf', assetName: '20260925_061427.jpg', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:26:36.603Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-8', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:36.604Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-6', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:37.644Z', assetId: 'f52515b1-29c5-4f62-82e2-0d902766f4ef', assetName: '20260925_061605.jpg', size: 114842, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:37.685Z', assetId: '59facf5d-9083-4504-888c-f2b26e4085bf', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:38.025Z', assetId: 'f52515b1-29c5-4f62-82e2-0d902766f4ef', assetName: '20260925_061605.jpg', size: 114842, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:26:38.033Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-complete', at: '2026-11-16T09:26:38.034Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', transferId: 'part-5', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:38.455Z', assetId: 'f52515b1-29c5-4f62-82e2-0d902766f4ef', assetName: '20260925_061605.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:38.780Z', assetId: '914eff35-ce90-454b-a0b0-55fe6ec99bbb', assetName: '20261011_073343.jpg', size: 115805, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:38.833Z', assetId: 'f52515b1-29c5-4f62-82e2-0d902766f4ef', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:39.484Z', assetId: '914eff35-ce90-454b-a0b0-55fe6ec99bbb', assetName: '20261011_073343.jpg', size: 115805, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:40.892Z', assetId: '914eff35-ce90-454b-a0b0-55fe6ec99bbb', assetName: '20261011_073343.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:43.056Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:44.766Z', assetId: '3a5a87dd-3cc6-465f-8e4d-3b24d5fba154', assetName: '20260925_061604.jpg', size: 116424, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:44.811Z', assetId: '914eff35-ce90-454b-a0b0-55fe6ec99bbb', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:45.737Z', assetId: '3a5a87dd-3cc6-465f-8e4d-3b24d5fba154', assetName: '20260925_061604.jpg', size: 116424, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:45.811Z', assetId: '3a5a87dd-3cc6-465f-8e4d-3b24d5fba154', assetName: '20260925_061604.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:46.104Z', assetId: '6d0fe315-150f-40e2-84e0-fcad07429705', assetName: '20260925_061609.jpg', size: 119425, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:46.143Z', assetId: '3a5a87dd-3cc6-465f-8e4d-3b24d5fba154', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:46.692Z', assetId: '6d0fe315-150f-40e2-84e0-fcad07429705', assetName: '20260925_061609.jpg', size: 119425, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:46.835Z', assetId: '6d0fe315-150f-40e2-84e0-fcad07429705', assetName: '20260925_061609.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+2browser-logs.js:217 Received data channel from 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:47.133Z', assetId: 'fa4a7c06-2b09-40cb-be49-fe4f2396ba49', assetName: 'Screenshot_20261010-170128_Work Setup.jpg', size: 239944, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:47.136Z', assetId: '219b1e7b-dcff-47a0-a87d-0bcb57d4243e', assetName: '20260925_061438.jpg', size: 96368, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:47.139Z', assetId: 'c850c28d-ef8f-4d31-b5c9-e41f9977363c', assetName: '20261011_072920.jpg', size: 105148, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:47.174Z', assetId: '6d0fe315-150f-40e2-84e0-fcad07429705', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:47.588Z', assetId: 'fa4a7c06-2b09-40cb-be49-fe4f2396ba49', assetName: 'Screenshot_20261010-170128_Work Setup.jpg', size: 239944, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:47.673Z', assetId: 'fa4a7c06-2b09-40cb-be49-fe4f2396ba49', assetName: 'Screenshot_20261010-170128_Work Setup.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:48.378Z', assetId: '611d16c3-cc56-40fc-ba7f-7e511a3b417d', assetName: 'Screenshot_20261010-173622_Work Setup.jpg', size: 242217, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:48.417Z', assetId: 'fa4a7c06-2b09-40cb-be49-fe4f2396ba49', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:49.601Z', assetId: '611d16c3-cc56-40fc-ba7f-7e511a3b417d', assetName: 'Screenshot_20261010-173622_Work Setup.jpg', size: 242217, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:49.671Z', assetId: '611d16c3-cc56-40fc-ba7f-7e511a3b417d', assetName: 'Screenshot_20261010-173622_Work Setup.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:26:49.769Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-9', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:50.136Z', assetId: '1f62c0ce-fe5a-453f-b1ec-fb896b4204dd', assetName: 'Screenshot_20261010174317.jpg', size: 244098, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:50.210Z', assetId: '611d16c3-cc56-40fc-ba7f-7e511a3b417d', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:26:50.267Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-10', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:50.267Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-7', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:50.368Z', assetId: '1f62c0ce-fe5a-453f-b1ec-fb896b4204dd', assetName: 'Screenshot_20261010174317.jpg', size: 244098, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:50.612Z', assetId: '1f62c0ce-fe5a-453f-b1ec-fb896b4204dd', assetName: 'Screenshot_20261010174317.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:50.938Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:26:51.509Z', assetId: '35fc2c5a-e9c7-4cb1-bb64-3bf6d59e600f', assetName: 'Screenshot_20261010-173617_Work Setup.jpg', size: 244894, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:51.544Z', assetId: '1f62c0ce-fe5a-453f-b1ec-fb896b4204dd', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:52.218Z', assetId: '219b1e7b-dcff-47a0-a87d-0bcb57d4243e', assetName: '20260925_061438.jpg', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:26:53.707Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-11', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:53.707Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-9', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:54.605Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:26:56.455Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-13', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:26:56.456Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-11', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:26:56.638Z', assetId: 'c850c28d-ef8f-4d31-b5c9-e41f9977363c', assetName: '20261011_072920.jpg', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:26:56.773Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:00.244Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-15', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:00.245Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-13', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:00.854Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:02.386Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-17', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:02.387Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-15', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:02.626Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:04.022Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-19', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:04.022Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-17', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:04.659Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:04.772Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-21', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:05.979Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:07.986Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-23', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:07.987Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-19', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:08.320Z', assetId: '3e99416a-f99f-4246-b491-0eb16798190d', assetName: 'Screenshot_20261010-173536_Shelter.jpg', size: 285747, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:08.604Z', assetId: '0b2c82d4-4720-443f-870c-341ea1e4da31', assetName: 'Screenshot_20261010-173355_Shelter.jpg', size: 332791, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:27:08.607Z', assetId: '35fc2c5a-e9c7-4cb1-bb64-3bf6d59e600f', assetName: 'Screenshot_20261010-173617_Work Setup.jpg', size: 244894, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:08.770Z', assetId: '3e99416a-f99f-4246-b491-0eb16798190d', assetName: 'Screenshot_20261010-173536_Shelter.jpg', size: 285747, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:27:08.808Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:08.868Z', assetId: '3e99416a-f99f-4246-b491-0eb16798190d', assetName: 'Screenshot_20261010-173536_Shelter.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:08.945Z', assetId: '35fc2c5a-e9c7-4cb1-bb64-3bf6d59e600f', assetName: 'Screenshot_20261010-173617_Work Setup.jpg', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:27:09.191Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:09.442Z', assetId: '219b1e7b-dcff-47a0-a87d-0bcb57d4243e', assetName: '20260925_061438.jpg', size: 96368, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:09.511Z', assetId: '3e99416a-f99f-4246-b491-0eb16798190d', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:09.911Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-12', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:09.911Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-21', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:27:10.027Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:10.197Z', assetId: 'c850c28d-ef8f-4d31-b5c9-e41f9977363c', assetName: '20261011_072920.jpg', size: 105148, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-complete', at: '2026-11-16T09:27:10.264Z', assetId: '35fc2c5a-e9c7-4cb1-bb64-3bf6d59e600f', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', transferId: null, …}
+2browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:10.334Z', assetId: '219b1e7b-dcff-47a0-a87d-0bcb57d4243e', assetName: '20260925_061438.jpg', size: 96368, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:10.406Z', assetId: '219b1e7b-dcff-47a0-a87d-0bcb57d4243e', assetName: '20260925_061438.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:10.408Z', assetId: '0b2c82d4-4720-443f-870c-341ea1e4da31', assetName: 'Screenshot_20261010-173355_Shelter.jpg', size: 332791, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:10.516Z', assetId: '0b2c82d4-4720-443f-870c-341ea1e4da31', assetName: 'Screenshot_20261010-173355_Shelter.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:10.608Z', assetId: 'f1ca2213-5cfd-454b-afff-a18764e4e70d', assetName: 'h0uqxh6q.png', size: 471743, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:10.650Z', assetId: '219b1e7b-dcff-47a0-a87d-0bcb57d4243e', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:10.895Z', assetId: '058da58b-cb82-4221-87b5-8e572ced7b3e', assetName: '153i1h3m.png', size: 471743, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:10.947Z', assetId: '0b2c82d4-4720-443f-870c-341ea1e4da31', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+2browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:11.420Z', assetId: 'f1ca2213-5cfd-454b-afff-a18764e4e70d', assetName: 'h0uqxh6q.png', size: 471743, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:11.427Z', assetId: 'f1ca2213-5cfd-454b-afff-a18764e4e70d', assetName: 'h0uqxh6q.png', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:11.531Z', assetId: '058da58b-cb82-4221-87b5-8e572ced7b3e', assetName: '153i1h3m.png', size: 471743, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:11.569Z', assetId: '058da58b-cb82-4221-87b5-8e572ced7b3e', assetName: '153i1h3m.png', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:12.418Z', assetId: '9c0339a9-3ee3-4ce4-8b34-b65154efad57', assetName: 'y9fa83zw.png', size: 471743, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:12.470Z', assetId: 'abe843d8-872c-4c4e-87d6-68ff1606055f', assetName: 'zne5bw6d.png', size: 471743, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:12.552Z', assetId: 'f1ca2213-5cfd-454b-afff-a18764e4e70d', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:12.608Z', assetId: '058da58b-cb82-4221-87b5-8e572ced7b3e', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:12.650Z', assetId: '9c0339a9-3ee3-4ce4-8b34-b65154efad57', assetName: 'y9fa83zw.png', size: 471743, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:12.756Z', assetId: '9c0339a9-3ee3-4ce4-8b34-b65154efad57', assetName: 'y9fa83zw.png', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:12.798Z', assetId: 'abe843d8-872c-4c4e-87d6-68ff1606055f', assetName: 'zne5bw6d.png', size: 471743, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:12.859Z', assetId: 'abe843d8-872c-4c4e-87d6-68ff1606055f', assetName: 'zne5bw6d.png', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:14.084Z', assetId: '68de00fc-22dd-49f8-ac32-4c2901e07446', assetName: 'Screenshot_20261010-173408_Shelter.jpg', size: 510783, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:14.114Z', assetId: '7a67170d-6161-45c8-8153-88eacf864add', assetName: 'Screenshot_20261010-173439_Shelter.jpg', size: 799061, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:14.190Z', assetId: '9c0339a9-3ee3-4ce4-8b34-b65154efad57', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:14.220Z', assetId: 'abe843d8-872c-4c4e-87d6-68ff1606055f', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+2browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:14.429Z', assetId: '68de00fc-22dd-49f8-ac32-4c2901e07446', assetName: 'Screenshot_20261010-173408_Shelter.jpg', size: 510783, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:14.508Z', assetId: '68de00fc-22dd-49f8-ac32-4c2901e07446', assetName: 'Screenshot_20261010-173408_Shelter.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:14.744Z', assetId: '7a67170d-6161-45c8-8153-88eacf864add', assetName: 'Screenshot_20261010-173439_Shelter.jpg', size: 799061, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:14.807Z', assetId: '7a67170d-6161-45c8-8153-88eacf864add', assetName: 'Screenshot_20261010-173439_Shelter.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:16.077Z', assetId: '6ccd34e9-18cf-45ea-9933-c7c4d491c970', assetName: '微信支付交易明细证明(20240607-20240907) (7).zip', size: 844943, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:16.150Z', assetId: '68de00fc-22dd-49f8-ac32-4c2901e07446', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:16.276Z', assetId: '7c84b30f-0d5c-4096-b797-3b1f4e2ec798', assetName: 'Screenshot_20261011-104456_YouTube.jpg', size: 1086771, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:16.339Z', assetId: '6ccd34e9-18cf-45ea-9933-c7c4d491c970', assetName: '微信支付交易明细证明(20240607-20240907) (7).zip', size: 844943, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:16.371Z', assetId: '7a67170d-6161-45c8-8153-88eacf864add', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:16.408Z', assetId: '6ccd34e9-18cf-45ea-9933-c7c4d491c970', assetName: '微信支付交易明细证明(20240607-20240907) (7).zip', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:16.561Z', assetId: '7c84b30f-0d5c-4096-b797-3b1f4e2ec798', assetName: 'Screenshot_20261011-104456_YouTube.jpg', size: 1086771, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:16.672Z', assetId: '7c84b30f-0d5c-4096-b797-3b1f4e2ec798', assetName: 'Screenshot_20261011-104456_YouTube.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:17.910Z', assetId: '4da06fac-0335-4d2b-86b3-adfe46e057bb', assetName: 'Screenshot_20261011-104359_YouTube.jpg', size: 1105210, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:17.982Z', assetId: '6ccd34e9-18cf-45ea-9933-c7c4d491c970', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:18.424Z', assetId: '4da06fac-0335-4d2b-86b3-adfe46e057bb', assetName: 'Screenshot_20261011-104359_YouTube.jpg', size: 1105210, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:18.683Z', assetId: '4da06fac-0335-4d2b-86b3-adfe46e057bb', assetName: 'Screenshot_20261011-104359_YouTube.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:18.872Z', assetId: 'ae6d3e29-a7ec-47d3-9312-b1709ee3b523', assetName: 'Screenshot_20261011-104443_YouTube.jpg', size: 1144280, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:18.920Z', assetId: '7c84b30f-0d5c-4096-b797-3b1f4e2ec798', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:19.690Z', assetId: 'ae6d3e29-a7ec-47d3-9312-b1709ee3b523', assetName: 'Screenshot_20261011-104443_YouTube.jpg', size: 1144280, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:19.782Z', assetId: 'ae6d3e29-a7ec-47d3-9312-b1709ee3b523', assetName: 'Screenshot_20261011-104443_YouTube.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:22.735Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-14', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:22.735Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-25', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-complete', at: '2026-11-16T09:27:22.737Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', transferId: 'part-23', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:22.878Z', assetId: '91f082b6-f306-45f8-b290-c4f48f67f73b', assetName: 'Screenshot_20261011-104413_YouTube.jpg', size: 1193488, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:22.945Z', assetId: '4da06fac-0335-4d2b-86b3-adfe46e057bb', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:23.443Z', assetId: '354627f8-ede7-466e-bf68-f54b6d2a1a53', assetName: '中山美穗 - 生意気.m4a', size: 3377160, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:23.498Z', assetId: 'ae6d3e29-a7ec-47d3-9312-b1709ee3b523', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:23.685Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:24.394Z', assetId: '354627f8-ede7-466e-bf68-f54b6d2a1a53', assetName: '中山美穗 - 生意気.m4a', size: 3377160, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:24.456Z', assetId: '354627f8-ede7-466e-bf68-f54b6d2a1a53', assetName: '中山美穗 - 生意気.m4a', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:24.721Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:25.358Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-27', …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:30.621Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-25', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-manifest-request-sent', at: '2026-11-16T09:27:31.442Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-manifest-received', at: '2026-11-16T09:27:31.463Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-multi-source-started', at: '2026-11-16T09:27:31.464Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:31.465Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', transferId: 'part-0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:31.465Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', transferId: 'part-1', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:31.593Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:31.598Z', assetId: '354627f8-ede7-466e-bf68-f54b6d2a1a53', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:32.470Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 Received data channel from 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:33.367Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:34.022Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-16', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:34.022Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-27', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:34.790Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:36.123Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', transferId: 'part-2', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:36.124Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-0', …}
+browser-logs.js:217 Received data channel from 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:36.964Z', assetId: '91f082b6-f306-45f8-b290-c4f48f67f73b', assetName: 'Screenshot_20261011-104413_YouTube.jpg', size: 1193488, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:38.455Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-18', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:38.456Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-16', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:38.996Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:42.008Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-20', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:42.008Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-18', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:42.306Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:43.968Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', transferId: 'part-3', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:44.157Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:46.077Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-22', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:46.077Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-20', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:46.655Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:48.289Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', transferId: 'part-5', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:48.289Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-3', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:48.521Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:49.865Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', transferId: 'part-4', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:49.865Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-5', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:49.969Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', transferId: 'part-2', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:50.137Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-24', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:50.138Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-22', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:50.411Z', assetId: '91f082b6-f306-45f8-b290-c4f48f67f73b', assetName: 'Screenshot_20261011-104413_YouTube.jpg', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:50.450Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:50.755Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:27:53.138Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:27:53.443Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:27:53.499Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:53.557Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-29', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:27:54.276Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:27:54.564Z', assetId: '91f082b6-f306-45f8-b290-c4f48f67f73b', assetName: 'Screenshot_20261011-104413_YouTube.jpg', size: 1193488, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:54.953Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', transferId: 'part-1', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:54.954Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-4', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:27:54.993Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-26', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:27:54.993Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-24', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:27:55.085Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:55.329Z', assetId: '91f082b6-f306-45f8-b290-c4f48f67f73b', assetName: 'Screenshot_20261011-104413_YouTube.jpg', size: 1193488, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:27:55.372Z', assetId: '91f082b6-f306-45f8-b290-c4f48f67f73b', assetName: 'Screenshot_20261011-104413_YouTube.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:27:55.911Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-file-request-sent', at: '2026-11-16T09:28:00.919Z', assetId: 'c850c28d-ef8f-4d31-b5c9-e41f9977363c', assetName: '20261011_072920.jpg', size: 105148, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:28:12.243Z', assetId: '91f082b6-f306-45f8-b290-c4f48f67f73b', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:28:12.863Z', assetId: 'c850c28d-ef8f-4d31-b5c9-e41f9977363c', assetName: '20261011_072920.jpg', size: 105148, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-first-chunk-received', at: '2026-11-16T09:28:13.017Z', assetId: 'c850c28d-ef8f-4d31-b5c9-e41f9977363c', assetName: '20261011_072920.jpg', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:28:13.796Z', assetId: 'c850c28d-ef8f-4d31-b5c9-e41f9977363c', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: null, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:18.221Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-28', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:28:18.221Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-26', …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:31.772Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-30', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:28:32.182Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:32.903Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-31', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-complete', at: '2026-11-16T09:28:32.904Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', transferId: 'part-29', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:28:33.590Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:34.087Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', transferId: 'part-2', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-complete', at: '2026-11-16T09:28:34.089Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', transferId: 'part-1', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:39.613Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-33', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:28:39.613Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-30', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:39.920Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-32', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:28:39.921Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-31', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:28:39.922Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', assetName: 'YouCut_20261010_175016860.mp4', size: 11090974, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:28:40.720Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-manifest-request-sent', at: '2026-11-16T09:28:44.990Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-manifest-received', at: '2026-11-16T09:28:45.062Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-multi-source-started', at: '2026-11-16T09:28:45.062Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:45.063Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:45.077Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-1', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:28:45.291Z', assetId: 'f6e708a3-c32e-4fe1-960c-78bb1c2c1f09', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-2', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:28:45.546Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:46.393Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-34', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:28:46.393Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-32', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:28:48.474Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:52.595Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-2', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:28:52.595Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:52.789Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-35', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:28:53.772Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Received data channel from 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:28:55.444Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:56.924Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-37', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:28:57.903Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-34', …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+3/#1796bdb9-5044-400b-9a5b-6ec0c0d8b35e:1 Uncaught (in promise) Error: A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:28:58.913Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-36', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:28:58.913Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-35', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:28:59.171Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Received data channel from 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:28:59.376Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:00.873Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-38', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:00.873Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-36', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:01.119Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:02.488Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-40', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:02.488Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-38', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:02.806Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:05.970Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-42', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:05.970Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-40', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:06.334Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:06.565Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-4', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:07.621Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:08.946Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-44', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:08.946Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-42', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:09.553Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:29:10.056Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:29:10.389Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:10.770Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-39', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:29:11.094Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:12.943Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-6', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:12.943Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-4', …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:14.719Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:14.723Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-2', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:14.723Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-6', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:15.756Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:17.816Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-46', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:17.817Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-44', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:18.824Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:23.091Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-2', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:23.923Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-41', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-complete', at: '2026-11-16T09:29:23.923Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', transferId: 'part-39', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:24.428Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:24.656Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-43', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:24.657Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-46', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:26.461Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-3', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:26.462Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-1', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:26.510Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-48', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:26.510Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-41', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:26.552Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:29:26.593Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:27.882Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Received data channel from 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:29.040Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:31.794Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-1', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:32.811Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-50', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:32.811Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-48', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:33.089Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:36.169Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-5', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-complete', at: '2026-11-16T09:29:36.170Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', transferId: 'part-3', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:36.410Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:37.473Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-45', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:37.473Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-52', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:37.473Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-50', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:39.209Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-manifest-request-sent', at: '2026-11-16T09:29:39.256Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-manifest-received', at: '2026-11-16T09:29:39.340Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-multi-source-started', at: '2026-11-16T09:29:39.340Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:39.341Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:39.342Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-1', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:39.536Z', assetId: '6da70d4d-8d79-4c61-bdad-b2fa332ab271', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-5', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:40.103Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:43.496Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-54', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:43.497Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-52', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:43.934Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:45.615Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-2', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:45.616Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-0', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:46.455Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:47.425Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-1', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:47.425Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-54', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:48.961Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:50.329Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-4', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:50.329Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-2', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:51.845Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-3', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:52.040Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:52.484Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-47', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:52.485Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-8', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:52.486Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-1', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:53.759Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:29:55.024Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:55.058Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-5', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:29:55.058Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-3', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:29:55.352Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:56.003Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:29:56.039Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-49', …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Received data channel from 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:29:59.585Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:30:02.838Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-47', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:30:03.688Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:30:04.577Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-6', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:30:04.577Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-5', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:30:05.520Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', size: 12593258, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:30:05.522Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', assetName: '录制-97202-20250819-222438-393-娘家人们，我要冲游戏区了！_1.mp4.rnca.vf31124.mkv', transferId: 'part-1', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:30:05.523Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-6', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:30:07.111Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-51', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:30:07.112Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-49', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:30:07.461Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-complete', at: '2026-11-16T09:30:07.652Z', assetId: '3246fb54-f79d-4571-9f55-131d46624746', peerDeviceId: '290f32a6-80de-4f70-812f-11a38834551a', transferId: 'part-4', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:30:08.772Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', transferId: 'part-53', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:30:08.893Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-manifest-request-sent', at: '2026-11-16T09:30:09.019Z', assetId: '92bab79a-5c88-43c6-8d51-42838bd41436', assetName: '反诈工作空间安装软件.mp4.139.mkv', size: 12871771, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-manifest-received', at: '2026-11-16T09:30:09.062Z', assetId: '92bab79a-5c88-43c6-8d51-42838bd41436', assetName: '反诈工作空间安装软件.mp4.139.mkv', size: 12871771, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-multi-source-started', at: '2026-11-16T09:30:09.062Z', assetId: '92bab79a-5c88-43c6-8d51-42838bd41436', assetName: '反诈工作空间安装软件.mp4.139.mkv', size: 12871771, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:30:09.063Z', assetId: '92bab79a-5c88-43c6-8d51-42838bd41436', assetName: '反诈工作空间安装软件.mp4.139.mkv', transferId: 'part-0', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:30:09.063Z', assetId: '92bab79a-5c88-43c6-8d51-42838bd41436', assetName: '反诈工作空间安装软件.mp4.139.mkv', transferId: 'part-1', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:30:09.136Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:30:09.210Z', assetId: '92bab79a-5c88-43c6-8d51-42838bd41436', assetName: '反诈工作空间安装软件.mp4.139.mkv', size: 12871771, …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:30:09.583Z', assetId: '92bab79a-5c88-43c6-8d51-42838bd41436', assetName: '反诈工作空间安装软件.mp4.139.mkv', size: 12871771, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-relay-start-received', at: '2026-11-16T09:30:10.392Z', assetId: 'a5e6f009-d9c9-4ff9-a7cf-891bd23679f9', assetName: 'PowerShell-7.6.3-win-x64.msi', size: 115384320, …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-range-request-sent', at: '2026-11-16T09:30:12.823Z', assetId: '92bab79a-5c88-43c6-8d51-42838bd41436', assetName: '反诈工作空间安装软件.mp4.139.mkv', transferId: 'part-2', …}
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-complete', at: '2026-11-16T09:30:12.823Z', assetId: '92bab79a-5c88-43c6-8d51-42838bd41436', peerDeviceId: '28043e58-bc52-477e-bd40-a53bfd25a4a7', transferId: 'part-0', …}
+browser-logs.js:217 Received data channel from 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 [file-asset-route] {phase: 'receiver-p2p-start-received', at: '2026-11-16T09:30:12.922Z', assetId: '92bab79a-5c88-43c6-8d51-42838bd41436', assetName: '反诈工作空间安装软件.mp4.139.mkv', size: 12871771, …}
+browser-logs.js:217 Connecting to peer: 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Already connected to 28043e58-bc52-477e-bd40-a53bfd25a4a7
+browser-logs.js:217 Connecting to peer: 290f32a6-80de-4f70-812f-11a38834551a
+browser-logs.js:217 Already connected to 290f32a6-80de-4f70-812f-11a38834551a

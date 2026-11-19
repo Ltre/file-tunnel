@@ -275,7 +275,7 @@
         if (!root) return;
         const lang = currentLanguage();
         document.documentElement.lang = lang;
-        document.documentElement.dir = lang === 'fa' ? 'rtl' : 'ltr';
+        document.documentElement.dir = 'ltr';
         applyingTranslations = true;
         if (root.nodeType === Node.TEXT_NODE) {
             try { translateTextNode(root, lang); } finally { applyingTranslations = false; }

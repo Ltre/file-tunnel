@@ -1,0 +1,6 @@
+.task-loading-spinner{display:inline-block;width:1em;height:1em;vertical-align:middle;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:task-loading-spin .75s linear infinite}
+.task-list-loading{position:relative;min-height:150px;isolation:isolate;pointer-events:none}
+.task-list-loading::after{content:"";position:absolute;inset:0;z-index:5;border-radius:inherit;background:linear-gradient(110deg,#eef3fa55 25%,#ffffffc4 45%,#eef3fa55 65%);background-size:240% 100%;backdrop-filter:blur(6px);animation:task-loading-sweep 1.7s ease-in-out infinite}
+@keyframes task-loading-spin{to{transform:rotate(1turn)}}
+@keyframes task-loading-sweep{from{background-position:180% 0}to{background-position:-80% 0}}
+@media(prefers-reduced-motion:reduce){.task-list-loading::after{animation:none}}

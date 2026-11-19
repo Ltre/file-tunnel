@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>上游分流出口设置</title><link rel="stylesheet" href="/client/upstream-exits.css"></head>
+<body class="upstream-page"><header><p class="eyebrow">WORKSPACE</p><h1>上游分流出口设置</h1><p>访问上游服务的网络出口设置</p></header>
+<main><p id="upstreamStatus" role="status" aria-live="polite"></p>
+<details class="upstream-panel" id="trojanNodes"><summary>Trojan 节点设置</summary><div class="node-layout"><nav id="nodeList" aria-label="Trojan 节点"></nav><div id="nodeEditor"></div></div></details>
+<details class="upstream-panel"><summary>上游服务出口设置</summary><div class="service-layout"><nav id="serviceTabs" class="service-tabs" role="tablist" aria-orientation="vertical" aria-label="上游服务"></nav><div id="serviceSettings" class="service-settings" role="tabpanel"></div></div></details>
+<section class="upstream-panel runtime-panel"><h2>sing-box 运行状态</h2><p id="runtimeStatus">正在读取…</p><button id="refreshRuntime" type="button">刷新状态</button><p class="muted">保存节点不会启动组件。任务使用 Trojan 节点时按需启动；所有任务释放后，空闲约 30 秒自动停止。</p></section>
+</main>
+<dialog id="pageTestDialog" aria-labelledby="pageTestTitle"><h2 id="pageTestTitle">测试打开页面</h2><form id="exitTestForm"><label>测试出口<select id="testExit" required><option value="direct">本机直连</option></select></label><label>页面地址<input id="testUrl" type="url" required value="https://www.google.com/"></label><p class="muted">由服务端固定使用所选出口请求页面，不自动切换其它节点；正文达到 256 KiB 后停止抽样读取。</p><div class="actions"><button class="primary" id="testExitButton" type="submit">开始测试</button><button id="closePageTest" type="button">关闭</button></div><pre id="exitTestResult" class="exit-test-result" role="status" aria-live="polite"></pre></form></dialog>
+<script src="/client/upstream-exits.js"></script></body></html>

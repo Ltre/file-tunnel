@@ -1,0 +1,252 @@
+Opening IndexedDB...
+browser-logs.js:217 IndexedDB opened successfully, version: 7
+browser-logs.js:217 Loading session data for: 17e1a6a0-f1f9-493a-9e80-08b801d8a142
+browser-logs.js:217 Loaded messages: 0
+browser-logs.js:217 Loading editor content...
+browser-logs.js:217 Socket connected
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Waiting for peer to initiate connection: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Waiting for peer to initiate connection: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connection already in progress with 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Rendering file message: 23ddce85-68d8-428b-bba6-e689794405d2 Website_Information_Form.doc isSmall: undefined
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connection already in progress with 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Sending ICE candidate to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Rendering file message: 70e8d0b0-d6b6-4a9d-b63f-6d0e4c2c77b1 vvvv-s10在2u52R创建56.html.zip isSmall: undefined
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] Object
+browser-logs.js:217 Rendering file message: 5e12b35b-2b12-4a6d-bdcf-bdb03d8d4590 261119-ControlCentor-drag-bug.mp4 isSmall: undefined
+2browser-logs.js:217 Rendering file message: 0e5a807c-c873-4001-9025-82ecb2a534c5 cffcßchopy-s10在2u52R创建56.html.zip isSmall: undefined
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Sending ICE candidate to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 ICE connection state for 15ac45d3-ec7a-45f4-8a56-63373e8c7276 : checking
+browser-logs.js:217 Connection state for 15ac45d3-ec7a-45f4-8a56-63373e8c7276 : connecting
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 ICE connection state for 15ac45d3-ec7a-45f4-8a56-63373e8c7276 : connected
+browser-logs.js:217 P2P connection established with 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connection state for 15ac45d3-ec7a-45f4-8a56-63373e8c7276 : connected
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Data channel opened with 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+2browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection already in progress with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : checking
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : connecting
+browser-logs.js:217 [external-dependency][client][webrtc-ice-server-error] Object
+global.console.<computed> @ browser-logs.js:217
+browser-logs.js:217 Sending ICE candidate to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 ICE connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : connected
+browser-logs.js:217 P2P connection established with 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connection state for 1f6df863-17d4-4a87-a2cb-78723711be45 : connected
+browser-logs.js:217 Received data channel from 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Received data channel from 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 [file-asset-route] Object
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Connecting to peer: 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Already connected to 1f6df863-17d4-4a87-a2cb-78723711be45
+browser-logs.js:217 Connecting to peer: 15ac45d3-ec7a-45f4-8a56-63373e8c7276
+browser-logs.js:217 Already connected to 15ac45d3-ec7a-45f4-8a56-63373e8c7276
