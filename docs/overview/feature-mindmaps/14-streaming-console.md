@@ -1,7 +1,7 @@
 # 串流控制台：已合入功能与边界思维导图
 
-> **当前源码锚点**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：2026-11-17  
+> **当前源码锚点**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**： 2026-11-19
 > 详见 [streaming-console.md](../streaming-console.md)；原需求对照见 [12-planned-streaming-console.md](./12-planned-streaming-console.md)。
 
 ```mermaid
@@ -74,4 +74,4 @@ mindmap
 
 **验收边界：** 有 Node、隔离浏览器、合成视频与构建测试记录，但真实 Android、不同网络代理/浏览器、Telegram 正式账号及跨境长时间播放必须单独验证。
 
-**2026-11-10 术语调整：** 当前菜单显示“我收藏的”；内部 `bookmarks` 视图 ID 和收藏数据逻辑未变。国际化由中央 `i18n-catalog.js` 提供，不再维护独立串流词条表。
+**2026-11-10—19 术语调整：** 列表入口显示“我收藏的”，排序为“收藏时间”，列表操作显示“取消收藏”；底层 `bookmarks` 视图 ID、`subscribedAt` 和收藏数据/API 不变。观看权限操作仍可使用“订阅/退订”。国际化由中央 `i18n-catalog.js` 提供。
