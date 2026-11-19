@@ -485,7 +485,7 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 
 ### 管理入口与 API
 
-- 新增管理员页面 `/upstream-exits`（`pages/upstream-exits.html`），由 `server/upstream-exit-routes.js` 注册；页面及 `/api/upstream-exits/**` API 全部经过 `adminAuth.requireAuth`，响应使用 `Cache-Control: no-store`。
+- 新增管理员页面 `/upstream-exits`（`pages/upstream-exits.html`），由 `server/upstream-exit-routes.js` 注册；页面及 `/api/upstream-exits/**` API 全部经过 `adminAuth.requireAuth`；API 读取/操作响应使用 `Cache-Control: no-store`。
 - 节点和各服务策略分别保存，不使用页面顶部/底部统一保存；节点表单不保存时不会启动 sing-box。节点密码只在服务端私有配置中保存，API 仅返回 `hasPassword`，不返回密码。
 - 支持 Telegram、YouTube、X/Twitter、Facebook、LINE、Instagram/Threads、TikTok、Bilibili、网易云及 other 服务。每个服务独立配置默认出口、候选节点、顺序/随机模式和是否允许直连作为候选。
 - 候选节点必须显式勾选；旧版仅有排序数组不代表允许自动启用全部节点。删除节点会清理相关默认/候选引用；已锁定任务不会静默换到其它节点。

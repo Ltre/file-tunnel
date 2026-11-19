@@ -472,7 +472,7 @@ SNS/X 帖子转成 Markdown 时，正文附件有对应生命周期和图片资�
 
 关联 `app.js`、`client/file-assets.js`、`client/cache-store.js`、`server/file-assets.js`、`server/markdown-records.js` 以及 `tests/history-*.test.cjs`、`tests/markdown-*.browser.cjs`、`tests/transfer-feedback-261101-3.*`、`tests/resource-cache-261106.test.cjs`。
 
-## 25. 2026-11-07—10：P2P 明确放弃、跨隧道转发确认与缓存安全
+## 25. 2026-11-07—10：P2P attempt 放弃历史、跨隧道转发确认与缓存安全
 
 ### 历史方案：P2P 背压失败的明确放弃协议（2026-11-16 已撤回）
 

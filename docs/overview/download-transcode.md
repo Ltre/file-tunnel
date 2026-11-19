@@ -591,7 +591,7 @@ X/Twitter 的帖子正文、作者名称、用户名/头像、最多多张配图
 
 视频转码进度仍按 FFmpeg 时间戳计算，完成前最高 99%，最终文件确认成功后才到 100%。stderr 最近 80 行及日志滚动位置保护不变。
 
-新增 `client/task-list-loading.js/.css` 作为 SNS/YouTube 任务列表的展示层：手动刷新/筛选/分页按钮显示加载状态，删除任务时按钮显示 spinner，成功后卡片短暂滑出；它不改任务执行状态、原自动刷新暂停规则或请求 revision 保护。
+新增 `client/task-list-loading.js/.css` 作为 SNS/YouTube 任务列表的展示层：分类筛选/上一页/下一页等列表操作按钮显示加载状态，删除任务时按钮显示 spinner，成功后卡片短暂滑出；它不改任务执行状态、原自动刷新暂停规则或请求 revision 保护。
 
 专项测试：`tests/admin-form-cache-261109.test.cjs`、`tests/admin-form-cache-261109.browser.cjs`、`tests/requirements-261119.browser.cjs`。云端表单权限与持久化见 [admin-security-deployment.md](./admin-security-deployment.md)。
 

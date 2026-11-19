@@ -113,7 +113,7 @@ Trojan 节点列表位于左侧，右侧显示所选节点窄表单；上游服�
 ## 8. 配置、日志与部署
 
 - 配置文件：`.tunnel-data/upstream-exits.json`，目录/文件按最小权限创建，文件权限为 0600。
-- 运行时文件：`.tunnel-data/upstream-runtime/`。
+- 运行时文件：`.tunnel-data/upstream-runtime/`；Unix 环境下运行时目录按 0700 创建，配置文件按 0600 创建。
 - API 不返回节点密码；日志对节点密码、Bot token、Cookie、URL 用户凭据及敏感查询参数脱敏。
 - 项目最低 Node 版本为 **22.16.0**；Undici 固定为 **7.30.2**。
 - `tools/deploy/build.mjs` 复制 sing-box 文件，`tools/deploy/verify.mjs` 检查新增页面路由和发布资源。
