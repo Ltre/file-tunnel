@@ -1,7 +1,7 @@
 # 系统架构、运行边界与数据所有权
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：`2026-11-17`
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**：`2026-11-19`
 > 本文按当前合入实现区分隧道基础审计的 sql.js、网盘元数据的原生 SQLite WAL、独立 S3 凭据和 Telegram 外部消息。不得把已有 SQLite/S3 仍写作计划，也不得把有限兼容与多实例安全夸大成完全实现。
 
 ## 1. 整体定位
@@ -162,6 +162,16 @@ Socket 事件至少包括：
 
 它是独立进程式缓存节点，不等于普通浏览器页面。服务器通过控制面记录某个隧道是否希望启用 VClient、节点心跳及缓存状态。
 
+### 3.7 上游网络出口
+
+主要实现：
+
+- `server/upstream-exits.js`、`server/upstream-exit-routes.js`；
+- `client/upstream-exits.js/.css`、`client/upstream-exit-select.js`；
+- `pages/upstream-exits.html`、`tools/sing-box/**`。
+
+它是服务端出站网络策略，不是浏览器系统代理或 WebRTC ICE 路由。服务级策略、任务上下文、候选节点和锁定规则见 [upstream-exits.md](./upstream-exits.md)。
+
 ## 4. 数据所有权与持久化
 
 ### 4.1 浏览器 IndexedDB
@@ -243,6 +253,8 @@ Telegram 在不同子系统中扮演不同角色：
 - video-transcode 工作区；
 - 日志；
 - VClient 控制 token；
+- `.tunnel-data/upstream-exits.json`：私有服务出口与 Trojan 节点配置（文件权限 0600）；
+- `.tunnel-data/upstream-runtime/`：sing-box 运行时临时配置/状态；
 - 各种临时资产。
 
 不能把整个 `.tunnel-data` 都理解成“数据库”。
@@ -282,6 +294,15 @@ P2P 历史回归极多，尤其涉及：
 - 旧任务残留。
 
 任何改动应优先运行 P2P regression 测试并阅读相关 Devlog，而不是重写“看起来更干净”的流程。
+
+### 5.3 服务端上游出口
+
+`server/upstream-exits.js` 使用 AsyncLocalStorage 为每个请求/任务建立独立出口上下文；只对显式配置的服务接入。SNS/YouTube 格式解析通过 `networkTicket` 把出口选择带入下载任务，首次取得有效内容后锁定；Telegram 远程操作通过服务包装器进入同一服务策略。它不改变浏览器 WebRTC 的 ICE 路由。
+
+- HTTP 使用 Undici `ProxyAgent`；yt-dlp 通过自身 `--proxy` 参数接入，不依赖 shell 全局代理变量。
+- 候选节点必须在对应服务设置中明确勾选；旧版仅保存排序的配置不会被当成启用全部节点。成功锁定后，同一任务不再自动换出口。
+- 读取/内容请求可在尚未锁定时按候选顺序尝试；写入操作不自动重放，避免重复上传或发布。
+- sing-box 仅在任务实际选用 Trojan 节点时启动，监听 loopback 临时 HTTP 代理；按配置快照共享进程，最后任务结束后空闲约 30 秒释放。
 
 ## 6. UI 状态与浏览器历史
 
@@ -399,7 +420,7 @@ P2P 历史回归极多，尤其涉及：
 
 `server/tunnel-permissions.js` 通过管理员/设备选择编辑既有隧道权限，不创建新的会话成员；`server/request-rate-limit.js` 只调整可信代理链的限流身份 Key；`server/process-diagnostics.js` 负责进程信号与脱敏日志，不能作为远端完整回放。七主题由 `client/theme-preference.js`、`themes*.css` 与首页/轻量路由共用，浏览器缓存和 CSS 断点不改变任何后台鉴权。详见 [串流台](./streaming-console.md)、[主题](./pwa-ui/themes.md)、[系统备份](./system-backup.md)。
 
-## 13. 2026-11-07—10：表单快照、延迟语言包、可确认转发与缓存所有权
+## 13. 2026-11-07—10：表单快照、延迟语言包、可确认转发与缓存所有权（历史阶段）
 
 ### 管理员下载表单不属于下载任务数据库
 
@@ -413,8 +434,31 @@ P2P 历史回归极多，尤其涉及：
 
 批量转发客户端保留稳定目标消息 ID；服务端按来源会话/设备/消息 ID 做并发幂等，目标历史写入并 flush 后才 ACK。超时状态通过独立 `forward-message-status` 重新核对目标记录和 `forwardedFrom`，不把未知结果直接当失败重建。文件来源权限同时绑定原来源隧道 deviceId 与签名 grant；精确目标消息锚点可从持久历史读取，避免只因内存历史窗口已滚动就丢失合法来源关系。
 
-P2P 信令限流与普通消息分开；文件 DataChannel 只有在已有背压等待明确失败后才发出匹配 attempt 的放弃通知，接收端校验后才释放该次活动任务。缓存盘点使用元数据游标，垃圾缓存清理前重新校验引用和会话归属；IndexedDB 读取失败必须停止删除。
+P2P 信令限流与普通消息分开。此前加入的 `abandonedAttemptId` 主动放弃协议已在 2026-11-16 撤回；当前恢复既有发送/背压/失败控制流，队列背压失败不额外主动关闭 DataChannel 或立即竞争 Relay。缓存盘点使用元数据游标，垃圾缓存清理前重新校验引用和会话归属；IndexedDB 读取失败必须停止删除。
 
 ### 网页 ZIP 的来源证明不等于访问权
 
 `webZipSourceProof` 是签名的来源关系标记，不是编辑令牌或隧道 grant；真正的源读取仍需当前隧道绑定身份的有效 grant 和 read capability，网页编辑仍需独立编辑凭据。同步可基于持久权限和现有已验证授权处理离线源，但不会因此自动加入原隧道。
+
+
+## 14. 2026-11-11—19：上游出口、传输基线恢复与网页副本同步
+
+### 上游出口不等于全局代理
+
+- `server/upstream-exits.js` 按服务分类 Telegram、YouTube、X/Twitter、Facebook、LINE、Instagram/Threads、TikTok、Bilibili、网易云及 other；未配置策略时沿用原网络路径。
+- 每个服务独立保存默认出口、模式、允许候选、顺序和直连候选；任务可在 SNS/YouTube 页面覆盖初始出口。候选只包含明确勾选的节点，不把旧配置中的排序数组自动视为同意启用。
+- `networkTicket` 连接格式解析与下载任务；缓存命中或辅助元数据不证明出口有效，首个通过业务校验的实际内容才锁定出口。锁定后任务不自动轮换；节点被删除时失败，不悄悄改用另一节点。
+- Telegram 只把实际远程方法放进异步出口上下文；本地同步校验、访问器和 guard 保留同步返回/抛错契约。读取请求可候选重试，写入请求不自动重放。
+
+### P2P 与缓存当前边界
+
+- 2026-11-16 恢复历史传输基线，撤回主动关闭文件 DataChannel、发送 `abandonedAttemptId` 和新增接收端放弃事件。队列背压失败按基线报告失败，不额外立即切 Relay；其它明确连接失败/关闭/超时仍按原有分支处理。
+- 保留的进度适配不改变分块、并发、ACK 和超时协议；发送端扣除 DataChannel 待排缓冲，接收端按活动范围区分 P2P、Socket.IO Relay 和 mixed。完整缓存公告前不把整文件标为 100%。
+- `getStats()` 选中候选对记录连接级地址、候选类型、协议、RTT 和字节速率；统计不可用/迟到不会阻断传输，连接级速率不能当成单文件独占吞吐。
+- IndexedDB 元数据恢复写入会在同一 readwrite transaction 中重新读取并合并，避免旧元数据覆盖已完成文件正文；显式清缓存仍走单独删除路径。
+
+### 网页副本与来源记录
+
+`server/web-zip-sync.js` 现在可枚举持久历史中的同源转发副本，对已验证的同一网页 root 统一同步版本和编辑授权；待办记录可在同一来源的其它副本仍存在时重新锚定。发布按来源/root 串行，防止并发旧版本覆盖新版本。该组同步仍受创建者、来源证明、编辑凭据和当前权限约束。
+
+完整上游出口实现见 [upstream-exits.md](./upstream-exits.md)；其它模块的详细行为见 [transfer-cache.md](./transfer-cache.md)、[web-workshop.md](./web-workshop.md) 和 [download-transcode.md](./download-transcode.md)。

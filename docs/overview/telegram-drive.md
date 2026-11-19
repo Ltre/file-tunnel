@@ -1,7 +1,7 @@
 # Telegram 虚拟网盘：身份、文件系统、上传、流媒体与管理
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：`2026-11-17`
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**：`2026-11-19`
 > **重要现状**：网盘共享元数据已改用 node:sqlite 的磁盘 SQLite WAL（当前 schema 6）；S3 Compatible 子集、共享 Content Object、渐进上传、回收站、协同挂载等均已合入。S3 凭据、上传暂存、Telegram Chat 字典等仍有独立文件；不等于实现完整 AWS S3 或多实例分布式一致性。
 
 ## 1. 产品初衷
@@ -150,7 +150,7 @@ S3 Bucket 也映射到明确用户及其分区，不能把应用 ID、Bucket、�
 
 ### 5.1 原生 SQLite WAL
 
-`server/disk-repository.js` 使用 Node 24.15+ 内置 `node:sqlite` 的 `DatabaseSync`，管理 `.tunnel-data/disk.sqlite`；使用 WAL、外键、5 秒 busy timeout 和 FULL 同步。这里与 `server/infra-store.js` 使用 `sql.js` 的 `infra.sqlite` 不同，**不要混称为同一数据库架构**。
+`server/disk-repository.js` 使用 Node >=22.16.0 内置 `node:sqlite` 的 `DatabaseSync`，管理 `.tunnel-data/disk.sqlite`；使用 WAL、外键、5 秒 busy timeout 和 FULL 同步。这里与 `server/infra-store.js` 使用 `sql.js` 的 `infra.sqlite` 不同，**不要混称为同一数据库架构**。
 
 Repository 包含文件、目录、用户、应用、后端、令牌、分区、分享、协同、任务、分片缓存及引用、Content Object/Anchor、回收站、挂载、目录上传、用户设置和待转存等实体。逻辑文件、共享物理 Content、引用和 Telegram Anchor 分层管理。当前 schema 为 **6**；版本升级保留升级前 SQLite 备份，旧二进制不可直接混跑新 schema。
 
@@ -803,3 +803,13 @@ Content 在仍有引用、租约、历史已确认关联或可疑频道别名时
 - 管理员权限页面的隧道选择器现在先匹配实际下拉选项：匹配的 ID 选中下拉项并清空手动输入；不匹配的 ID 才进入手动模式并禁用下拉。保存完成后保持当前模式，手动输入变成有效下拉项或清空后可恢复下拉操作。该交互见 [admin-security-deployment.md](./admin-security-deployment.md)。
 
 回归：`tests/pending-save-preflight-261108.browser.cjs`、`tests/disk-partitions.test.cjs`、`tests/disk-native-mount-ui.test.cjs`、`tests/disk-client.test.cjs`、`tests/admin-confirm-261108.browser.cjs`。
+
+
+## 34. 2026-11-13—19：Telegram 远程操作接入上游出口适配
+
+- `server.js` 将 `server/disk-telegram.js` 的 Telegram 远程操作包装进 `upstreamExits.wrapService('telegram', ...)`；Bot API 的 `get*` 读取以及 `readPart/prefetchPartLocation` 等远程读取可进入 Telegram 服务出口策略。未配置该服务策略时沿用原请求路径。
+- 读取内容在尚未锁定出口时可按 Telegram 服务的明确候选策略尝试；写入/上传/删除等操作不会自动重放，避免重复副作用。流式读取会把出口运行时租约保持到响应流结束。
+- 包装器只对实际远程方法建立异步出口上下文；本地分片校验、guard 初始化、访问器、Symbol 和依赖 `this` 的本地方法继续保持同步返回/抛错契约，避免破坏管理员 TXT/full、分区读取、Range、HEAD 和审核规则。
+- 这项调整不改变 Telegram 文件实际托管、分区、Content Object 或 S3 协议；只增加服务端 Telegram API 的受控出口路由。完整策略见 [upstream-exits.md](./upstream-exits.md)。
+
+专项测试：`tests/disk-admin-download-261118.test.cjs`。

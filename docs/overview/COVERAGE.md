@@ -1,9 +1,9 @@
 # 初始 Overview 覆盖验收
 
-> **当前实现源码锚点 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
+> **当前实现源码锚点 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
 > **历史覆盖起点 Commit**：`192ecbcb9ea27a9754f8622041165f9712a8fbf4`  
 > **第一个实际代码版本 Commit**：`0224de3d07f2160055eef58dd1907235aed3aef4`  
-> **文档更新时间**：`2026-11-17`
+> **文档更新时间**：`2026-11-19`
 
 ## 1. 本文件解决什么问题
 
@@ -93,11 +93,13 @@
 - 网盘待转存恢复前预检、辅助上传进度流并发上限、默认分区名标记；系统备份发布前逐段远端清单复核；
 - 网页 ZIP 来源签名证明和离线来源 grant 校验、FFmpeg 按输出时间计算任务进度、磁链 Relay 接收端 ACK、控制中心通知/账号入口及 IME 输入修正。
 
-逐文件核对同一分支两端的 Git tree：`pages/**` 仍为 **30** 个；`client/**` 101 → **116**（新增 15）；`server/**` 94 → **95**（新增 1）；`tests/**` 299 → **332**（新增 33，另有 11 个测试/夹具文件修改）；`tools/**` 50 → **52**（新增 2，另有部署构建脚本修改）。本轮没有新增页面，所有新增客户端、服务端、测试和工具文件均在下方或模块测试索引中归属。
+第六轮（2026-11-17）当时逐文件核对同一分支两端的 Git tree：`pages/**` 为 **30** 个；`client/**` 101 → **116**（新增 15）；`server/**` 94 → **95**（新增 1）；`tests/**` 299 → **332**（新增 33，另有 11 个测试/夹具文件修改）；`tools/**` 50 → **52**（新增 2，另有部署构建脚本修改）。以上为第六轮历史快照，不代表第七轮后的当前计数。
+
+第七轮只在当前 `dev/doc-overview` 分支比较上一轮源码锚点 `80c092aa1e50124f730e918215f1e7fa7d55a52a` → `1da33930cfb0f7022114825e2cb300ce18ff4eae`，共 **23 个提交、137 个非 `docs/overview/**` 变更文件**（68 新增、67 修改、2 删除）；没有检视其它分支。同一分支 Git tree 复核：Pages **30 → 31**、Client **116 → 121**（新增 6、移除旧 `fa.json` 1）、Server **95 → 98**、Tests **332 → 358**（新增 26、修改 14）、Tools **52 → 58**（新增 6）。新增上游出口管理、P2P 基线恢复与线路诊断、Web ZIP 同源副本同步、下载兜底、移动端 History/拖动和德语包等，详见第 5.10、6.10、7.2 节及对应模块文档。
 
 所以：
 
-> 第五轮 Overview 代码事实终点为 `71e58b07350a0ef3b480fa82272177863de74448`；第六轮现已推进到 `f2c8b033c50d5a7c50f0ee4950222595d49c40a4`。初始 `b422e438...` 只作为历史冻结锚点保留。
+> 第五轮 Overview 代码事实终点为 `71e58b07350a0ef3b480fa82272177863de74448`；第六轮现已推进到 `f2c8b033c50d5a7c50f0ee4950222595d49c40a4`；第七轮现已推进到 `1da33930cfb0f7022114825e2cb300ce18ff4eae`。初始 `b422e438...` 只作为历史冻结锚点保留。
 
 ## 4. 当前页面覆盖表
 
@@ -108,6 +110,7 @@
 | `pages/admin-auth.html` | `admin-security-deployment.md` |
 | `pages/admin.html` | `admin-security-deployment.md` |
 | `pages/admin-layout.html` | `admin-security-deployment.md` |
+| `pages/upstream-exits.html` | `upstream-exits.md`、`admin-security-deployment.md` |
 | `pages/admin-devices.html` | `admin-security-deployment.md` |
 | `pages/admin-magnets.html` | `admin-security-deployment.md` |
 | `pages/admin-tunnels.html` | `admin-security-deployment.md`、`tunnel-core.md` |
@@ -134,7 +137,7 @@
 | `pages/web-workshop-guide.html` | `web-workshop.md` |
 | `pages/web-zip-preview.html` | `web-workshop.md` |
 
-**验收结果：当前 30 个 `pages/**` 页面全部有明确 Overview 归属。**
+**验收结果：当前 31 个 `pages/**` 页面全部有明确 Overview 归属。**
 
 ## 5. 当前客户端模块覆盖表
 
@@ -238,7 +241,18 @@
 | `client/i18n-bootstrap.js` | `pwa-ui/localization.md` |
 | `client/i18n/{es,fa,fr,id,it,ja,km,ko,ms,my,ru,th,vi,zh-Hant}.json` | `pwa-ui/localization.md` |
 
-**验收结果：当前 116 个 `client/**` 文件全部有明确模块归属。**
+**第六轮验收结果：116 个 `client/**` 文件均有明确模块归属；本轮增量后当前为 121 个。**
+
+### 5.10 2026-11-11—19 新增客户端 6 项
+
+| 新文件 | 对应 Overview |
+|---|---|
+| `client/task-list-loading.js/.css` | `download-transcode.md`（下载任务列表加载/删除反馈） |
+| `client/upstream-exit-select.js` | `upstream-exits.md`、`download-transcode.md` |
+| `client/upstream-exits.js/.css` | `upstream-exits.md`、`admin-security-deployment.md` |
+| `client/i18n/de.json` | `pwa-ui/localization.md`；同时移除旧 `client/i18n/fa.json`，德语替代波斯语，语言总数仍为 16 |
+
+**验收结果：当前 121 个 `client/**` 文件均有明确模块归属。**
 
 ## 6. 当前服务端模块覆盖表
 
@@ -349,7 +363,14 @@
 
 - `server/admin-form-cache.js` → `admin-security-deployment.md`、`download-transcode.md`（管理员下载表单云端保存、revision 冲突及原子 JSON 存储）。
 
-**验收结果：当前 95 个 `server/**` 文件全部有明确模块归属。**
+**第六轮验收结果：95 个 `server/**` 文件均有明确模块归属；本轮增量后当前为 98 个。**
+
+### 6.10 2026-11-11—19 新增服务端 3 项
+
+- `server/upstream-exits.js`、`server/upstream-exit-routes.js` → [upstream-exits.md](./upstream-exits.md)、`architecture.md`、`admin-security-deployment.md`；
+- `server/youtube-reference-language.js` → `download-transcode.md`（仅 YouTube 可选参考信息的地区语言回退）。
+
+**验收结果：当前 98 个 `server/**` 文件均有明确模块归属。**
 
 ## 7. 工具链覆盖
 
@@ -400,7 +421,14 @@
 
 ### 7.1 测试树增量
 
-本轮 `tests/**` 从 299 增至 332 个文件：新增 33 个测试文件，另修改 11 个既有测试/夹具。新增测试按模块列于 [tests-and-regressions.md](./tests-and-regressions.md)，不是 33 项全部独立的新业务功能；其中包含对旧网盘账号、挂载、登录和部署路径补回的回归覆盖。
+第六轮 `tests/**` 从 299 增至 332 个文件：新增 33 个测试文件，另修改 11 个既有测试/夹具；本轮增量后当前为 358 个。新增测试按模块列于 [tests-and-regressions.md](./tests-and-regressions.md)，不是 33 项全部独立的新业务功能；其中包含对旧网盘账号、挂载、登录和部署路径补回的回归覆盖。
+
+### 7.2 2026-11-11—19 新增工具文件 6 项
+
+- `tools/sing-box/README.md`、`manifest.json`、`win-x64/sing-box.exe`、`win-x64/LICENSE`、`linux-x64/sing-box`、`linux-x64/LICENSE` → [upstream-exits.md](./upstream-exits.md)、`admin-security-deployment.md`；
+- `tools/deploy/build.mjs`、`tools/deploy/verify.mjs` 同步修改：构建复制 sing-box 运行文件，发布校验识别上游出口管理路由。
+
+**当前目录计数：Pages 31、Client 121、Server 98、Tests 358、Tools 58。**
 
 ## 8. 根入口覆盖
 
@@ -468,6 +496,8 @@
 
 2026-10 后续已整理至 261019-2：二维码与旧成员资格、媒体结果删除和收藏目录、网盘源端失联、YouTube 手写格式及服务端转存。测试对应 `tests/features-261017-3/4.test.cjs`、`features-261018-1.test.cjs`、`features-261019-1.test.cjs`、`features-261019-2*.test.cjs` 及 browser fixture。
 
+2026-11 当前增量证据包括 `docs/devlog/dev-2611.md`、`docs/devlog/version-compare-261116_1754-0de94882c998bd6d1556e80954fa3840835e0746.md`、`docs/devlog/version-compare-261118_0555-0de94882c998bd6d1556e80954fa3840835e0746.md` 及对应 `[QA]...txt`。它们记录版本差异、失败证据、修复边界和开发阶段测试；不能将隔离环境通过等同于真实 Android、正式 Telegram 或所有上游服务验收。用户操作说明同步见 `docs/guide/Drop2Tunnel-User-Manual.zh-CN.md` 第 29 章。
+
 ## 10. 计划/Idea 的处理
 
 以下存在于 Prompt/Idea，但在当前源码锚点中不能写成当前实现：
@@ -475,6 +505,10 @@
 - 完整 AWS S3 服务、分布式业务锁与真实公网端到端验收；
 - 旧 JSON 迁移与 public/private 来源调整已有工具，但正式环境需人工确认；
 - 串流台核心在本轮**已实现**；其原 261016—261019 规划、图片原型只有超出当前 `server/streaming-*.js`、`client/streaming-*.js` 的能力仍属于需求，不能再笼统标为未合入；
+- `prompts/ideas/upstream-select-proxy-261113-v1.md` 至 `v5.md` 及 `QA-before-upstream-select-proxy-261113.txt` 是出口需求演进和 QA 记录；当前实际行为以本轮源码及 [upstream-exits.md](./upstream-exits.md) 为准，不把任一中间版本当作最终实现规格；
+- `prompts/ideas/CloudflareTURN-261119.md` 与 `[QA]CloudflareTURN-261119.txt` 属于 TURN 方案研究/验证材料；本轮新增的是 Idea/QA 文档，不能据此声称当前已接入 Cloudflare TURN 服务；
+- `prompts/ideas/Security of webzip and S3 static links 261118.md` 及对应 `[QA]...txt` 是安全需求/QA 材料；当前 Web ZIP 同源副本行为只按 `server/web-zip-sync.js` 等实际代码描述，不把文档中的全部建议视为已实现；
+- `docs/other/[尚未决定采用] 隧道传输链路核心验收基线 v1.0.md`、`v1.1.md` 明确标注尚未决定采用，不作为当前产品协议或验收标准；
 - 2026-10 的全量强制 HTTPS、Cloudflare 迁移等讨论没有因方案文件进入仓库就成为现行网关策略；
 - `prompts/dev-prompt-logs/dev-2610.md` 等 Idea 须逐项与当前代码核实，不能整体判定。
 
@@ -488,9 +522,9 @@
 - [x] 找到第一个代码版本；
 - [x] 固定当前最后一个非 Overview 项目 Commit；
 - [x] 主要历史阶段有时间线；
-- [x] 当前 30 个 Pages 有归属；
-- [x] 当前 116 个 Client 文件有归属；
-- [x] 当前 95 个 Server 文件有归属；
+- [x] 当前 31 个 Pages 有归属；
+- [x] 当前 121 个 Client 文件有归属；
+- [x] 当前 98 个 Server 文件有归属；
 - [x] 当前工具/VClient 有归属；
 - [x] 未来 Idea 与当前实现分离；
 - [x] Overview 后续增量扫描规则已明确；
@@ -499,4 +533,4 @@
 
 以上条件已经全部满足，**初始 Overview 创建阶段正式关闭**。
 
-当前已完成第六轮增量维护，下一轮源码比较锚点为 `f2c8b033c50d5a7c50f0ee4950222595d49c40a4`，维护规则以 [VERSION.md](./VERSION.md) 为准。
+当前已完成第七轮增量维护，下一轮源码比较锚点为 `1da33930cfb0f7022114825e2cb300ce18ff4eae`，维护规则以 [VERSION.md](./VERSION.md) 为准。

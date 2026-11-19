@@ -1,7 +1,7 @@
 # 源码、开发日志与 Prompt 对照索引
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：`2026-11-17`
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**：`2026-11-19`
 
 > 目的：后续 AI 遇到一个功能时，先知道应该读哪些“当前代码”和哪些“历史需求”，而不是全仓库盲搜一个关键词后凭局部结果判断。
 
@@ -391,7 +391,7 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 
 ### 开发日志与需求归属
 
-按 261013-1/2、261014-1/2/3、261015-1/2、261016-1、261017-1/2 顺序阅读 `docs/devlog/dev-2610-features.md`，区分“实际修改/测试”“讨论但未开发”（例如 261014-1 的 Cloudflare R2 缓存讨论）及只有规划图的 `prompts/ideas/streaming-console-QA-261016.md`。**串流控制台多版原型图不是已实现的独立串流子系统。**
+按 261013-1/2、261014-1/2/3、261015-1/2、261016-1、261017-1/2 顺序阅读 `docs/devlog/dev-2610-features.md`，区分“实际修改/测试”和“讨论但未开发”（例如 261014-1 的 Cloudflare R2 缓存讨论）。`prompts/ideas/streaming-console-QA-261016.md` 与多版 UI 原型是早期规划材料，本身不能证明功能已经交付；但串流控制台核心后来已在当前分支合入，实际实现入口见第 18 节及 [streaming-console.md](./streaming-console.md)。
 
 ## 17. 2026-10-17—19 最新已合入变化的路径索引
 
@@ -408,7 +408,7 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 
 以上回归文件均位于 `tests/`，完整开发记录在 `docs/devlog/dev-2610-features.md` 261017-3 至 261019-2。仓库根目录新增 `AGENTS.md`，属于协作约定而非新增业务端点。
 
-**范围界限**：`prompts/ideas/streaming-console-phase1-guide-261019.md`、`streaming-console-phase2-guide-261019.md`、`streaming-console-QA-261016.md` 及相应 UI 原型属于当前分支**已存的规划材料**；在没有对应已合入的功能代码前，不把串流台 Phase 1/2 记为已实现。
+**范围界限**：`prompts/ideas/streaming-console-phase1-guide-261019.md`、`streaming-console-phase2-guide-261019.md`、`streaming-console-QA-261016.md` 及相应 UI 原型是原始规划/验收材料；串流控制台核心已在后续当前分支代码中实现，见第 18 节与 [streaming-console.md](./streaming-console.md)。这些材料超出当前 `server/streaming-*.js`、`client/streaming-*.js` 的构想仍属于计划，不能反向扩大已交付范围。
 
 ## 18. 2026-10-20—11-06 当前源码新增导航
 
@@ -432,7 +432,7 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 |---|---|---|
 | 管理员下载表单云端快照 | `server/admin-form-cache.js`、`server.js`、`client/download-form-tabs.js`、`pages/sns-dl.html`、`pages/youtube-premium-dl.html` | [admin-security-deployment.md](./admin-security-deployment.md)、[download-transcode.md](./download-transcode.md)、`tests/admin-form-cache-261109.*` |
 | 16 语言启动包和按需语言 | `client/i18n-catalog.js`、`i18n-bootstrap.js`、`client/i18n/*.json`、`client/i18n.js`、`tools/build-i18n-packs.cjs`、`tools/frontend-i18n-audit.js` | [pwa-ui/localization.md](./pwa-ui/localization.md)、`tests/i18n-*.{test,browser}.cjs`、`tests/sw-language-update-261109.browser.cjs` |
-| P2P 明确放弃、信令独立限流和 Relay 诊断 | `client/file-assets.js`、`server/file-assets.js`、`server.js` | [transfer-cache.md](./transfer-cache.md)、`tests/p2p-connection-regression.test.cjs`、`p2p-live-261108.browser.cjs`、`relay-diagnostics-261109.test.cjs` |
+| P2P attempt 放弃协议（历史阶段，已在 11-16 撤回）、信令独立限流和 Relay 诊断 | `client/file-assets.js`、`server/file-assets.js`、`server.js` | [transfer-cache.md](./transfer-cache.md)、`tests/p2p-connection-regression.test.cjs`、`p2p-live-261108.browser.cjs`、`relay-diagnostics-261109.test.cjs` |
 | 批量转发逐条结果和持久确认 | `app.js`、`server.js` | `tests/bulk-forward-261108.test.cjs`、`forward-confirmation-261108.test.cjs`、`forward-results-261108.browser.cjs`、`persisted-forward-261108.test.cjs` |
 | 资源盘点与缓存清理安全 | `app.js`、`client/file-assets.js` | `tests/cache-safety-261107.test.cjs`、`diagnostics/memory-inventory-261107.browser.cjs` |
 | 网盘分区默认名、待转存预检和进度流上限 | `server/disk-partitions.js`、`client/disk-ui.js`、`client/disk-pending-save.js`、`client/disk-client.js` | [telegram-drive.md](./telegram-drive.md)、`tests/pending-save-preflight-261108.browser.cjs`、`disk-partitions.test.cjs`、`disk-client.test.cjs` |
@@ -442,3 +442,29 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 | 控制中心通知/账号入口、IME 输入和 Telegram OIDC 返回页 | `app.js`、`client/notification-center.js`、`client/tunnel-entry.js`、`server.js` | [pwa-ui.md](./pwa-ui.md)、`tests/control-center-261107.browser.cjs`、`telegram-app-return-261109.browser.cjs` |
 
 上述路径均来自当前分支的实际文件变更；Prompt/Devlog 可解释动机与验收边界，但不能替代这些代码入口。
+
+
+## 20. 2026-11-11—19 当前源码新增导航
+
+| 已合入能力/行为 | 当前代码入口 | 主要证据 |
+|---|---|---|
+| 上游服务出口与 Trojan/sing-box | `server/upstream-exits.js`、`server/upstream-exit-routes.js`、`client/upstream-exits.js/.css`、`client/upstream-exit-select.js`、`pages/upstream-exits.html`、`tools/sing-box/**` | [upstream-exits.md](./upstream-exits.md)、[admin-security-deployment.md](./admin-security-deployment.md)、`tests/upstream-*.cjs`、[用户手册第 29 章](../guide/Drop2Tunnel-User-Manual.zh-CN.md) |
+| SNS/YouTube 任务出口和候选锁定 | `server.js`、`server/sns-downloader.js`、`server/youtube-premium.js`、`pages/sns-dl.html`、`pages/youtube-premium-dl.html` | [download-transcode.md](./download-transcode.md)、`tests/upstream-cache-261114.test.cjs`、`upstream-candidates-261119.test.cjs` |
+| Telegram 远程操作出口适配 | `server.js`、`server/disk-telegram.js`、`server/upstream-exits.js` | [telegram-drive.md](./telegram-drive.md)、`tests/disk-admin-download-261118.test.cjs` |
+| P2P attempt 放弃撤回、传输基线恢复和实际线路诊断 | `client/file-assets.js`、`server/file-assets.js`、`app.js` | [transfer-cache.md](./transfer-cache.md)、`tests/transfer-baseline-261116.test.cjs`、`file-route-diagnostics-261111.test.cjs`、`multi-source-route-261119.test.cjs` |
+| 文件缓存元数据写入保护与无锚点精确回源 | `app.js`、`server.js` | `tests/cache-metadata-261111.browser.cjs`、`forwarded-server-assets-261117.test.cjs` |
+| Web ZIP 同源转发副本统一同步 | `server/web-zip-sync.js`、`server.js` | [web-workshop.md](./web-workshop.md)、`tests/web-zip-copies-261117.test.cjs`、`web-zip-records-261118.browser.cjs` |
+| 下载兜底、参考语言和任务列表加载 | `server/youtube-reference-language.js`、`server/download-file-name.js`、`server/sns-post-markdown.js`、`client/task-list-loading.js/.css` | [download-transcode.md](./download-transcode.md)、`tests/sns-bilibili-261117.test.cjs`、`sns-media-route-261117.browser.cjs` |
+| 控制中心触摸拖动、Markdown 移动端 Back | `app.js`、`client/tunnel-markdown.js` | [pwa-ui.md](./pwa-ui.md)、`tests/control-center-drag-261118.browser.cjs`、`markdown-navigation-261116.browser.cjs` |
+| 德语包与草稿多语言 | `client/i18n/de.json`、`client/i18n-catalog.js`、`client/i18n-bootstrap.js`、`server/i18n.js` | [pwa-ui/localization.md](./pwa-ui/localization.md)、`tests/requirements-261119.browser.cjs` |
+
+以上仅索引本轮已合入的当前分支文件；历史 Prompt/Devlog 中的其它分支状态不作为本轮事实来源。
+
+
+### 本轮新增的需求、QA 与验收资料（不是独立实现入口）
+
+- 上游出口需求演进：`prompts/ideas/upstream-select-proxy-261113-v1.md` 至 `v5.md`、`prompts/ideas/QA-before-upstream-select-proxy-261113.txt`。对照当前行为时以 [upstream-exits.md](./upstream-exits.md) 和实际源码为准。
+- Cloudflare TURN 研究：`prompts/ideas/CloudflareTURN-261119.md`、`prompts/ideas/[QA]CloudflareTURN-261119.txt`。它们是方案与 QA 材料，不代表本轮已经接入 Cloudflare TURN。
+- Web ZIP / S3 静态链接安全：`prompts/ideas/Security of webzip and S3 static links 261118.md`、`prompts/ideas/[QA]Security of webzip and S3 static links 261118.txt`。需求建议与已实现代码须逐项区分。
+- 隧道传输验收基线：`docs/other/[尚未决定采用] 隧道传输链路核心验收基线 v1.0.md`、`v1.1.md` 明确尚未决定采用，不可作为当前协议的规范性依据。
+- 版本对照与故障证据：`docs/devlog/version-compare-261116_1754-0de94882c998bd6d1556e80954fa3840835e0746.md`、`version-compare-261118_0555-0de94882c998bd6d1556e80954fa3840835e0746.md` 及对应 QA 文本；用于解释历史版本差异、失败证据与修复边界，最终行为仍由当前源码决定。

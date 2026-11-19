@@ -1,7 +1,7 @@
 # 文件、合辑、P2P、缓存、恢复与磁链 — 思维导图
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：2026-10-16  
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**： 2026-11-19
 > **状态**：现有功能与运行边界  
 > **主要参考**：[../transfer-cache.md](./../transfer-cache.md)、[../transfer-cache/magnet-download.md](./../transfer-cache/magnet-download.md)、[../transfer-cache/folder-archive-directory-mirror.md](./../transfer-cache/folder-archive-directory-mirror.md)
 
@@ -121,6 +121,8 @@ mindmap
           取消
           超时
       Relay 进度标记
+      多源按活动 Range 显示 P2P / Relay / mixed
+      完整缓存公告前不显示整文件 100%
       防止重复下载与僵尸任务
     服务端资源
       原始 Server Asset 元数据
@@ -283,9 +285,17 @@ mindmap
 
 注意：该图概括细节与交互边界；具体调用链、迁移过程、失败回滚及版本差异以链接的模块文档和实际源码为准。
 
-## 2026-11-07—10 增量
+## 2026-11-07—10 增量（历史中间实现）
 
-- 文件 P2P：仅在已确认背压停滞/超时或 drain timeout 后关闭当前文件 DataChannel；共享 PeerConnection 保留，接收端按 abandonedAttemptId 精确释放同一活动 attempt，之后走原有冷却和重试。
+- 文件 P2P 曾加入背压失败后的 `abandonedAttemptId` 主动放弃协议；该协议于 2026-11-16 撤回，不能再视为当前行为。
 - 跨隧道来源：请求绑定源隧道 deviceId、签名 grant 和精确 recordMessageId；批量转发逐条确认，超时查询目标记录，未知结果沿用稳定消息 ID。
 - 缓存：元数据游标避免枚举时加载所有 Blob；垃圾清理前重新检查引用、会话归属和最新目录，任何读取错误都停止删除。
 - 磁链 Relay：start/chunk/complete 处理结果通过 Socket.IO ACK 返回。
+
+
+## 2026-11-11—19 当前实现增量
+
+- P2P 恢复既有发送/背压/失败基线；队列背压失败不额外主动关闭 DataChannel、不发送放弃字段，也不立即竞争 Relay。迟到旧 attempt 仍由 request/attempt 身份核验拒绝。
+- 线路诊断读取 selected candidate pair 的连接级地址、端口、类型、协议、RTT 和字节计数；连接级速率不是单文件独占吞吐。
+- 发送端按文件/接收设备统计本机唯一供源范围，扣除 DataChannel 待排缓冲；接收端按活动范围显示纯 P2P、纯 Relay 或 mixed，完整缓存公告前不结束整文件行。
+- 缓存元数据恢复写入保护完整文件正文；缺少 recordMessageId 的旧恢复请求只在目标持久历史中按精确 fileId 查找并继续原授权校验。

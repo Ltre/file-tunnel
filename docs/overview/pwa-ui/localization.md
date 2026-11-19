@@ -1,7 +1,7 @@
 # 多语言、本地化运行时与 i18n 审计
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：`2026-11-17`
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**： 2026-11-19
 
 ## 1. 模块定位
 
@@ -30,7 +30,7 @@ Drop2Tunnel 的多语言并不是浏览器自动翻译，而是项目自身维�
 - `ru` — Русский
 - `es` — Español
 - `it` — Italiano
-- `fa` — فارسی
+- `de` — Deutsch
 - `ko` — 한국어
 - `ms` — Bahasa Melayu
 - `id` — Bahasa Indonesia
@@ -189,12 +189,12 @@ Git 历史里有过翻译错误回退，因此一个重要原则是：
    - zh-Hans
    - en
    - ja
-   - RTL 的 fa
+   - `de`（德语长词/布局）
    - 长文本语言。
 
 ## 12. RTL 与布局
 
-`fa` 是 RTL 语言。
+当前 16 语言中已不包含 RTL 语言：旧 `fa`（波斯语）包已移除，由 `de`（德语）替代。若未来重新加入 RTL 语言，仍需按方向性规则处理，而不能把所有容器全局反转。
 
 国际化不仅是字符串替换，还要注意：
 
@@ -234,8 +234,18 @@ Git 历史里有过翻译错误回退，因此一个重要原则是：
 ### 14.3 构建、缓存和原文边界
 
 - `tools/deploy/build.mjs` 在构建前执行语言包一致性检查，打包 bootstrap 与 `client/i18n/` JSON；修改目录后先运行 `node tools/build-i18n-packs.cjs` 重新生成。构建会对服务端动态生成的 Telegram OIDC 回调 HTML 中的脚本引用执行与静态页面相同的资产指纹替换。
-- 页面与独立入口（分享、协同、网页 ZIP 预览、磁链/光媒页及 Telegram OIDC 回调）统一使用启动包和同一运行时，不再重复加载完整目录。Service Worker 当前资源版本为 `instant-tunnel-v140-content-v8-ui-i18n-cloud-261109-2-final`；激活时只清理旧的 `instant-tunnel-*` 缓存，不删除其它应用的 CacheStorage，也不清理业务 IndexedDB。
+- 页面与独立入口（分享、协同、网页 ZIP 预览、磁链/光媒页及 Telegram OIDC 回调）统一使用启动包和同一运行时，不再重复加载完整目录。Service Worker 当前资源版本为 `instant-tunnel-v151-content-v8-261119-1`；激活时只清理旧的 `instant-tunnel-*` 缓存，不删除其它应用的 CacheStorage，也不清理业务 IndexedDB。
 - 动态文案只翻译已识别的系统模板及命名标签，不翻译用户正文、文件名、路径、分区名、消息内容和富文本编辑区域。参数值、错误码及文件路径保留原文。动态 DOM 使用 WeakMap 保存原文与空白，避免 MutationObserver 反复翻译后空格累积。
 - `tools/frontend-i18n-audit.js` 提供前端词条审计，默认只读；`--rewrite-dialogs` 才执行原生 `alert/confirm/prompt` 包装改写。最终目录覆盖 15 个目标翻译语言，构建检查生成文件与唯一源目录一致。审计候选和自动提取结果不是“所有运行时文案都可自动翻译”的承诺。
 
 关联回归：`tests/frontend-i18n-audit-261108.test.cjs`、`i18n-catalog-261108.test.cjs`、`i18n-261108.browser.cjs`、`i18n-261109.browser.cjs`、`i18n-lazy-261109-2.browser.cjs`、`i18n-packs-261109.test.cjs`、`public-drive-i18n-261109.browser.cjs`、`streaming-i18n-261109.browser.cjs`、`sw-language-update-261109.browser.cjs`。
+
+
+## 15. 2026-11-18—19：德语包与网页工坊草稿文案
+
+- 当前 16 种语言中，`de`（Deutsch）替代旧 `fa`（فارسی）；`client/i18n/de.json` 新增，`client/i18n/fa.json` 删除。总语言数不变，启动包仍包含简中/繁中/英文，其余 13 种语言按需加载。
+- 新增并补齐网页工坊草稿入口“转入草稿箱编辑”等文案，以及“原记录”“发布”“来源隧道:{0}”“{0} 个文件”等动态模板；参数占位符保持原样。相关词条由中央目录生成，不在网页工坊或串流模块内另建词条表。
+- `de` 不是 RTL 语言；当前语言集不再有波斯语方向测试项。布局审查改为检查德语长词、长文本和常见窄屏折行，同时保留未来 RTL 兼容规则。
+- Service Worker 资源版本为 `instant-tunnel-v151-content-v8-261119-1`；`content-v8` 业务缓存语义未变，按需语言包继续走版本校验与缓存更新。
+
+专项回归：`tests/control-center-drag-261118.browser.cjs`、`tests/requirements-261119.browser.cjs`、`tests/i18n-packs-261109.test.cjs`、`tests/sw-language-update-261109.browser.cjs`。

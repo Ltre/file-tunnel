@@ -1,7 +1,7 @@
 # 后台管理、安全、部署、存储与测试回归 — 思维导图
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：2026-10-16  
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**： 2026-11-19
 > **状态**：现有功能与运行边界  
 > **主要参考**：[../admin-security-deployment.md](./../admin-security-deployment.md)、[../tests-and-regressions.md](./../tests-and-regressions.md)、[../source-map.md](./../source-map.md)
 
@@ -160,7 +160,7 @@ mindmap
         SNS Cookie
         任务缓存
     部署
-      Node 最低版本 24.15
+      Node 最低版本 22.16.0
         可部署性
           内置 node:sqlite
           检查实际 Node 运行版本
@@ -293,3 +293,10 @@ mindmap
 - 系统备份完成前重新核对每个远端分段的文件 ID、大小与 SHA-256；失败不发布完成 manifest。
 - i18n 构建生成包检查纳入部署构建；Service Worker 只清理自身 `instant-tunnel-*` 旧缓存，不清理同源其它应用缓存。
 - 新增 33 个测试文件并修改 11 个旧测试/夹具；阶段验证和未现场验收边界见 [tests-and-regressions.md](../tests-and-regressions.md)。
+
+
+## 2026-11-13—19 增量
+
+- 管理员新增 `/upstream-exits` 页面；节点、各服务策略独立保存，API 隐藏密码。
+- `tools/sing-box` 包含 Windows x64/Linux x64 运行文件；仅实际任务选择 Trojan 时启动 loopback HTTP 代理，最后任务结束后空闲约 30 秒停止。
+- 项目最低 Node 调整为 22.16.0，Undici 固定 7.30.2；Linux 原生执行和 macOS/ARM 不在当前已验证/随附范围内。

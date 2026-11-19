@@ -1,7 +1,7 @@
 # SNS、YouTube Premium、Cookie 同步、音轨修复与转码 — 思维导图
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：2026-10-16  
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**： 2026-11-19
 > **状态**：现有功能与运行边界  
 > **主要参考**：[../download-transcode.md](./../download-transcode.md)、[../download-transcode/sns-cookie-sync.md](./../download-transcode/sns-cookie-sync.md)
 
@@ -272,3 +272,10 @@ mindmap
 - SNS / YouTube Premium 表单可将当前 TAB 保存为管理员鉴权云端快照，按 clientKey/revision 做并发保护；跨浏览器可读取，复制仍为本地草稿，任务提交后表单清理独立执行。
 - 云表单只保存白名单字段、候选格式分析和选中格式，不保存 Cookie，不同步抓取任务或输出文件。
 - FFmpeg stderr 解析 Duration 与 time=，按每一步有效时长计算多步骤任务进度；完成前最高 99%，日志保留最近 80 行，UI 重绘时保留用户滚动位置。
+
+
+## 2026-11-13—19 增量
+
+- SNS/YouTube 格式解析与下载通过 task ticket 复用同一出口；缓存命中不锁定，首个有效实际内容锁定后不自动切换。
+- Bilibili HTTP 567 在同一出口仅重试一次完整 Range；YouTube 可选中文参考信息按来源地区尝试 zh-HK/zh-TW/zh-CN，再以 zh 兜底。
+- YouTube Music 在艺术家/标题齐全时使用“艺术家 - 歌曲标题”命名；任务列表增加刷新/删除 loading 展示，不改任务状态机。

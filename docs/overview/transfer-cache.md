@@ -1,7 +1,7 @@
 # 传输记录、文件资产、缓存与恢复链路
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：`2026-11-17`
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**：`2026-11-19`
 
 ## 子模块文档
 
@@ -472,12 +472,12 @@ SNS/X 帖子转成 Markdown 时，正文附件有对应生命周期和图片资�
 
 关联 `app.js`、`client/file-assets.js`、`client/cache-store.js`、`server/file-assets.js`、`server/markdown-records.js` 以及 `tests/history-*.test.cjs`、`tests/markdown-*.browser.cjs`、`tests/transfer-feedback-261101-3.*`、`tests/resource-cache-261106.test.cjs`。
 
-## 25. 2026-11-07—10：P2P 明确放弃、跨隧道转发确认与缓存安全
+## 25. 2026-11-07—10：P2P attempt 放弃历史、跨隧道转发确认与缓存安全
 
-### P2P 背压失败的明确放弃协议
+### 历史方案：P2P 背压失败的明确放弃协议（2026-11-16 已撤回）
 
-- 只在既有等待逻辑已经判定 `backpressure stalled/timeout` 或文件 DataChannel drain timeout 后，发送端才关闭**本次文件 DataChannel**，并报告与 `requestId`、P2P 传输类型及全文件/Range `transferId` 对应的 `abandonedAttemptId`。共享 PeerConnection 保留，原 5 秒供源冷却和重试调度继续使用。
-- `server/file-assets.js` 按当前请求/传输计算预期 attempt ID，只转发完全匹配的放弃标识；接收端还要核对当前供源、当前活动 attempt、未完成状态，才释放该全文件或 Range P2P 任务并走原有回退。
+- 这是 2026-11-07—10 阶段曾合入的实现，不是当前行为：当时在背压/排空失败后关闭本次文件 DataChannel，并通过 `abandonedAttemptId` 释放接收端对应 attempt。该协议于 2026-11-16 被撤回，当前代码不再发送或校验此字段。
+- 历史阶段的服务端校验/转发逻辑也已移除；保留该段仅用于解释 11 月 8 日开发日志中的中间实现，不能作为当前协议说明。
 - 普通 `failed`、旧请求通知、其它供源的失败及短暂队列背压不能中断仍在工作的 P2P 路径。没有修改 ICE 建链、分包、并发、缓冲阈值、8 秒停滞判定、30 秒接收期限或 Relay 竞争策略。
 - `server.js` 将 P2P `signal` 的每分钟限流计数与聊天/编辑/转发消息分开；沿用同一个限额常量，但普通消息突发不再消耗 WebRTC 建链信令额度。首个超限事件记录 `p2p-signal-rate-limited`。
 - `file-asset-relay-complete` 增加阶段、耗时、Socket、会话、目标、资源、传输和 attempt 诊断字段，区分验证、接收端完成 ACK 和服务端记录完成；不记录文件正文。
@@ -504,3 +504,33 @@ SNS/X 帖子转成 Markdown 时，正文附件有对应生命周期和图片资�
 - 控制中心的批量转发入口支持 Shift 范围选择；逐项结果反馈不再只给一个总成功/失败提示。
 
 关联回归：`tests/p2p-connection-regression.test.cjs`、`p2p-live-261108.browser.cjs`、`source-access-261107.test.cjs`、`relay-diagnostics-261109.test.cjs`、`bulk-forward-261108.test.cjs`、`forward-confirmation-261108.test.cjs`、`forward-results-261108.browser.cjs`、`persisted-forward-261108.test.cjs`、`cache-safety-261107.test.cjs`。
+
+
+## 26. 2026-11-11—19：传输基线恢复、线路诊断、多源进度与缓存写入保护
+
+### P2P 当前故障处理
+
+- 2026-11-16 以不可变历史对象 `0de94882c998bd6d1556e80954fa3840835e0746` 为对照，恢复发送、等待、背压、失败处理和原有 DataChannel 协议；`abandonedAttemptId`、接收端主动放弃事件及相应服务端字段不再存在。
+- 当前发送队列满/背压失败会记录 `p2p-backpressure-failed-without-relay` 并按基线报告失败；不会额外主动关闭共享 PeerConnection、发送放弃通知或立即竞争 Relay。其它明确连接失败/关闭、超时等仍按基线既有分支处理。
+- 没有借本轮恢复调整块大小、并发、ICE、超时、冷却或 Relay 降级阈值。旧 attempt/请求 ID 仍用于拒绝迟到完成；被替换的接收任务不能在排队写入结束后提交旧正文或清除新任务，拒绝的迟到完成会收到负 ACK。
+
+### 实际线路诊断与多源标签
+
+- `client/file-assets.js` 在可用时通过 `RTCPeerConnection.getStats()` 读取 selected candidate pair，记录本地/远端地址和端口、candidate type、协议、RTT、连接级字节计数/速率及应用传输类型。每个 PeerConnection 至少约 5 秒才采样一次，最多保留 32 个未完成采样；异步卡住、失败或无候选对不会阻断传输。
+- 这些速率属于 PeerConnection/candidate-pair 级统计，可能包含同连接上的其它文件或媒体流，不能当成某个文件的独占速度。没有 selected pair 时记录 unknown，不伪装成 host/local 路径。
+- 多源接收端按**当前活动 Range 的实际 transport**显示纯 P2P、纯 Socket.IO Relay 或 mixed；仅有 manifest/等待中的范围不显示空闲接收行。Range ACK 只完成该范围，不等于整文件完成；完整缓存公告到达后才结束文件行并显示 100%。发送端进度按文件和接收设备合并本机已供给的唯一范围，并从已发送量扣除 DataChannel 待排缓冲。
+- `app.js` 将进度 UI 绘制节流为至少约 120 ms，合并高频更新并保留终态刷新；不改变网络分片或 ACK 协议。
+
+### IndexedDB 正文与恢复元数据竞争
+
+- `saveToStore('files', ...)` 对 metadata-only 恢复写入启用保护：在同一个 IndexedDB readwrite transaction 中重新读取现有行，再合并元数据；如果现有记录已有完整正文，保留其 `data/cacheStoreRef/cacheStorage` 和完整缓存状态，防止迟到恢复元数据覆盖已完成文件。
+- 内存回退存储在异步读取后重新读取最新行再合并。显式 `clearFileCache` 不走该保护，用户主动清理仍可删除正文。
+
+### 跨隧道恢复锚点补强
+
+- 当旧客户端/缓存恢复请求缺少 `recordMessageId` 时，服务端仅在目标隧道持久历史中按精确 `sessionId + fileId` 查找记录，再执行原有 sender、来源 grant、删除状态、文件元数据及前驱记录证明；请求提供了错误锚点或已有引用冲突时不会降级到宽泛查找。
+- 空 MIME 与 `application/octet-stream` 在旧转发记录核验时按同一未知二进制类型处理，不放宽所有权或来源证明。此回退仅恢复目标端已持有的精确副本，不授权读取原来源隧道其它文件。
+
+关联回归：`tests/transfer-baseline-261116.test.cjs`、`tests/file-route-diagnostics-261111.test.cjs`、`tests/file-progress-261114.test.cjs`、`tests/whole-file-progress-261116.test.cjs`、`tests/transfer-progress-261117.browser.cjs`、`tests/multi-source-route-261119.test.cjs`、`tests/cache-metadata-261111.browser.cjs`、`tests/forwarded-server-assets-261117.test.cjs`、`tests/direct-route-261116.test.cjs`、`tests/relay-complete-261116.test.cjs`。
+
+**现场边界：**开发日志仍将真实手机代理环境中的低速、偶发 Relay 根因及启动等待问题列为未完全查明；本机隔离 Chrome/WebRTC 的正文一致性不能代替实体 Android、用户 VPN 或真实磁盘环境验收。

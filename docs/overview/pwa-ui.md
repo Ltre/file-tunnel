@@ -1,7 +1,7 @@
 # PWA、功能首页 UI、响应式布局与全局交互
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：`2026-11-17`
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**： 2026-11-19
 
 ## 子模块文档
 
@@ -208,7 +208,10 @@ fetch 根据资源类型采用网络/缓存 fallback；Web ZIP Runtime 又有独
 - 切换隧道；
 - 多个功能磁贴；
 - 磁贴可拖动排序；
-- order 记忆。
+- order 记忆；
+- 窄屏触摸移动超过约 8 px 即开始拖动，保留 500 ms 长按入口；边缘约 40 px 区域持续自动滚动；
+- 拖动过程只移动必要 DOM 节点，保持其它磁贴/隧道列表挂载，稳定插入方向并抑制轻微手抖反向换位；
+- 控制中心拥有独立 History 状态，浏览器 Back 优先关闭面板，不直接跳出隧道。
 
 入口包括网页工坊、主题等。
 
@@ -460,4 +463,25 @@ Service Worker 对已有缓存壳的指定首页路由提供最长约 1 秒的 n
 
 ### 发布壳和语言包
 
-当前语言启动包、13 个额外按需语言包、设置内系统语言确认和生成/构建检查详见 [localization.md](./pwa-ui/localization.md)。当前 Service Worker 资源句柄为 `instant-tunnel-v140-content-v8-ui-i18n-cloud-261109-2-final`；激活时只清理本应用 `instant-tunnel-*` 旧缓存，避免删除同域其它应用的 CacheStorage。
+当前语言启动包、13 个额外按需语言包、设置内系统语言确认和生成/构建检查详见 [localization.md](./pwa-ui/localization.md)。当前 Service Worker 资源句柄为 `instant-tunnel-v151-content-v8-261119-1`；激活时只清理本应用 `instant-tunnel-*` 旧缓存，避免删除同域其它应用的 CacheStorage。
+
+
+## 26. 2026-11-16—19：窄屏拖动、Markdown 返回历史与资源更新
+
+### 控制中心触摸拖动
+
+- 窄屏控制中心的磁贴排序改为小幅移动即可进入拖动，不再要求先长按到固定时间；长按入口仍保留。触点接近容器上下边缘时持续自动滚动，支持斜向跨行和滚动到首排。
+- 拖动时不再整组重建/替换磁贴列表，减少其它磁贴或隧道区域短暂消失；插入方向按拖动中心与目标位置判断，避免缓慢前移后反向换位。拖动期间阻止文本选择，普通点击仍保持原行为。
+- 浏览器返回可关闭控制中心；点击磁贴执行跳转前先消费控制中心自己的历史状态，避免返回栈错位。
+
+### Markdown 阅读/编辑浮层的移动端 Back
+
+- `client/tunnel-markdown.js` 只在视口宽度不超过 700 px 时为 Markdown 阅读器/编辑器建立独立 History entry；宽屏保持原有尺寸和导航行为。
+- 手机 Back 关闭最上层 Markdown 浮层；关闭按钮和 Escape 也只消费自身历史项。编辑器/预览、账号面板、通知中心、控制中心、网盘和串流台等上层状态按各自 History 所有权处理，避免一次 Back 连带关闭底层阅读器或跳出隧道。
+- 编辑预览关闭后保留未保存编辑内容；快速重新打开、账号面板手动关闭和删除记录后的历史清理均有回归覆盖。
+
+### 发布资源
+
+Service Worker 静态资源句柄提升至 `instant-tunnel-v151-content-v8-261119-1`；`content-v8` 业务缓存语义保持不变。新语言包仍按原有按需加载策略，不因版本提升清理业务 IndexedDB。
+
+专项回归：`tests/control-center-drag-261118.browser.cjs`、`tests/markdown-navigation-261116.browser.cjs`、`tests/requirements-261119.browser.cjs`。
