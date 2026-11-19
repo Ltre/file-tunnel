@@ -1,7 +1,7 @@
 # SNS / YouTube Premium、音轨修复与视频转码
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：`2026-11-17`
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**：`2026-11-19`
 
 ## 子模块文档
 
@@ -576,21 +576,42 @@ X/Twitter 的帖子正文、作者名称、用户名/头像、最多多张配图
 
 相关测试：`tests/sns-post-261027-1.test.cjs`、`sns-images-261102-2.test.cjs`、`sns-author-261103-2.test.cjs`、`twitter-browser-261103.test.cjs`、`download-file-name-261105.test.cjs`、`download-form-tabs-261105.browser.cjs` 等。原始 X 站点与公开媒体 URL 行为不断变化，孤立样本不能被视为所有帖子的确定保证。
 
-## 24. 2026-11-09—10：下载表单云端 TAB 与 FFmpeg 实时进度
+## 24. 2026-11-09—19：下载表单云端 TAB、ID 冲突与任务列表反馈
 
 ### SNS / YouTube 下载表单
 
-两类下载页面仍保留原来的多 TAB 草稿、复制、备注、候选格式解析和提交逻辑；新增可选的云端保存入口：
+两类下载页面仍保留原来的多 TAB 草稿、复制、备注、候选格式解析和提交逻辑；云端保存仍是可选的表单快照功能，但当前交互与 ID 分配已调整：
 
-- SNS `pages/sns-dl.html` 与 YouTube Premium `pages/youtube-premium-dl.html` 分别绑定服务端表单类型。带 `☁|` 的 TAB 表示当前快照已保存到服务器；编号由服务器序列分配，和本浏览器 TAB 的显示顺序无关。
-- 云端保存包含白名单表单参数、完整格式候选解析结果、已选格式、稳定 `clientKey`、revision 和更新时间。新浏览器可读取；复制 TAB 仍是本地草稿；删除云 TAB 先按 revision 删除对应服务端副本。
-- 本地旧版本与服务端新 revision 冲突时不静默覆盖用户输入；首次保存的迟到响应不会把已经提交并清空的表单重新标成云端保存。任务成功提交后清理表单副本，清理失败只保留可重试清理记录，不重提抓取任务。
-- 这是**表单跨浏览器保存**，不是把 SNS/YouTube 下载任务同步到其它设备，也不是 Cookie 凭据同步或服务器输出文件共享。页面提交白名单表单字段和格式解析结果，不把 Cookie 作为表单字段上传。服务端权限、存储与冲突语义见 [admin-security-deployment.md](./admin-security-deployment.md)。
+- SNS `pages/sns-dl.html` 与 YouTube Premium `pages/youtube-premium-dl.html` 分别绑定服务端表单类型。云端已保存的 TAB 现在使用 `☁·` 标记；再次点击云按钮会**取消云端保存**，删除服务器副本但保留本地表单，不再把第二次点击解释为“继续保存修改”。
+- 首次保存会把本地 TAB 的 `preferredId` 和其它未保存本地 TAB 的 `localIds` 发给服务端；服务端优先采用未占用的首选 ID，冲突时分配未占用且不与本地 ID 冲突的数字。浏览器维护云端 ID 集合，接受云端 ID 时会把冲突的本地 TAB 改分配到空闲 ID。当前不再依赖旧 `.sequence.json` 编号文件。
+- 空白表单不能保存；云端删除按 revision 执行，失败时保留本地内容。远端 revision 更新时仍保留本地编辑副本；任务提交后的待清理记录不会重新提交下载任务。
+- 复制本地 TAB 时会清除解析结果中的 `networkTicket/networkRoute`，新 TAB 不继承前一任务已经锁定的出口；表单快照仍不包含 Cookie 或下载任务状态。
 
-### 视频转码进度和日志
+### FFmpeg 进度和下载任务列表
 
-`server/video-transcode.js` 现在解析 FFmpeg stderr 的 `Duration` 与 `time=` 状态行，支持 CR/LF 形式的进度刷新，并按输入/输出侧 `-ss`、`-t`、`-to` 调整有效时长，结合多步骤索引计算任务整体进度。进度限制在完成前最高 99%，只有最终输出文件确认存在并任务成功时才置 100%。
+视频转码进度仍按 FFmpeg 时间戳计算，完成前最高 99%，最终文件确认成功后才到 100%。stderr 最近 80 行及日志滚动位置保护不变。
 
-stderr 采用 UTF-8 `StringDecoder`，保留最近 80 条日志；未终止的异常长行限制在 16 KiB，避免日志缓冲无界增长。页面重绘任务卡片时保留日志滚动位置：原本贴近底部则继续跟随新日志，用户向上查看历史时则保持原位置；首次展开定位到日志尾部。此进度是 FFmpeg 时间戳估算，不是输出字节百分比，也不保证所有滤镜/未知时长输入都能产生可计算进度。
+新增 `client/task-list-loading.js/.css` 作为 SNS/YouTube 任务列表的展示层：手动刷新/筛选/分页按钮显示加载状态，删除任务时按钮显示 spinner，成功后卡片短暂滑出；它不改任务执行状态、原自动刷新暂停规则或请求 revision 保护。
 
-专项测试：`tests/transcode-progress-261108.test.cjs`。
+专项测试：`tests/admin-form-cache-261109.test.cjs`、`tests/admin-form-cache-261109.browser.cjs`、`tests/requirements-261119.browser.cjs`。云端表单权限与持久化见 [admin-security-deployment.md](./admin-security-deployment.md)。
+
+## 25. 2026-11-13—19：上游出口、SNS/YouTube 路由与下载兜底
+
+### 任务级网络出口
+
+- SNS 与 YouTube Premium 的格式解析表单增加“网络出口”选择，可选择服务默认出口、本机直连或已配置节点；任务列表提供“查看使用的网络出口记录”，显示初始尝试、各候选状态及最终采用出口。
+- 每个服务有独立默认出口和候选策略。候选节点必须在该服务设置中明确勾选；仅有旧排序列表不会自动启用所有节点。任务可覆盖初始出口，格式解析通过 `networkTicket` 将选择传递给实际下载任务。
+- 缓存命中和辅助元数据不代表出口已验证；首个通过业务校验的实际内容才锁定。锁定后同一任务不再因后续请求失败而换节点；新任务重新按自己的服务默认/指定出口开始。未配置服务出口策略时沿用原网络行为。
+- 具体服务映射、Trojan 节点、sing-box 生命周期、日志脱敏及配置文件权限见 [upstream-exits.md](./upstream-exits.md)。
+
+### YouTube 参考语言与音乐文件名
+
+- `server/youtube-reference-language.js` 只用于可选的中文参考信息补取：识别来源地区后先尝试 `zh-HK` / `zh-TW` / `zh-CN`，失败时最多再用 `zh`；不改变 yt-dlp 主解析语言、Cookie、格式选择或缓存规则。
+- YouTube Music 歌曲成品在艺术家和标题都可用时命名为“艺术家 - 歌曲标题”；多个艺术家用全角 `＆` 连接。普通视频继续使用原来的平台/作者/ID/片段命名规则。
+
+### Bilibili 与 SNS 帖子媒体
+
+- Bilibili 媒体下载仅在原请求命中 HTTP 567、且任务未取消时清理本次临时输出并使用 `Range:bytes=0-` 重试一次；保持同一任务出口。其它平台、其它状态码和正常请求不套用该兜底。
+- SNS 帖子 Markdown 的资源阶段若得到 HTTP 4xx/5xx，会返回安全错误码 `SNS_POST_MEDIA_UNAVAILABLE` 并附 HTTP 状态；不会把仅元数据读取成功误当成媒体已保存。上游出口适配对网页/媒体读取使用同一任务上下文。
+
+专项测试：`tests/upstream-exits-261114.test.cjs`、`tests/upstream-cache-261114.test.cjs`、`tests/upstream-candidates-261119.test.cjs`、`tests/sns-bilibili-261117.test.cjs`、`tests/sns-media-route-261117.browser.cjs`。

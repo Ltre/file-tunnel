@@ -1,7 +1,7 @@
 # 管理后台、安全边界与部署
 
-> **源码基线 Commit**：`f2c8b033c50d5a7c50f0ee4950222595d49c40a4`  
-> **文档更新时间**：`2026-11-17`
+> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
+> **文档更新时间**：`2026-11-19`
 
 ## 1. 管理后台定位
 
@@ -430,7 +430,7 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 
 ## 21. 新运行基线、网盘管理、安全与运维工具
 
-当前 `package.json` 要求 **Node >=24.15**，因为网盘 SQLite 使用 Node 内置 `node:sqlite`，不是靠更老 Node 的 `sql.js` 自动兼容。部署时须核对实际执行服务进程的 Node 版本，而非只看 CLI 的另一个 Node 安装。
+当前 `package.json` 要求 **Node >=22.16.0**，因为网盘 SQLite 使用 Node 内置 `node:sqlite`，不是靠更老 Node 的 `sql.js` 自动兼容。部署时须核对实际执行服务进程的 Node 版本，而非只看 CLI 的另一个 Node 安装。
 
 网盘用户数据在 `disk.sqlite` WAL；S3 Access Key 的 AES-256-GCM 密文/密钥分别在 `s3-credentials.json`、`s3-secret.key`；Chat 字典单独 JSON；上传 staging 和媒体缓存仍是物理目录。在线备份应采用 SQLite 的在线备份，迁移前确认所有实例停服和密钥保存。
 
@@ -464,19 +464,45 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 - 当前 `nginx/file-tunnel.conf` 的代理/HTTP/HTTPS 配置应按现有代码和真正前置代理链核对。2026-10-27 的“禁止无 TLS”资料是**分析与计划，未据此宣布已部署强制 TLS 网关拒绝规则**；不要把最后一跳 HTTP 与访客侧明文访问直接等同。
 - 系统备份、串流、主题和 Markdown 新增脚本/静态资源需进入相应构建/verify 路径；管理员专用代码不应机械塞入前台离线 PWA 资源缓存。
 
-## 25. 2026-11-09—10：管理员下载表单云端保存
+## 25. 2026-11-09—19：管理员下载表单云端保存与 ID 协调
 
-`server/admin-form-cache.js` 新增管理员鉴权的 `/api/admin-forms/{sns-dl|youtube-premium-dl}` API，挂载时由 `adminAuth.requireAuth` 保护，所有响应使用 `Cache-Control: no-store`。它保存的是两类下载页面的**表单草稿快照**，不是抓取任务、Cookie、登录凭据或下载文件。
+`server/admin-form-cache.js` 提供管理员鉴权的 `/api/admin-forms/{sns-dl|youtube-premium-dl}` API，保存的是下载页面的**表单草稿快照**，不是抓取任务、Cookie、登录凭据或下载文件。
 
-- 数据分别保存在 `SERVER_DATA_DIR/admin-forms/sns-dl/` 与 `youtube-premium-dl/`，每份表单一个 JSON 文件；`.sequence.json` 提供服务端递增编号，避免不同浏览器本地 TAB 编号冲突。
-- 服务端只接收白名单字段（模式、URL、音乐/缓存选项、截取区间、备注、手写格式等），另保存候选格式解析结果和选中格式 ID；单份序列化数据上限 2 MiB；表单字段按白名单过滤，另保存要求包含 `formats` 数组的解析结果对象和选中 ID。该接口不是 Cookie 凭据同步 API，也不负责下载任务状态。
-- 更新和删除必须携带当前 `revision`，客户端身份由稳定 `clientKey` 关联。每种表单串行执行，文件先写唯一临时文件再原子 rename；首次保存重试用相同 clientKey 返回已接受快照，不覆盖迟到的新版本。revision 不匹配返回 409，不静默覆盖。
-- 新浏览器可以加载云端表单；复制出的新 TAB 是本地草稿，不自动共享云端 ID。若服务器版本更新而本地有不同内容，保留本地副本；远端已删除时也保留本地内容。提交下载任务后清理云表单与任务提交/执行解耦，清理失败只保留可重试的清理待办，不重新提交下载任务。
-- API 路由位于 `server.js`，前端共用 `client/download-form-tabs.js`，SNS 与 YouTube Premium 页面分别传入 `serverForms: 'sns-dl'` / `'youtube-premium-dl'`。
+- 数据分别保存在 `SERVER_DATA_DIR/admin-forms/sns-dl/` 与 `youtube-premium-dl/`，每份表单一个 JSON 文件；当前 ID 由客户端优先提供 `preferredId`，服务端同时避开已占用 ID 与客户端传入的 `localIds`，冲突时分配空闲数字。旧的 `.sequence.json` 服务端编号方式已不再是当前实现。
+- 服务端只接收白名单表单字段、候选格式解析结果及选中格式 ID；单份序列化数据上限 2 MiB。更新和删除必须携带当前 revision；每种表单串行执行，文件先写唯一临时文件再原子 rename。
+- 浏览器维护云端 ID 集合；接收云端记录时若与本地草稿 ID 冲突，会重新分配本地 ID。云端按钮现在是保存/取消保存切换；取消保存只删除服务器快照，保留本地表单。空白表单不能保存。
+- 复制本地 TAB 会清除解析结果中的 `networkTicket/networkRoute`，避免新草稿继承前一任务已锁定的出口。任务提交后清理云表单与任务提交/执行解耦，清理失败只保留可重试的清理待办。
+- 新浏览器可以加载云端表单；远端 revision 更新时保留本地编辑副本。该接口不是下载任务同步 API，也不上传 Cookie。
 
-专项测试：`tests/admin-form-cache-261109.test.cjs`、`admin-form-cache-261109.browser.cjs`。更多用户侧行为见 [download-transcode.md](./download-transcode.md)。
-
+专项测试：`tests/admin-form-cache-261109.test.cjs`、`tests/admin-form-cache-261109.browser.cjs`。更多用户侧行为见 [download-transcode.md](./download-transcode.md)。
 ## 26. 2026-11-08：管理员隧道权限选择器的输入模式
 
 管理员跳转到某个隧道权限页时，页面先检查该 ID 是否存在于真实下拉选项。已列出的 ID 直接选中下拉并清空手动输入；只有不在列表中的 ID 才保留为手动输入并禁用下拉。保存结束后继续保持当前模式；手动输入改为下拉已存在 ID 或清空后，恢复下拉操作。该 UI 变化不放宽服务端权限校验，也不会把手动填写的设备/会话 ID 自动登记为成员。回归见 `tests/admin-confirm-261108.browser.cjs`。
 
+
+
+## 27. 2026-11-13—19：上游出口管理与 sing-box 运行时
+
+### 管理入口与 API
+
+- 新增管理员页面 `/upstream-exits`（`pages/upstream-exits.html`），由 `server/upstream-exit-routes.js` 注册；页面及 `/api/upstream-exits/**` API 全部经过 `adminAuth.requireAuth`，响应使用 `Cache-Control: no-store`。
+- 节点和各服务策略分别保存，不使用页面顶部/底部统一保存；节点表单不保存时不会启动 sing-box。节点密码只在服务端私有配置中保存，API 仅返回 `hasPassword`，不返回密码。
+- 支持 Telegram、YouTube、X/Twitter、Facebook、LINE、Instagram/Threads、TikTok、Bilibili、网易云及 other 服务。每个服务独立配置默认出口、候选节点、顺序/随机模式和是否允许直连作为候选。
+- 候选节点必须显式勾选；旧版仅有排序数组不代表允许自动启用全部节点。删除节点会清理相关默认/候选引用；已锁定任务不会静默换到其它节点。
+
+### Trojan 与运行时安全
+
+- `tools/sing-box` 随项目包含官方 sing-box **1.14.4** Windows x64/Linux x64 二进制、许可证和 SHA-256 manifest；当前不包含 macOS/ARM 二进制。Linux 原生执行仍需部署环境验收。
+- 只有任务实际选用 Trojan 节点时才按需启动 sing-box；本地 HTTP 代理仅绑定 loopback 临时端口。相同配置快照的并发任务共享进程，按引用计数释放，最后任务结束后空闲约 30 秒停止。保存节点配置不会启动进程。
+- Trojan TLS 始终启用；`verifyTls` 仅控制是否验证 Trojan 服务端证书，不能关闭目标 HTTPS。SNI 可与连接地址分开配置以适配 TCP passthrough 中转。
+- 配置位于 `.tunnel-data/upstream-exits.json`，文件权限 0600；运行时文件位于 `.tunnel-data/upstream-runtime/`。日志隐藏节点密码、Bot token、Cookie、URL 凭据和敏感查询参数。
+- “出口 IP 测试”和“测试打开页面”均为用户主动操作；不后台探测 IP、不自动按地区推断或排序节点。页面测试使用固定出口，不触发候选轮换。
+
+### 依赖与构建
+
+- 当前项目最低 Node 版本为 **22.16.0**；`undici` 固定为 **7.30.2**。yt-dlp 使用命令行 `--proxy`，不依赖 shell `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY`。
+- `tools/deploy/build.mjs` 复制 sing-box 运行文件，`tools/deploy/verify.mjs` 校验上游出口管理路由与发布资源。Windows x64 本机真实 sing-box + 隔离 Trojan TLS 网关已验证；Linux 原生执行、所有真实服务凭据和用户节点组合未宣称全部验收。
+
+完整路由和任务锁定规则见 [upstream-exits.md](./upstream-exits.md)。
+
+专项测试：`tests/upstream-exits-261114.test.cjs`、`tests/upstream-native-261114.test.cjs`、`tests/upstream-cache-261114.test.cjs`、`tests/upstream-candidates-261119.test.cjs`、`tests/disk-admin-download-261118.test.cjs`。
