@@ -69,16 +69,18 @@
         } catch (error) { if (auth.grant) return; throw error; }
         if (response.status >= 500 && auth.grant) return;
         const data = await response.json();
-        if (!response.ok || !data.allowed || !data.grant) throw Error(response.status === 429 ? '短码尝试过于频繁，请稍后再试' : '请使用有效短码选择并加入隧道');
+        if (!response.ok || !data.allowed || !data.grant) throw Error(response.status === 429 ? (data.code === 'LOCAL_REQUEST_RATE_LIMIT' ? '请求过于频繁，请稍后再试' : '短码尝试过于频繁，请稍后再试') : '请使用有效短码选择并加入隧道');
         localStorage.setItem('tunnel-authorization:' + id, JSON.stringify({ deviceId: data.deviceId || deviceId, grant: data.grant }));
     }
     async function join(code) {
         if (joining || !codePattern.test(code)) return;
         joining = true; note.textContent = '正在查找传输隧道...';
         try {
-            const response = await routeFetch('/api/short-codes/' + encodeURIComponent(code), { cache: 'no-store' });
-            if (!response.ok) throw Error(response.status === 429 ? '短码尝试过于频繁，请稍后再试' : '没有找到该传输隧道，或它已经被删除。');
-            const data = await response.json();
+            const known = sessions.find(entry => codeOf(entry.shortCode) === code), auth = known && authorization(known.sessionId);
+            const headers = auth?.grant ? { 'X-Tunnel-Device': auth.deviceId, 'X-Tunnel-Grant': auth.grant } : {};
+            const response = await routeFetch('/api/short-codes/' + encodeURIComponent(code), { cache: 'no-store', headers });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw Error(response.status === 429 ? (data.code === 'LOCAL_REQUEST_RATE_LIMIT' ? '请求过于频繁，请稍后再试' : '短码尝试过于频繁，请稍后再试') : '没有找到该传输隧道，或它已经被删除。');
             if (!idPattern.test(data.sessionId || '')) throw Error('传输隧道响应无效。');
             await authorize(data.sessionId, code); openSession(data.sessionId);
         } catch (error) { note.textContent = error.message; joining = false; }

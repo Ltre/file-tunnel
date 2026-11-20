@@ -1200,18 +1200,23 @@ async function authorizeTunnelSelection(id,shortCode){
     catch(error){if(grant)return;throw error;}
     if(response.status>=500&&grant)return;
     const data=await response.json();
-    if(!response.ok||!data.allowed||!data.grant)throw Error(response.status===429?'短码尝试过于频繁，请稍后再试':'请使用有效短码选择并加入隧道');
+    if(!response.ok||!data.allowed||!data.grant)throw Error(response.status===429?(data.code==='LOCAL_REQUEST_RATE_LIMIT'?'请求过于频繁，请稍后再试':'短码尝试过于频繁，请稍后再试'):'请使用有效短码选择并加入隧道');
     storeTunnelAuthorization(id,data);
 }
 async function selectTunnelByShortCode(shortCode){
-    const response=await fetch(`/api/short-codes/${encodeURIComponent(shortCode)}`,{cache:'no-store'});
-    if(!response.ok)throw Error(response.status===429?'短码尝试过于频繁，请稍后再试':'没有找到该传输隧道，或它已经被删除。');
-    const data=await response.json();if(!/^[a-zA-Z0-9_-]{8,64}$/.test(data.sessionId||''))throw Error('传输隧道响应无效。');
+    const known=readSessionDirectoryCache().find(value=>value.shortCode===shortCode),auth=known&&tunnelAuthorization(known.sessionId);
+    const headers=auth?.grant?{'X-Tunnel-Device':auth.deviceId,'X-Tunnel-Grant':auth.grant}:{};
+    const response=await fetch(`/api/short-codes/${encodeURIComponent(shortCode)}`,{cache:'no-store',headers}),data=await response.json().catch(()=>({}));
+    if(!response.ok)throw Error(response.status===429?(data.code==='LOCAL_REQUEST_RATE_LIMIT'?'请求过于频繁，请稍后再试':'短码尝试过于频繁，请稍后再试'):'没有找到该传输隧道，或它已经被删除。');
+    if(!/^[a-zA-Z0-9_-]{8,64}$/.test(data.sessionId||''))throw Error('传输隧道响应无效。');
     await authorizeTunnelSelection(data.sessionId,shortCode);openSession(data.sessionId);
 }
 async function ensureTunnelAccess(){
     let response;try{response=await fetch('/api/tunnel-access',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({sessionId:state.sessionId,deviceId:state.deviceId,grant:savedTunnelGrant(state.sessionId),shortCode:state.shortCode,joinToken:state.tunnelJoinToken})});}catch(_){if(savedTunnelGrant(state.sessionId)||state.shortCode||state.tunnelJoinToken)return true;}
     if(response?.status>=500&&(savedTunnelGrant(state.sessionId)||state.shortCode||state.tunnelJoinToken))return true;
+    // A temporary HTTP budget does not revoke an existing membership. The
+    // normal Socket.IO join still verifies the saved proof on the server.
+    if(response?.status===429&&savedTunnelGrant(state.sessionId))return true;
     const data=response?await response.json():{};if(data.allowed&&(!data.creating||sessionStorage.getItem('tunnel-create:'+state.sessionId)==='1')){storeTunnelAuthorization(state.sessionId,data);if(data.grant)state.tunnelJoinToken='';return true;}
     state.sessionId=null;state.shortCode='';state.tunnelJoinToken='';state.pendingRecordId='';state.pendingRecordDetails=false;state.pendingTunnelInviteReceipt=null;
     const url=new URL(window.location.href);if(url.pathname.startsWith('/record/'))url.pathname='/';url.hash='';for(const key of ['record','invite','from','tunnel_join'])url.searchParams.delete(key);history.replaceState(null,'',url.pathname+url.search);return false;

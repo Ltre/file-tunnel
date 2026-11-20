@@ -283,7 +283,13 @@ const RATE_LIMIT = {
     // this generic page limiter makes one legitimate large upload lock every
     // drive route for the rest of the 15-minute window.
     skip(req) {
-        return req.path.startsWith('/api/streaming/') || req.path === '/S3API' || req.path.startsWith('/S3API/') || req.path === '/s3' || req.path.startsWith('/s3/') ||
+        // A reload fetches many shell files, not many business operations.
+        // Keep the entry document usable even when the API budget is exhausted.
+        const shellRead = ['GET', 'HEAD'].includes(req.method) && (
+            ['/', '/index.html', '/tunnel-entry.html', '/disk', '/notification', '/app.js', '/runtime-config.js', '/manifest.webmanifest', '/service-worker.js', '/tunnel-icon.svg'].includes(req.path) ||
+            /^\/record\/[^/]+\/[^/]+\/?$/.test(req.path) ||
+            /^\/(?:client|assets)\/.+\.(?:js|css|json|svg|png|jpe?g|webp|gif|ico|woff2?)$/i.test(req.path));
+        return shellRead || req.path.startsWith('/api/streaming/') || req.path === '/S3API' || req.path.startsWith('/S3API/') || req.path === '/s3' || req.path.startsWith('/s3/') ||
             ['/api/telegram/drive/uploads', '/api/telegram/drive/operations', '/api/telegram/drive/list', '/api/telegram/drive/tree', '/api/telegram/drive/directories', '/api/telegram/drive/files'].some(prefix => req.path.startsWith(prefix)) ||
             req.path.startsWith('/api/telegram/disk/v1') ||
             req.path.startsWith('/api/telegram/disk-admin') ||
@@ -3756,10 +3762,14 @@ mountMarkdownReferenceRoute(app, {
     },
     serverAsset: resolveTelegramServerAsset
 });
-app.get('/api/short-codes/:shortCode',(req,res)=>{res.set('Cache-Control','no-store');if(!tunnelAccess.attempt(req.ip))return res.status(429).json({error:'短码尝试过于频繁，请稍后再试'});
-    const shortCode=normalizeShortCode(req.params.shortCode);if(!shortCode)return res.status(400).json({error:'Invalid short code'});
-    const sessionId=infraStore?.findSessionIdByShortCode(shortCode)||shortCodes.get(shortCode);if(!sessionId)return res.status(404).json({error:'Short code not found'});
-    const deviceId=req.get('X-Tunnel-Device'),canIssue=isValidDeviceId(deviceId)&&(!tunnelAccess.enrolled(sessionId,deviceId)||tunnelAccess.verify(req.get('X-Tunnel-Grant'),sessionId,deviceId));res.json({sessionId,...(canIssue?{grant:tunnelAccess.issue(sessionId,deviceId)}:{})});
+app.get('/api/short-codes/:shortCode',(req,res)=>{res.set('Cache-Control','no-store');
+    const shortCode=normalizeShortCode(req.params.shortCode),deviceId=req.get('X-Tunnel-Device'),grant=req.get('X-Tunnel-Grant');
+    const knownSession=shortCode&&isValidDeviceId(deviceId)&&grant&&(infraStore?.findSessionIdByShortCode(shortCode)||shortCodes.get(shortCode));
+    // Reusing proof for this exact tunnel is not another short-code guess.
+    if(!(knownSession&&tunnelAccess.verify(grant,knownSession,deviceId))&&!tunnelAccess.attempt(req.ip))return res.status(429).json({error:'短码尝试过于频繁，请稍后再试'});
+    if(!shortCode)return res.status(400).json({error:'Invalid short code'});
+    const sessionId=knownSession||infraStore?.findSessionIdByShortCode(shortCode)||shortCodes.get(shortCode);if(!sessionId)return res.status(404).json({error:'Short code not found'});
+    const canIssue=isValidDeviceId(deviceId)&&(!tunnelAccess.enrolled(sessionId,deviceId)||tunnelAccess.verify(grant,sessionId,deviceId));res.json({sessionId,...(canIssue?{grant:tunnelAccess.issue(sessionId,deviceId)}:{})});
 });
 
 const io = new Server(webServer, {
@@ -10251,15 +10261,15 @@ io.on('connection', (socket) => {
     });
 
     socket.on('join-by-short-code', data => {
-        if(!tunnelAccess.attempt(clientIp))return emitSocketError('short-code-error','短码尝试过于频繁，请稍后再试');
         const shortCode = normalizeShortCode(data?.shortCode);
+        const sessionId = shortCode && (infraStore?.findSessionIdByShortCode(shortCode) || shortCodes.get(shortCode));
+        const deviceId=data?.deviceId||currentDevice||profileDevice;
+        if(!(sessionId&&tunnelAccess.verify(data?.accessGrant,sessionId,deviceId))&&!tunnelAccess.attempt(clientIp))return emitSocketError('short-code-error','短码尝试过于频繁，请稍后再试');
         if (!shortCode) return emitSocketError('short-code-error', '短码应为 5 位字母或数字');
-        const sessionId = infraStore?.findSessionIdByShortCode(shortCode) || shortCodes.get(shortCode);
         if (!sessionId || !isValidSessionId(sessionId)) {
             deleteShortCode(shortCode);
             return emitSocketError('short-code-error', '短码无效或会话已结束');
         }
-        const deviceId=data?.deviceId||currentDevice||profileDevice;
         const admission=isValidDeviceId(deviceId)&&tunnelAccess.authorize(sessionId,deviceId,{grant:data?.accessGrant,shortCode,code:shortCode,rejoin:true});
         if(!admission)return emitSocketError('short-code-error','短码无法加入会话');
         socket.emit('short-code-session', { sessionId, ...admission });
