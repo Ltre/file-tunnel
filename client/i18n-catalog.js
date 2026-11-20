@@ -6351,6 +6351,24 @@
     "en": "Logs stay in this browser, up to 100,000 entries or 64 MiB. Recording pauses when full and resumes after cleanup.",
     "de": "Protokolle bleiben in diesem Browser, bis zu 100.000 Einträgen oder 64 MiB. Bei vollem Speicher pausiert die Aufzeichnung; nach der Bereinigung wird sie fortgesetzt."
   },
+  "日志只保存在当前浏览器，最多缓存{0}条或{1} MiB；达到上限时自动清理最旧日志并继续记录。": {
+    "zh-Hans": "日志只保存在当前浏览器，最多缓存{0}条或{1} MiB；达到上限时自动清理最旧日志并继续记录。",
+    "zh-Hant": "日誌僅儲存於目前瀏覽器，最多快取{0}筆或{1} MiB；達到上限時會自動清理最舊日誌並繼續記錄。",
+    "en": "Logs are stored only in this browser, up to {0} entries or {1} MiB. The oldest logs are automatically removed when the limit is reached, and recording continues.",
+    "ja": "ログはこのブラウザー内にのみ保存され、上限は{0}件または{1} MiBです。上限に達すると古いログから自動的に削除し、記録を続けます。",
+    "fr": "Les journaux sont conservés uniquement dans ce navigateur, dans la limite de {0} entrées ou {1} MiB. À cette limite, les plus anciens sont automatiquement supprimés et l’enregistrement continue.",
+    "ru": "Журналы хранятся только в этом браузере: не более {0} записей или {1} MiB. При достижении лимита самые старые записи удаляются автоматически, а запись продолжается.",
+    "es": "Los registros se guardan solo en este navegador, hasta {0} entradas o {1} MiB. Al alcanzar el límite, se eliminan automáticamente los más antiguos y se sigue registrando.",
+    "it": "I log sono conservati solo in questo browser, fino a {0} voci o {1} MiB. Al raggiungimento del limite, i log più vecchi vengono eliminati automaticamente e la registrazione continua.",
+    "ko": "로그는 현재 브라우저에만 최대 {0}개 또는 {1} MiB까지 저장됩니다. 한도에 도달하면 가장 오래된 로그를 자동으로 삭제하고 계속 기록합니다.",
+    "ms": "Log disimpan hanya dalam pelayar ini, sehingga {0} entri atau {1} MiB. Apabila had dicapai, log paling lama dipadam secara automatik dan rakaman diteruskan.",
+    "id": "Log hanya disimpan di browser ini, hingga {0} entri atau {1} MiB. Saat batas tercapai, log terlama dihapus otomatis dan pencatatan berlanjut.",
+    "vi": "Nhật ký chỉ được lưu trong trình duyệt này, tối đa {0} mục hoặc {1} MiB. Khi đạt giới hạn, nhật ký cũ nhất sẽ tự động bị xóa và việc ghi nhật ký tiếp tục.",
+    "km": "កំណត់ហេតុត្រូវបានរក្សាទុកតែក្នុងកម្មវិធីរុករកនេះប៉ុណ្ណោះ រហូតដល់ {0} ធាតុ ឬ {1} MiB។ នៅពេលដល់កម្រិត កំណត់ហេតុចាស់បំផុតត្រូវបានលុបដោយស្វ័យប្រវត្តិ ហើយការកត់ត្រាបន្ត។",
+    "my": "မှတ်တမ်းများကို ဤဘရောက်ဇာတွင်သာ အများဆုံး {0} ခု သို့မဟုတ် {1} MiB အထိ သိမ်းဆည်းထားသည်။ ကန့်သတ်ချက်သို့ ရောက်ပါက အဟောင်းဆုံးမှတ်တမ်းများကို အလိုအလျောက်ဖျက်ပြီး ဆက်လက်မှတ်တမ်းတင်သည်။",
+    "th": "บันทึกจะเก็บไว้เฉพาะในเบราว์เซอร์นี้ สูงสุด {0} รายการหรือ {1} MiB เมื่อถึงขีดจำกัด ระบบจะลบบันทึกที่เก่าที่สุดโดยอัตโนมัติและบันทึกต่อไป",
+    "de": "Protokolle werden nur in diesem Browser gespeichert, bis zu {0} Einträgen oder {1} MiB. Beim Erreichen des Limits werden die ältesten Einträge automatisch gelöscht und die Aufzeichnung fortgesetzt."
+  },
   "正在读取日志...": {
     "zh-Hans": "正在读取日志...",
     "zh-Hant": "正在讀取記錄...",

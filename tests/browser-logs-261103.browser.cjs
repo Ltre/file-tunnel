@@ -101,9 +101,11 @@ test('log manager UI filters, exports and confirms inclusive range deletion',asy
 });
 test('log UI uses the real localization runtime and formats counts after translating the message',async t=>{
     const page=await pageFor(t);
-    await page.evaluate(async()=>{BrowserLogs.record('operation','fixture-english');await BrowserLogs.flush();TunnelI18n.setLanguage('en');BrowserLogs.open('operation');});
+    await page.evaluate(async()=>{BrowserLogs.record('operation','fixture-english');await BrowserLogs.flush();await TunnelI18n.setLanguage('en');BrowserLogs.open('operation');});
     await page.getByRole('button',{name:'Filter logs',exact:true}).waitFor();
     await page.waitForFunction(()=>/\d+ entries on this page/.test(document.querySelector('.browser-log-status')?.textContent));
     assert.doesNotMatch(await page.locator('.browser-log-status').textContent(),/\{\d\}/);
-    assert.equal(await page.getByRole('heading',{name:'View operation logs',exact:true}).count(),1);
+    assert.equal(await page.getByRole('heading',{name:'View activity logs',exact:true}).count(),1);
+    const note=await page.locator('.browser-log-note').textContent();
+    assert.match(note,/1,000,000|1000000/);assert.match(note,/256/);assert.match(note,/automatically/);assert.doesNotMatch(note,/\p{Script=Han}/u);
 });

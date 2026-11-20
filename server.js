@@ -9578,6 +9578,10 @@ io.on('connection', (socket) => {
     });
     socket.use(([event,data],next)=>{
         if (['file-asset-request','file-asset-discovery'].includes(event) && data?.sourceSessionId && data.sourceSessionId !== currentSession && !trustedInternalClient) {
+            // These handlers already discard packets outside their joined
+            // session. A pending join or an old tunnel packet is not a source
+            // permission failure; normal resume after joining keeps the intent.
+            if (!currentSession || !currentDevice || data.sessionId !== currentSession || !sessions.get(currentSession)?.devices?.has(currentDevice)) return next();
             const fileId = data.assetId || data.fileId;
             const forwarded = canReadForwardedFile(currentSession, currentDevice, data.sourceSessionId, fileId, data.recordMessageId);
             // Tunnel grants bind the identity saved for that tunnel, which can
@@ -9586,7 +9590,37 @@ io.on('connection', (socket) => {
             const sourceDeviceId = data.sourceDeviceId || currentDevice;
             const sourceAuthorized = forwarded || tunnelAccess.verify(data.sourceAccessGrant, data.sourceSessionId, sourceDeviceId);
             const destinationOnly = !sourceAuthorized && canSeekDestinationCopy(currentSession, currentDevice, data.sourceSessionId, fileId, data.recordMessageId);
-            if (!sourceAuthorized && !destinationOnly) return emitSocketError('permission-denied','来源隧道尚未获得访问权');
+            if (!sourceAuthorized && !destinationOnly) {
+                const text = value => typeof value === 'string' ? value.slice(0, 200) : '';
+                const target = sessions.get(currentSession), member = Boolean(target?.devices?.has(currentDevice));
+                const readable = member && canUseTunnelCapability(target,currentDevice,'read');
+                const diagnostic = { marker:'CAONIMA-GPT',event,time:Date.now(),socketId:socket.id,
+                    currentSessionId:currentSession,currentDeviceId:currentDevice,requestedSessionId:text(data.sessionId),
+                    sourceSessionId:text(data.sourceSessionId),sourceDeviceId:text(sourceDeviceId),assetId:text(fileId),
+                    recordMessageId:text(data.recordMessageId),requestId:text(data.requestId),transferId:text(data.transferId),
+                    sourceProofProvided:Boolean(data.sourceAccessGrant),member,readable,forwarded,sourceAuthorized,destinationOnly,
+                    liveHistoryCount:readable ? target?.history?.length || 0 : undefined,targetProviderCount:readable ? target?.fileAssets?.get(fileId)?.providers?.size || 0 : undefined,records:[] };
+                // Only return this readable target's metadata, never credentials,
+                // raw message bodies, or an unauthorized source's records.
+                try {
+                    const store = typeof infraStore === 'undefined' ? null : infraStore;
+                    const rows = readable ? store?.query?.('SELECT r.message_id, r.payload_json, r.source, r.deleted_at, f.removed_at FROM transfer_records r JOIN transfer_files f ON f.session_id = r.session_id AND f.message_id = r.message_id WHERE r.session_id = ? AND f.file_id = ? LIMIT 3',[currentSession,fileId]) || [] : [];
+                    for (const row of rows) {
+                        try {
+                            const deleted=Boolean(row.deleted_at || (Array.isArray(target.deletedMessageIds) ? target.deletedMessageIds.includes(row.message_id) : target.deletedMessageIds?.has?.(row.message_id)));
+                            if(deleted || row.removed_at) { diagnostic.records.push({recordId:text(row.message_id),fileId:text(fileId),deleted,removed:Boolean(row.removed_at)}); continue; }
+                            const record=JSON.parse(row.payload_json),files=record.type==='file'?[record.fileInfo]:record.collection?.files || [];
+                            const file=files.find(value=>value?.id===fileId);
+                            diagnostic.records.push({recordId:text(record.id),type:text(record.type),sender:text(record.sender),auditSource:text(row.source),
+                                deleted:Boolean(row.deleted_at),removed:Boolean(row.removed_at),sourceRecordId:text(record.forwardedFrom?.messageId),
+                                fileId:text(file?.id),name:text(file?.name),size:Number(file?.size)||0,mime:text(file?.type),
+                                backupSourceSessionId:text(file?.backupSourceSessionId),forwardedToSessionId:text(file?.forwardedToSessionId)});
+                        } catch (_) { diagnostic.recordParseFailed=true; }
+                    }
+                } catch (error) { diagnostic.recordLookupError={name:error.name || 'lookup-failed',message:String(error.message || '').slice(0,350)}; }
+                console.error('[CAONIMA-GPT] file-source-access-denied',diagnostic);
+                return emitSocketError('permission-denied','来源隧道尚未获得访问权',{code:'FILE_SOURCE_ACCESS_DENIED',diagnostic});
+            }
             // A forwarder may now be in the destination while its copied bytes
             // remain indexed under the source in IndexedDB. Discover that exact
             // destination-owned file locally as well, after verifying ownership.

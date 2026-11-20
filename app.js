@@ -2053,6 +2053,9 @@ function initSocket() {
         window.DiskTunnelAdapter?.resumePendingForward?.();
     });
     state.socket.on('permission-denied', data => {
+        const sourceDenied='来源隧道尚未获得访问权';
+        if (data?.code === 'FILE_SOURCE_ACCESS_DENIED' || (data?.message && (data.message === sourceDenied ||
+            data.message === window.TunnelI18n?.t(sourceDenied)))) recordSourceAccessFailure(data);
         showAppToast(data?.message || `操作被隧道权限阻止：${TUNNEL_PERMISSION_LABELS[data?.capability] || data?.capability || '未知权限'}`);
     });
     state.socket.on('tunnel-access-grant',data=>{const changed=data.sessionId===state.sessionId&&data.deviceId&&data.deviceId!==state.deviceId;storeTunnelAuthorization(data.sessionId,data);state.tunnelJoinToken='';sessionStorage.removeItem('tunnel-create:'+data.sessionId);if(changed){state.socket.disconnect();window.location.reload();return;}generateQRCode();});
@@ -2280,6 +2283,46 @@ function initSocket() {
     });
     // Observers attach after core handlers, so they see the applied tunnel state.
     document.dispatchEvent(new Event('tunnel-socket-ready'));
+}
+
+function recordSourceAccessFailure(data) {
+    const diagnostic=data?.diagnostic || {},assetId=diagnostic.assetId || '',correlation=diagnostic.requestId || `${diagnostic.socketId || ''}:${diagnostic.time || Date.now()}:${assetId}`;
+    const sessionId=state.sessionId,deviceId=state.deviceId;
+    const write=(stage,details)=>{try{window.BrowserLogs?.record('error','CAONIMA-GPT',stage,{correlation,sessionId,deviceId,...details});}catch(_){/* Diagnostics cannot interrupt the original permission feedback. */}};
+    const metadata=file=>file?{id:file.id,name:file.name,size:file.size,type:file.type,ownerDeviceId:file.ownerDeviceId,
+        recordMessageId:file.recordMessageId,backupSourceSessionId:file.backupSourceSessionId,forwardedToSessionId:file.forwardedToSessionId,
+        isAsset:file.isAsset,isServerAsset:file.isServerAsset,isPartial:file.isPartial,cacheCleared:file.cacheCleared}:null;
+    try {
+        const {records,...decision}=diagnostic;
+        write('server-decision',decision);
+        for(const record of (records || []).slice(0,3))write('server-target-record',record);
+        const transfer=fileAssetTransfer,requested=transfer?.requestedMetadata?.get(assetId),receiving=transfer?.transfers?.get(assetId),multi=transfer?.multiSourceTransfers?.get(assetId);
+        write('client-request',{sessionId:state.sessionId,deviceId:state.deviceId,socketId:state.socket?.id,connected:Boolean(state.socket?.connected),
+            origin:typeof location==='undefined'?'':location.origin,visibility:typeof document==='undefined'?'':document.visibilityState,
+            clientRequestId:transfer?.requestIds?.get(assetId),desired:transfer?.desiredAssets?.has(assetId),provider:transfer?.desiredAssets?.get(assetId),
+            active:transfer?.activeDownloads?.has(assetId),queued:transfer?.downloadQueue?.includes(assetId),receivedBytes:receiving?.receivedSize,
+            multiSourceRanges:multi?.ranges?.size,sourceIdentitySaved:Boolean(requested?.backupSourceSessionId && savedTunnelGrant(requested.backupSourceSessionId))});
+        write('client-request-metadata',metadata(requested) || {});
+        if(!assetId) {
+            // Older running servers may not yet include the correlation data.
+            // Preserve the bounded pending request context during that upgrade.
+            const pending=[...(transfer?.requestedMetadata || [])].filter(([,file])=>file.backupSourceSessionId);
+            write('legacy-server-context',{serverDiagnosticMissing:true,pendingSourceRequests:pending.length});
+            for(const [id,file] of pending.slice(0,32))write('legacy-pending-request',{...metadata(file),clientRequestId:transfer?.requestIds?.get(id)});
+        }
+        for(const record of (state.messages || []).filter(record=>record.id===diagnostic.recordMessageId ||
+            (record.type==='file'?[record.fileInfo]:record.collection?.files || []).some(file=>file?.id===assetId)).slice(0,3)) {
+            const files=record.type==='file'?[record.fileInfo]:record.collection?.files || [];
+            write('client-target-record',{recordId:record.id,type:record.type,sender:record.sender,timestamp:record.timestamp,
+                sourceRecordId:record.forwardedFrom?.messageId,file:metadata(files.find(file=>file?.id===assetId))});
+        }
+        // getKey observes presence without loading a potentially huge file body.
+        if(assetId && state.db && !state.db._isMemory) {
+            const tx=state.db.transaction(['files'],'readonly'),request=tx.objectStore('files').getKey(assetId);
+            request.onsuccess=()=>write('client-cache-key',{assetId,present:request.result!==undefined});
+            request.onerror=()=>write('client-cache-key',{assetId,error:request.error?.name || 'read-failed'});
+        }
+    } catch(error) { write('diagnostic-incomplete',{assetId,error:error.name || 'capture-failed'}); }
 }
 
 function requestSessionHistory(reason = 'manual') {

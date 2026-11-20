@@ -13,7 +13,7 @@ function gate(t){
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'source-access-261107-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
     const access=createTunnelAccess(dir),errors=[],current='target-B',device='identity-B';let middleware,forwarded=false;
     const start=server.indexOf('    socket.use(([event,data],next)=>{'),end=server.indexOf("    socket.on('session-short-code-update'",start);
-    vm.runInNewContext(server.slice(start,end),{currentSession:current,currentDevice:device,trustedInternalClient:false,tunnelAccess:access,sessions:new Map(),socket:{data:{},use:fn=>middleware=fn},canReadForwardedFile:()=>forwarded,emitSocketError:(name,message)=>errors.push({name,message})});
+    vm.runInNewContext(server.slice(start,end),{currentSession:current,currentDevice:device,trustedInternalClient:false,tunnelAccess:access,sessions:new Map([[current,{devices:new Map([[device,{}]])}]]),socket:{data:{},to:()=>({emit(){}}),use:fn=>middleware=fn},canUseTunnelCapability:()=>true,canReadForwardedFile:()=>forwarded,canSeekDestinationCopy:()=>false,emitSocketError:(name,message)=>errors.push({name,message})});
     return {access,errors,setForwarded:value=>forwarded=value,accept:(data,event='file-asset-request',next=()=>{})=>{let accepted=false;middleware([event,{sessionId:current,assetId:metadata.id,sourceSessionId:'source-A',...data}],()=>{accepted=true;next();});return accepted;}};
 }
 test('requests and discovery use the saved source identity and its current grant, never the stale legacy grant',async()=>{

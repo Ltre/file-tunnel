@@ -1,6 +1,6 @@
 (function (global) {
     'use strict';
-    const DB_NAME = 'TunnelBrowserLogs', MAX_BYTES = 64 * 1024 * 1024, MAX_ENTRIES = 100000, PAGE_SIZE = 100;
+    const DB_NAME = 'TunnelBrowserLogs', MAX_BYTES = 256 * 1024 * 1024, MAX_ENTRIES = 1000000, PAGE_SIZE = 100;
     const t = (key, ...args) => (global.TunnelI18n?.t(key) || key).replace(/\{(\d+)\}/g, (_m, i) => args[i] ?? _m);
     const pending = [], original = {}, encoder = new TextEncoder();
     const FOREGROUND_BATCH_SIZE = 24;
@@ -44,34 +44,78 @@
         return dbPromise;
     }
     function record(kind, ...args) {
-        if (pending.length >= 200) return;
+        kind = kind === 'error' ? 'error' : 'operation';
         const message = summarize(args); if (!message) return;
+        if (pending.length >= 200) {
+            // Keep recent evidence under a burst, and do not let ordinary
+            // activity evict an error waiting for its IndexedDB transaction.
+            const operation = pending.findIndex(entry => entry.kind === 'operation');
+            if (operation >= 0) pending.splice(operation, 1);
+            else if (kind === 'error') pending.shift();
+            else return;
+        }
         let identity = {}; try { identity = context() || {}; } catch (_) {}
-        pending.push({ kind: kind === 'error' ? 'error' : 'operation', time: Date.now(), message,
+        pending.push({ kind, time: Date.now(), message,
             sessionId: String(identity.sessionId || ''), deviceId: String(identity.deviceId || '') });
         if (!timer) timer = setTimeout(() => { timer = null; flush(); }, 500);
     }
+    function retireOldest(entries, stats, needed, done, fail, limit = Infinity) {
+        let removed = 0;
+        const oldest = entries.openCursor();
+        oldest.onsuccess = () => {
+            try {
+                const cursor = oldest.result;
+                if (!cursor) { stats.count = 0; stats.bytes = 0; done(removed); return; }
+                cursor.delete(); stats.count = Math.max(0, stats.count - 1); stats.bytes = Math.max(0, stats.bytes - (cursor.value.bytes || 0));
+                removed++;
+                if (removed < limit && needed()) cursor.continue(); else done(removed);
+            } catch (error) { fail(error); }
+        };
+    }
     function writeBatch(db, batch) {
+        for (const entry of batch) { const { bytes, ...value } = entry; entry.bytes = encoder.encode(JSON.stringify(value)).byteLength; }
+        let incomingBytes = batch.reduce((total, entry) => total + entry.bytes, 0), first = 0;
+        while (batch.length - first > MAX_ENTRIES || incomingBytes > MAX_BYTES) incomingBytes -= batch[first++].bytes;
+        batch = batch.slice(first);
         return new Promise((resolve, reject) => {
             const tx = db.transaction(['entries', 'meta'], 'readwrite'), entries = tx.objectStore('entries'), meta = tx.objectStore('meta');
-            let full = false;
+            let failure;
+            const abort = error => { failure = error; try { tx.abort(); } catch (_) {} };
             const request = meta.get('stats');
             request.onsuccess = () => {
-                const stats = request.result || { count: 0, bytes: 0 };
-                for (const entry of batch) {
-                    entry.bytes = encoder.encode(JSON.stringify(entry)).byteLength;
-                    if (stats.count >= MAX_ENTRIES || stats.bytes + entry.bytes > MAX_BYTES) {
-                        full = true;
-                        storageError = 'LOG_STORAGE_FULL';
-                        break;
-                    }
-                    entries.add(entry); stats.count++; stats.bytes += entry.bytes;
-                }
-                meta.put(stats, 'stats');
+                try {
+                    const stats = request.result || { count: 0, bytes: 0 };
+                    const fits = () => stats.count + batch.length <= MAX_ENTRIES && stats.bytes + incomingBytes <= MAX_BYTES;
+                    const append = () => {
+                        for (const entry of batch) entries.add(entry);
+                        stats.count += batch.length; stats.bytes += incomingBytes; meta.put(stats, 'stats');
+                    };
+                    if (fits()) { append(); return; }
+                    // IDs preserve insertion order across tabs. Retire only
+                    // the required prefix, never scan/sort the whole log.
+                    retireOldest(entries, stats, () => !fits(), append, abort);
+                } catch (error) { abort(error); }
             };
-            tx.oncomplete = () => resolve(full);
-            tx.onabort = () => reject(tx.error || Error('LOG_WRITE_FAILED'));
+            tx.oncomplete = () => { storageError = ''; resolve(); };
+            tx.onabort = () => reject(failure || tx.error || Error('LOG_WRITE_FAILED'));
             tx.onerror = () => {};
+        });
+    }
+    function reclaimQuota(db, batch) {
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(['entries', 'meta'], 'readwrite'), meta = tx.objectStore('meta');
+            const request = meta.get('stats'); let removed = 0, failure;
+            const abort = error => { failure = error; try { tx.abort(); } catch (_) {} };
+            request.onsuccess = () => {
+                try {
+                    const stats = request.result || { count: 0, bytes: 0 }, before = stats.bytes;
+                    const target = Math.max(4096, batch.reduce((sum, entry) => sum + (entry.bytes || 0), 0) * 2);
+                    // Browser quota is shared with business storage. Commit a
+                    // small log-only eviction separately, then retry once.
+                    retireOldest(tx.objectStore('entries'), stats, () => before - stats.bytes < target, count => { removed = count; meta.put(stats, 'stats'); }, abort, 2048);
+                } catch (error) { abort(error); }
+            };
+            tx.oncomplete = () => resolve(removed); tx.onabort = () => reject(failure || tx.error || Error('LOG_WRITE_FAILED')); tx.onerror = () => {};
         });
     }
     function flush({ unloading = false } = {}) {
@@ -83,7 +127,12 @@
             for (let start = 0; start < batch.length;) {
                 // Await each foreground transaction so a log burst does not monopolize one callback.
                 const end = unloading || document.hidden ? batch.length : Math.min(batch.length, start + FOREGROUND_BATCH_SIZE);
-                if (await writeBatch(db, batch.slice(start, end))) break;
+                const portion = batch.slice(start, end);
+                try { await writeBatch(db, portion); }
+                catch (error) {
+                    if (error.name !== 'QuotaExceededError' || !await reclaimQuota(db, portion)) throw error;
+                    await writeBatch(db, portion);
+                }
                 start = end;
             }
         }).catch(error => { storageError = error.name || error.message; });
@@ -161,7 +210,8 @@
         range.onchange = () => { start.hidden = end.hidden = range.value !== 'custom'; };
         const search = make('button','筛选日志'), refresh = make('button','刷新'), exportButton = make('button','导出检索结果'), erase = make('button','删除检索范围'), selected = make('button','删除首尾范围');
         const actions = make('div','','browser-log-actions'), status = make('p','','browser-log-status'), list = make('ol','','browser-log-list'), next = make('button','下一页'), previous = make('button','上一页');
-        const note = make('p','日志只保存在当前浏览器，最多缓存10万条或64 MiB；满后暂停记录，清理后继续。','browser-log-note');
+        const note = make('p','','browser-log-note');
+        note.textContent = t('日志只保存在当前浏览器，最多缓存{0}条或{1} MiB；达到上限时自动清理最旧日志并继续记录。', MAX_ENTRIES.toLocaleString(), MAX_BYTES / 1024 / 1024);
         status.setAttribute('role','status'); header.append(title,close); controls.append(range,start,end,keyword,search,refresh); actions.append(exportButton,erase,selected); panel.append(header,controls,actions,status,list,previous,next,note); layer.append(panel); document.body.append(layer);
         let filter, generation = 0, busy = false, pages = [undefined], pageIndex = 0, entries = [], firstId, lastId;
         const setBusy = value => { busy = value; for (const button of [search,refresh,exportButton,erase,selected,next,previous]) button.disabled = value; if (value) status.textContent = t('正在读取日志...'); };
@@ -182,7 +232,7 @@
                 meta.append(time,first,last); const details = make('pre'); details.textContent = entry.message; row.append(meta,details); list.append(row);
             }
             if (!entries.length) list.append(make('li','没有匹配的日志'));
-            status.textContent = t('当前页 {0} 条',entries.length) + (firstId || lastId ? ' · ' + t('首尾：{0} / {1}',firstId?.id || '—',lastId?.id || '—') : '') + (storageError ? ' · '+t(storageError === 'LOG_STORAGE_FULL' ? '日志缓存已满，请清理后继续记录' : '日志缓存不可用') : '');
+            status.textContent = t('当前页 {0} 条',entries.length) + (firstId || lastId ? ' · ' + t('首尾：{0} / {1}',firstId?.id || '—',lastId?.id || '—') : '') + (storageError ? ' · '+t('日志缓存不可用') : '');
             previous.hidden = pageIndex === 0; next.hidden = entries.length < PAGE_SIZE;
             erase.textContent = t(range.value === 'all' && !filter.keyword ? '全部删除' : '删除检索范围');
         }
