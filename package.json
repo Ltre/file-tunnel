@@ -39,7 +39,8 @@
     "socket.io-client": "^4.8.3",
     "sql.js": "^1.14.1",
     "undici": "7.30.2",
-    "ws": "8.21.0"
+    "ws": "8.21.0",
+    "yaml": "2.8.2"
   },
   "devDependencies": {
     "esbuild": "^0.28.1",

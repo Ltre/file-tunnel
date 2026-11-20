@@ -100,20 +100,29 @@ test('a persisted ordinary reference cannot manufacture forwarded ownership with
     assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', f.file.id), false);
 });
 
-test('target-only receiver restores real bytes through the authorized no-hint request and existing Relay handlers', async t => {
+for (const legacy of [false, true, 'waiting']) test('target-only receiver restores real bytes through existing Relay handlers (' + (legacy === 'waiting' ? 'legacy waits for a destination holder' : legacy ? 'legacy destination-only lookup' : 'verified source copy') + ')', async t => {
     const f = await fixture(t, 'file'), { registerFileAssetHandlers } = require('../server/file-assets');
+    t.after(() => f.transfer.cancel(f.file.id));
+    if (legacy) {
+        f.infraStore.markHistoryDeleted('target-B', f.message.id);
+        const record = { ...f.message, id: 'legacy-copy' }; delete record.forwardedFrom;
+        f.infraStore.recordHistoryMessage('target-B', record, { source: 'history-reconcile' });
+        f.target.devices.set('forwarder', {});
+    }
     const sessions = f.gate.sessions, deviceSockets = new Map(), wire = [], stored = new Map();
     sessions.set('source-A', { devices: new Map([['forwarder', {}]]), fileAssets: new Map() });
     f.transfer.deps.store = async file => stored.set(file.id, file);
-    f.transfer.deps.onProgress = () => {};
+    const progress = [], unavailable = [];
+    f.transfer.deps.onProgress = (...data) => progress.push(data);
+    f.transfer.deps.onUnavailable = (...data) => unavailable.push(data);
     f.transfer.deps.onReceived = async () => {};
-    const incoming = { 'file-asset-relay-start': 'handleRelayStart', 'file-asset-relay-chunk': 'handleRelayChunk', 'file-asset-relay-complete': 'handleRelayComplete' };
+    const incoming = { 'file-asset-relay-start': 'handleRelayStart', 'file-asset-relay-chunk': 'handleRelayChunk', 'file-asset-relay-complete': 'handleRelayComplete', 'file-asset-unavailable': 'handleUnavailable' };
     function endpoint(sessionId, deviceId) {
         const handlers = new Map(), socket = { id: deviceId, data: {}, on: (name, run) => handlers.set(name, run),
             to: () => ({ emit() {} }), timeout() { return this; }, emit(name, data, ack) {
                 wire.push({ name, deviceId, data });
                 if (deviceId === 'target-only-viewer' && incoming[name]) {
-                    f.transfer[incoming[name]](data).then(result => ack?.(null, result), error => ack?.(error));
+                    Promise.resolve(f.transfer[incoming[name]](data)).then(result => ack?.(null, result), error => ack?.(error));
                 } else ack?.(null, { ok: true });
             } };
         deviceSockets.set(deviceId, socket);
@@ -121,21 +130,38 @@ test('target-only receiver restores real bytes through the authorized no-hint re
             sanitize: String, historyLog() {}, isValidId: value => typeof value === 'string' && !!value });
         return handlers;
     }
-    const provider = endpoint('source-A', 'forwarder'), viewer = endpoint('target-B', 'target-only-viewer');
-    provider.get('file-asset-available')({ sessionId: 'source-A', asset: f.file });
+    const providerSession = legacy ? 'target-B' : 'source-A';
+    const provider = endpoint(providerSession, 'forwarder'), viewer = endpoint('target-B', 'target-only-viewer');
+    if (legacy === 'waiting') f.target.devices.delete('forwarder');
+    else provider.get('file-asset-available')({ sessionId: providerSession, asset: f.file });
     await f.transfer.request(f.file.id, 'forwarder', { ...f.file });
     assert.equal(f.events[0].accepted, true, JSON.stringify(f.errors));
     assert.equal(f.events[0].data.sourceAccessGrant, '');
     viewer.get('file-asset-request')(f.events[0].data);
+    if (legacy === 'waiting') {
+        await new Promise(resolve => setTimeout(resolve, 30));
+        assert.equal(wire.find(item => item.name === 'file-asset-unavailable').data.reason, 'no-known-provider');
+        assert.equal(f.transfer.desiredAssets.has(f.file.id), true, 'keep the download intent while no destination holder is online');
+        assert.equal(stored.size, 0); assert.deepEqual(progress, []); assert.deepEqual(unavailable, []); assert.deepEqual(f.errors, []);
+        assert.equal(wire.some(item => item.name === 'file-asset-request' && item.deviceId === 'forwarder'), false);
+        f.target.devices.set('forwarder', {});
+        provider.get('file-asset-available')({ sessionId: providerSession, asset: f.file });
+        const before = f.events.filter(item => item.name === 'file-asset-request').length;
+        f.transfer.handleAvailable({ asset: f.file, from: 'forwarder' });
+        const requests = f.events.filter(item => item.name === 'file-asset-request');
+        assert.equal(requests.length, before + 1, 'a destination cache announcement resumes automatically without another manual restore');
+        assert.equal(requests.at(-1).data.sourceSessionId, 'target-B');
+        viewer.get('file-asset-request')(requests.at(-1).data);
+    }
     const request = wire.find(item => item.name === 'file-asset-request' && item.deviceId === 'forwarder').data;
-    const call = (name, data) => new Promise(resolve => provider.get(name)({ sessionId: 'source-A', to: 'target-only-viewer', requestId: request.requestId, ...data }, resolve));
+    const call = (name, data) => new Promise(resolve => provider.get(name)({ sessionId: providerSession, to: 'target-only-viewer', requestId: request.requestId, ...data }, resolve));
     const payload = Uint8Array.from({ length: f.file.size }, (_, index) => index % 251);
-    t.after(() => f.transfer.cancel(f.file.id));
     assert.equal((await call('file-asset-relay-start', { asset: f.file })).ok, true);
     assert.equal((await call('file-asset-relay-chunk', { assetId: f.file.id, chunk: payload.buffer })).ok, true);
     assert.equal((await call('file-asset-relay-complete', { assetId: f.file.id })).ok, true);
     assert.deepEqual(Buffer.from(stored.get(f.file.id).data), Buffer.from(payload));
     assert.equal(sessions.get('source-A').devices.has('target-only-viewer'), false);
+    if (legacy) assert.equal(f.events[0].data.sourceSessionId, 'target-B');
     assert.deepEqual(f.errors, []);
 });
 
@@ -155,4 +181,37 @@ test('legacy external-file copy treats empty MIME as the indexed unknown type wi
     assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', file.id, copy.id), false, 'different known MIME still fails');
     f.infraStore.recordFileAsset('source-A', file, { sourceDeviceId: 'another-device' });
     assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', file.id), false, 'unknown MIME never grants another sender ownership');
+});
+
+for (const type of ['file', 'collection']) test('legacy destination reference can seek its own copy without opening the private source (' + type + ')', async t => {
+    const f = await fixture(t, type);
+    f.infraStore.markHistoryDeleted('target-B', f.message.id);
+    // Old reconciled history has no surviving server forward audit or origin
+    // anchor. Its destination marker is not proof of access to the source.
+    const legacy = { ...f.message, id: 'legacy-owned-record' };
+    delete legacy.forwardedFrom;
+    f.infraStore.recordHistoryMessage('target-B', legacy, { source: 'history-reconcile' });
+    assert.equal(f.target.history.length, 0, 'startup recovery may run before live history is populated');
+    assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', f.file.id, legacy.id), false);
+    await f.transfer.request(f.file.id, 'forwarder', { ...f.file, recordMessageId: legacy.id });
+    assert.equal(f.events[0].accepted, true, JSON.stringify(f.errors));
+    assert.equal(f.events[0].data.sourceSessionId, 'target-B', 'only destination caches may supply an unproven legacy reference');
+    assert.deepEqual(f.errors, []);
+    for (const [device, source, file, record] of [['outsider', 'source-A', f.file.id, legacy.id], ['target-only-viewer', 'other-source', f.file.id, legacy.id], ['target-only-viewer', 'source-A', 'private-file', legacy.id], ['target-only-viewer', 'source-A', f.file.id, 'missing-record']]) {
+        assert.equal(f.gate.canSeekDestinationCopy('target-B', device, source, file, record), false);
+    }
+    f.infraStore.run('UPDATE transfer_files SET removed_at = ? WHERE session_id = ? AND message_id = ? AND file_id = ?', [Date.now(), 'target-B', legacy.id, f.file.id]);
+    assert.equal(f.gate.canSeekDestinationCopy('target-B', 'target-only-viewer', 'source-A', f.file.id, legacy.id), false, 'a removed file reference grants no fallback');
+    f.infraStore.run('UPDATE transfer_files SET removed_at = NULL WHERE session_id = ? AND message_id = ? AND file_id = ?', ['target-B', legacy.id, f.file.id]);
+    const canRead = f.gate.canUseTunnelCapability;
+    f.gate.canUseTunnelCapability = () => false;
+    assert.equal(f.gate.canSeekDestinationCopy('target-B', 'target-only-viewer', 'source-A', f.file.id, legacy.id), false, 'destination membership alone cannot bypass its read permission');
+    f.gate.canUseTunnelCapability = canRead;
+    assert.equal(f.gate.canSeekDestinationCopy('target-B', 'target-only-viewer', 'source-A', f.file.id, legacy.id), true);
+    assert.equal(f.gate.canReadForwardedFile('target-B', 'target-only-viewer', 'source-A', f.file.id, legacy.id), false, 'fallback must never grant source access');
+    f.infraStore.markHistoryDeleted('target-B', legacy.id);
+    await f.transfer.cancel(f.file.id);
+    await f.transfer.request(f.file.id, 'forwarder', { ...f.file, recordMessageId: legacy.id });
+    assert.equal(f.events.at(-1).accepted, false, 'deleted destination records grant no fallback');
+    assert.equal(f.errors.at(-1).name, 'permission-denied');
 });

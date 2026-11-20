@@ -51,3 +51,28 @@ test('completing every locally supplied range still waits for confirmed complete
  for(const [start,end]of [[0,40],[40,100]])transfer.reportUploadProgress(asset,'phone',{transferId:'part-'+start,rangeStart:start,rangeEnd:end},'attempt-'+start,end-start,'sending-multi-source:phone');
  assert.equal(progress.at(-1)[2],99);transfer.handleAvailable({asset,from:'phone'});assert.equal(progress.at(-1)[2],100);
 });
+
+test('small P2P file advances while its already-queued bytes drain, but waits for receiver ACK at 99',async()=>{
+ const {transfer,progress}=harness(),size=1024*1024,asset={id:'image',name:'image.jpg',size,data:new Uint8Array(size).buffer};let ack;transfer.deps.getSocket=()=>null;
+ transfer.waitForTransferAck=()=>new Promise(resolve=>ack=resolve);
+ const channel={readyState:'open',bufferedAmount:0,send(data){if(typeof data!=='string')this.bufferedAmount+=data.byteLength;},addEventListener(){},removeEventListener(){}};
+ const sending=transfer.sendViaDataChannel(channel,asset,null,'phone','image-attempt');
+ try {
+  await new Promise(r=>setTimeout(r,35));assert.equal(progress.at(-1)[2],0);
+  channel.bufferedAmount=size/2;await new Promise(r=>setTimeout(r,140));assert.equal(progress.at(-1)[2],50);
+  channel.bufferedAmount=0;await new Promise(r=>setTimeout(r,140));assert.equal(progress.at(-1)[2],99);
+  assert.equal(progress.some(row=>row[2]===100),false);assert.equal(transfer.uploadDrainProgress.size,0);
+  ack();await sending;assert.equal(progress.at(-1)[2],100);
+ }finally{channel.bufferedAmount=0;ack?.();await sending;transfer.cancel(asset.id);}
+});
+
+test('cancelled or failed drain observations stop without changing transport state or reopening progress',async()=>{
+ const {transfer,progress}=harness(),asset={id:'queued',name:'queued',size:100},channel={readyState:'open',bufferedAmount:100};transfer.deps.getSocket=()=>null;
+ transfer.reportUploadProgress(asset,'phone',null,'attempt',0,'sending:phone',{channel,queuedBytes:100});
+ transfer.endUploadProgress(asset,'phone',null,'sending:phone','p2p-attempt-ended');
+ assert.equal(transfer.uploadDrainProgress.size,0);const count=progress.length;channel.bufferedAmount=10;
+ await new Promise(r=>setTimeout(r,130));assert.equal(progress.length,count);
+ channel.bufferedAmount=100;transfer.reportUploadProgress(asset,'phone',null,'attempt2',0,'sending:phone',{channel,queuedBytes:100});
+ transfer.cancel(asset.id);assert.equal(transfer.uploadDrainProgress.size,0);
+ assert.equal(channel.readyState,'open','display cleanup cannot close the real channel');
+});

@@ -2,7 +2,7 @@
     'use strict';
     const names={telegram:'Telegram',youtube:'YT（YouTube / YouTube Music）',twitter:'X / Twitter',facebook:'Facebook',line:'LINE',instagram:'Instagram',tiktok:'TikTok',bilibili:'B站',netease:'网易云音乐',other:'其它服务'};
     const status=document.getElementById('upstreamStatus'),list=document.getElementById('nodeList'),editor=document.getElementById('nodeEditor');
-    let data,selected='new',selectedService='telegram';const drafts=new Map(),serviceDrafts=new Map(),savingServices=new Set();
+    let data,selected='new',selectedService='telegram';const drafts=new Map(),serviceDrafts=new Map(),savingServices=new Set(),selectionBeforeAll=new Map();
     async function api(url,method='GET',body){const r=await fetch('/api/upstream-exits'+url,{method,cache:'no-store',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});const value=await r.json();if(!r.ok)throw Error(value.error||'操作失败');return value;}
     const el=(tag,text)=>{const e=document.createElement(tag);if(text)e.textContent=text;return e;};
     function showTestExits(){const select=document.getElementById('testExit'),selected=select.value;select.replaceChildren();for(const node of [{id:'direct',name:'本机直连'},...data.nodes]){const option=el('option',node.name);option.value=node.id;select.append(option);}select.value=[...select.options].some(option=>option.value===selected)?selected:'direct';}
@@ -11,7 +11,7 @@
     function field(form,name,label,value,type='text'){const row=el('label'),input=el('input');input.type=type;input.name=name;input.value=value||'';row.append(el('span',label),input);form.append(row);return input;}
     function checkbox(form,label,value){const row=el('label'),input=el('input');row.className='check';input.type='checkbox';input.checked=value;row.append(input,el('span',label));form.append(row);return input;}
     function remember(){const form=editor.querySelector('form');if(form)drafts.set(selected,{...data.nodes.find(node=>node.id===selected),...drafts.get(selected),...Object.fromEntries(new FormData(form)),verifyTls:form.elements.verifyTls.checked});}
-    function showNodes(){showTestExits();list.replaceChildren();const add=el('button','＋ 新增节点');add.className='add-node';add.type='button';add.onclick=()=>{remember();selected='new';showNodes();showEditor();};list.append(add);
+    function showNodes(){showTestExits();document.getElementById('exportNodesButton').disabled=document.getElementById('checkNodesButton').disabled=!data.nodes.length;list.replaceChildren();const add=el('button','＋ 新增节点');add.className='add-node';add.type='button';add.onclick=()=>{remember();selected='new';showNodes();showEditor();};list.append(add);
         for(const node of data.nodes){const b=el('button',node.name);b.type='button';b.setAttribute('aria-current',String(node.id===selected));b.onclick=()=>{remember();selected=node.id;showNodes();showEditor();};list.append(b);}
         add.setAttribute('aria-current',String(selected==='new'));
     }
@@ -51,7 +51,13 @@
         const order=el('ol');order.className='exit-order';let ids=[...new Set([...service.order,...data.nodes.map(n=>n.id),'direct'])].filter(id=>id==='direct'||data.nodes.some(node=>node.id===id));
         const enabled=new Set((service.enabledNodes || []).filter(id=>ids.includes(id)));if(service.includeDirect)enabled.add('direct');
         form.append(Object.assign(el('p','仅勾选的出口参与失败后的轮询；默认出口或任务指定出口仍优先尝试。'),{className:'muted'}));
+        const selectionActions=el('div');selectionActions.className='actions candidate-selection-actions';
+        const selectAll=el('button','全选'),undoAll=el('button','撤销全选');selectAll.type=undoAll.type='button';
+        selectAll.onclick=()=>{if(enabled.size!==ids.length||!selectionBeforeAll.has(service.id))selectionBeforeAll.set(service.id,new Set(enabled));ids.forEach(id=>enabled.add(id));renderOrder();};
+        undoAll.onclick=()=>{const before=selectionBeforeAll.get(service.id);if(!before)return;enabled.clear();ids.filter(id=>before.has(id)).forEach(id=>enabled.add(id));selectionBeforeAll.delete(service.id);renderOrder();};
+        selectionActions.append(selectAll,undoAll);form.append(selectionActions);
         function renderOrder(){
+            undoAll.disabled=!selectionBeforeAll.has(service.id);
             order.replaceChildren();const chosen=ids.filter(id=>enabled.has(id));
             for(const id of ids){
                 const node=id==='direct'?{name:'本机直连'}:data.nodes.find(n=>n.id===id);if(!node)continue;
@@ -78,6 +84,56 @@
         };host.append(form);
     }}
     async function runtime(){try{const value=await api('');const box=document.getElementById('runtimeStatus');box.textContent=value.runtimes.length?value.runtimes.map(r=>r.name+'：'+(r.running?'运行中':r.starting?'启动中':'已停止')+' · '+r.activeTasks+' 个任务使用').join('；'):'未启动，实际任务使用 Trojan 节点时按需启动。';}catch(e){feedback(e);}}
+    for(const close of document.querySelectorAll('[data-close-dialog]'))close.onclick=()=>document.getElementById(close.dataset.closeDialog).close();
+    document.getElementById('importNodesButton').onclick=()=>document.getElementById('nodeImportDialog').showModal();
+    document.getElementById('exportNodesButton').onclick=()=>{
+        const choices=document.getElementById('nodeExportChoices');choices.replaceChildren(el('legend','选择已保存的节点'));
+        for(const node of data.nodes){const check=checkbox(choices,node.name,true);check.name='nodeId';check.value=node.id;}
+        document.getElementById('nodeExportResult').textContent='';document.getElementById('nodeExportDialog').showModal();
+    };
+    document.getElementById('nodeExportForm').onsubmit=async event=>{
+        event.preventDefault();const form=event.currentTarget,button=form.querySelector('[type=submit]'),result=document.getElementById('nodeExportResult');
+        const ids=[...form.querySelectorAll('input[name=nodeId]:checked')].map(check=>check.value);
+        if(!ids.length){result.textContent='请至少选择一个已保存的节点';return;}
+        button.disabled=true;result.textContent='正在生成节点文件…';
+        try {
+            const response=await fetch('/api/upstream-exits/nodes/export',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,format:document.getElementById('nodeExportFormat').value})});
+            if(!response.ok){let error;try{error=await response.json();}catch(_){}throw Error(error?.error||'导出失败，请检查后台登录状态后重试');}
+            const blob=await response.blob(),url=URL.createObjectURL(blob),link=el('a');
+            link.href=url;link.download=/filename="([^"]+)"/.exec(response.headers.get('Content-Disposition')||'')?.[1]||'trojan-nodes.txt';
+            document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);result.textContent='已生成 '+ids.length+' 个节点的下载文件';
+        }catch(error){result.textContent=error.message;}finally{button.disabled=false;}
+    };
+    document.getElementById('nodeImportForm').onsubmit=async event=>{
+        event.preventDefault();const button=event.currentTarget.querySelector('[type=submit]'),result=document.getElementById('nodeImportResult'),file=document.getElementById('nodeImportFile').files[0];
+        if(!file)return;if(file.size>2*1024*1024){result.textContent='节点文件不能超过 2 MiB';return;}
+        button.disabled=true;result.textContent='正在导入节点…';
+        try {
+            const value=await api('/nodes/import','POST',{content:await file.text()});remember();data=await api('');showNodes();showEditor();showServices();
+            result.textContent='已导入 '+value.imported+' 个节点'+(value.skipped?'，跳过 '+value.skipped+' 项':'')+(value.issues.length?'\n'+value.issues.map(issue=>'第'+issue.index+'项：'+issue.reason).join('\n'):'');
+            success('节点已导入并保存；原有节点和服务设置已保留');
+        }catch(error){result.textContent=error.message;}finally{button.disabled=false;}
+    };
+    let checkingNodes=false;
+    document.getElementById('checkNodesButton').onclick=()=>{document.getElementById('nodeCheckDialog').showModal();if(!checkingNodes)document.getElementById('nodeCheckForm').requestSubmit();};
+    document.getElementById('nodeCheckForm').onsubmit=async event=>{
+        event.preventDefault();if(checkingNodes)return;
+        const url=document.getElementById('nodeCheckUrl').value,nodes=data.nodes.map(node=>({id:node.id,name:node.name})),host=document.getElementById('nodeCheckRows'),note=document.getElementById('nodeCheckStatus');
+        if(!nodes.length){note.textContent='请先保存至少一个节点';return;}
+        checkingNodes=true;host.replaceChildren();document.getElementById('startNodeCheck').disabled=document.getElementById('nodeCheckUrl').disabled=true;
+        const rows=nodes.map(node=>{const row=el('tr'),ip=el('td','等待检查'),page=el('td','等待检查');row.append(el('th',node.name),ip,page);host.append(row);return{node,ip,page};});
+        try {
+            for(const [index,{node,ip,page}]of rows.entries()){
+                note.textContent='正在检查 '+(index+1)+'/'+nodes.length+'：'+node.name;ip.textContent='正在检查…';
+                try{const value=await api('/confirm','POST',{exit:node.id});ip.textContent=value.ip+' · '+value.durationMs+' ms';ip.dataset.state='success';}
+                catch(error){ip.textContent=error.message;ip.dataset.state='failed';}
+                page.textContent='正在请求页面…';
+                try{const value=await api('/test','POST',{exit:node.id,url});page.textContent='HTTP '+value.httpStatus+' · '+value.durationMs+' ms'+(value.ok?' · 成功':' · 失败');page.dataset.state=value.ok?'success':'failed';}
+                catch(error){page.textContent=error.message;page.dataset.state='failed';}
+            }
+            note.textContent='检查完成：'+nodes.length+' 个节点。各项结果见下表。';
+        }finally{checkingNodes=false;document.getElementById('startNodeCheck').disabled=document.getElementById('nodeCheckUrl').disabled=false;runtime();}
+    };
     document.getElementById('refreshRuntime').onclick=runtime;
     let pageTestGeneration=0;
     function openPageTest(id){pageTestGeneration++;showTestExits();document.getElementById('testExit').value=id;document.getElementById('testExitButton').disabled=false;document.getElementById('testExitButton').textContent='开始测试';document.getElementById('exitTestResult').textContent='';document.getElementById('pageTestDialog').showModal();}

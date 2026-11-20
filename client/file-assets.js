@@ -239,8 +239,9 @@
             return JSON.stringify([assetId, deviceId]);
         }
 
-        reportUploadProgress(asset, deviceId, transfer, attemptId, bytes, transport) {
+        reportUploadProgress(asset, deviceId, transfer, attemptId, bytes, transport, drain = null) {
             if (this.cancelledAssets.has(asset.id)) return;
+            if (drain) this.trackUploadDrainProgress(asset, deviceId, transfer, attemptId, transport, drain);
             if (!transfer) {
                 const size = Number(asset.size) || this.dataSize(asset.data);
                 this.deps.onProgress(asset.id, asset.name, Math.min(99, Math.floor(bytes * 100 / Math.max(1, size))), transport);
@@ -280,11 +281,42 @@
         finishUploadProgress(assetId, deviceId) {
             const group = this.outgoingProgress.get(this.uploadProgressKey(assetId, deviceId));
             if (!group || group.completed) return;
+            this.stopUploadDrainProgress(assetId, deviceId);
             group.completed = true; group.updatedAt = Date.now();
             this.deps.onProgress(assetId, group.name, 100, group.transport);
         }
 
+        trackUploadDrainProgress(asset, deviceId, transfer, attemptId, transport, { channel, queuedBytes }) {
+            if (!channel || channel.readyState !== 'open' || !(Number(channel.bufferedAmount) > 0)) return;
+            const samples = this.uploadDrainProgress ||= new Map();
+            const previous = samples.get(channel);
+            if (previous) { previous.queuedBytes = queuedBytes; return; }
+            const sample = { assetId: asset.id, deviceId, transferId: transfer?.transferId || '', queuedBytes, timer: null };
+            samples.set(channel, sample);
+            const stop = () => { clearTimeout(sample.timer); if (samples.get(channel) === sample) samples.delete(channel); };
+            const tick = () => {
+                if (samples.get(channel) !== sample) return;
+                if (channel.readyState !== 'open' || channel._fileAssetRejected || this.cancelledAssets.has(asset.id)) return stop();
+                const buffered = Math.max(0, Number(channel.bufferedAmount) || 0);
+                // Observe bytes leaving the existing queue. No extra wire
+                // messages or waits; 100% still belongs to the receiver ACK.
+                try { this.reportUploadProgress(asset, deviceId, transfer, attemptId, Math.max(0, sample.queuedBytes - buffered), transport); }
+                catch (_) { return stop(); }
+                if (!buffered) return stop();
+                sample.timer = setTimeout(tick, 100);
+            };
+            sample.timer = setTimeout(tick, 100);
+        }
+
+        stopUploadDrainProgress(assetId, deviceId, transferId) {
+            for (const [channel, sample] of this.uploadDrainProgress || []) {
+                if (sample.assetId !== assetId || (deviceId && sample.deviceId !== deviceId) || (transferId !== undefined && sample.transferId !== transferId)) continue;
+                clearTimeout(sample.timer); this.uploadDrainProgress.delete(channel);
+            }
+        }
+
         endUploadProgress(asset, deviceId, transfer, transport, reason) {
+            this.stopUploadDrainProgress(asset.id, deviceId, transfer?.transferId || '');
             if (transfer && this.outgoingProgress.has(this.uploadProgressKey(asset.id, deviceId))) return;
             this.deps.onUploadIdle?.(asset.id, asset.name, transport, reason);
         }
@@ -1808,7 +1840,7 @@
                     { assetId: asset.id, peerDeviceId, attemptId, phase: 'chunk', offset, chunkSize }
                 );
                 const sent = Math.min(rangeEnd, offset + chunkSize) - rangeStart;
-                this.reportUploadProgress(asset, peerDeviceId, transfer, attemptId, Math.max(0, sent - (Number(channel.bufferedAmount) || 0)), transport);
+                this.reportUploadProgress(asset, peerDeviceId, transfer, attemptId, Math.max(0, sent - (Number(channel.bufferedAmount) || 0)), transport, { channel, queuedBytes: sent });
             }
             if (channel._fileAssetRejected) throw new Error(`File asset receiver rejected: ${channel._fileAssetRejected}`);
             const receiverAck = this.waitForTransferAck(channel, asset.id, transfer?.transferId || '', attemptId);
@@ -1819,6 +1851,8 @@
                 { assetId: asset.id, peerDeviceId, attemptId, phase: 'complete' }
             );
             await this.waitForChannelDrain(channel);
+            this.reportUploadProgress(asset, peerDeviceId, transfer, attemptId, rangeEnd - rangeStart, transport);
+            this.stopUploadDrainProgress(asset.id, peerDeviceId, transfer?.transferId || '');
             await receiverAck;
             if (transfer) this.reportUploadProgress(asset, peerDeviceId, transfer, attemptId, rangeEnd - rangeStart, transport);
             else this.deps.onProgress(asset.id, asset.name, 100, transport);
@@ -2422,6 +2456,7 @@
 
         cancel(assetId) {
             if (!assetId) return;
+            this.stopUploadDrainProgress(assetId);
             this.clearRetryTimer(assetId);
             this.cancelledAssets.add(assetId);
             for (const [key, group] of this.outgoingProgress) {

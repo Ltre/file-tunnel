@@ -9,6 +9,16 @@ function registerUpstreamExitRoutes(app, { exits, requireAuth, root }) {
         try{res.json(await work(req));}catch(error){res.status(/不存在|修改/.test(error.message)?409:422).json({error:error.message});}
     };
     app.post('/api/upstream-exits/nodes',requireAuth,action(req=>exits.saveNode(null,req.body)));
+    app.post('/api/upstream-exits/nodes/import',requireAuth,action(req=>exits.importNodes(req.body?.content)));
+    app.post('/api/upstream-exits/nodes/export',requireAuth,(req,res)=>{
+        res.setHeader('Cache-Control','no-store');
+        try {
+            const file=exits.exportNodes(req.body?.ids,req.body?.format);
+            res.setHeader('Content-Type',file.contentType);
+            res.setHeader('Content-Disposition','attachment; filename="'+file.filename+'"');
+            res.setHeader('X-Content-Type-Options','nosniff');res.send(file.body);
+        } catch(error){res.status(422).json({error:error.message});}
+    });
     app.put('/api/upstream-exits/nodes/:id',requireAuth,action(req=>exits.saveNode(req.params.id,req.body)));
     app.delete('/api/upstream-exits/nodes/:id',requireAuth,action(req=>{exits.deleteNode(req.params.id);return{ok:true};}));
     app.put('/api/upstream-exits/services/:id',requireAuth,action(req=>exits.saveService(req.params.id,req.body)));

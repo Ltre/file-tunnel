@@ -1,6 +1,8 @@
 .disk-destination-tree{max-height:260px;overflow:auto;display:flex;flex-direction:column;border:1px solid #d1dce5;border-radius:8px}
 .disk-folder-target{padding:10px;text-align:left;background:transparent;border:0;color:inherit;cursor:pointer;overflow-wrap:anywhere}
 .disk-folder-target:hover,.disk-folder-target.selected{background:#d7ecf6}
+#telegramDriveDialogBody .disk-destination-tree .disk-folder-target.selected{background:linear-gradient(115deg,var(--ui-accent,#2464db),var(--ui-accent-strong,#174f9c));color:#fff;font-weight:700;box-shadow:inset 0 0 0 2px #ffffff85,0 2px 5px #153d7226}
+body[data-theme="orbit"] #telegramDriveDialogBody .disk-destination-tree .disk-folder-target.selected{background:linear-gradient(115deg,#514578,#313f62)}
 .disk-destination-tree{position:relative;display:block;padding:8px;min-height:180px;background:#fff}
 .disk-folder-branch>summary{display:flex;align-items:center;cursor:pointer;list-style:none;min-height:34px}
 .disk-folder-branch>summary::-webkit-details-marker{display:none}

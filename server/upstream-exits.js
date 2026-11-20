@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { AsyncLocalStorage } = require('node:async_hooks');
+const { parseTrojanNodes, exportTrojanNodes } = require('./trojan-node-formats');
 
 const SERVICES = ['telegram','youtube','twitter','facebook','line','instagram','tiktok','bilibili','netease','other'];
 // Only remote operations need an async exit scope. Local validation and guard
@@ -70,19 +71,34 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
             defaultExit: 'direct', mode: 'ordered', order: [], enabledNodes: [], includeDirect: false, revision: 0, ...config.services[id] })),
             runtimes: [...runtimes.values()].map(r => ({ name: r.node.name, running: Boolean(r.worker?.alive()), starting: !r.worker && Boolean(r.starting), activeTasks: r.refs })) };
     }
-    function saveNode(id, input) {
-        const previous = id ? config.nodes.find(n => n.id === id) : null;
-        if (id && !previous) throw Error('节点不存在，请刷新列表');
-        if (previous && Number(input.revision) !== previous.revision) throw Error('节点已被其他操作修改，请刷新后重试');
+    function nodeValue(input, previous = null) {
         const node = { id: previous?.id || crypto.randomUUID(), name: clean(input.name), server: clean(input.server, 253),
             port: Number(input.port), password: input.password === undefined || input.password === '' ? previous?.password || '' : String(input.password),
             serverName: clean(input.serverName, 253), verifyTls: input.verifyTls !== false, remark: clean(input.remark, 2000), revision: (previous?.revision || 0) + 1 };
         if (!node.name || !node.server || /[\s/\\]/.test(node.server) || !Number.isInteger(node.port) || node.port < 1 || node.port > 65535 ||
             !node.password || node.password.length > 4096 || /[\r\n\0]/.test(node.password)) throw Error('请填写节点名称、有效地址、端口及 Trojan 密码');
+        return node;
+    }
+    function saveNode(id, input) {
+        const previous = id ? config.nodes.find(n => n.id === id) : null;
+        if (id && !previous) throw Error('节点不存在，请刷新列表');
+        if (previous && Number(input.revision) !== previous.revision) throw Error('节点已被其他操作修改，请刷新后重试');
+        const node = nodeValue(input, previous);
         const before = config; config = clone(config);
         if (previous) config.nodes[config.nodes.findIndex(n => n.id === id)] = node; else config.nodes.push(node);
         try { write(); } catch (error) { config = before; throw error; }
         return publicNode(node);
+    }
+    function importNodes(content) {
+        const parsed = parseTrojanNodes(content), nodes = parsed.nodes.map(input => nodeValue(input));
+        const before = config; config = clone(config); config.nodes.push(...nodes);
+        try { write(); } catch (error) { config = before; throw error; }
+        return { imported: nodes.length, skipped: parsed.skipped, issues: parsed.issues, nodes: nodes.map(publicNode) };
+    }
+    function exportNodes(ids, format) {
+        if (!Array.isArray(ids) || !ids.length || ids.some(id => typeof id !== 'string' || !config.nodes.some(node => node.id === id))) throw Error('请选择有效的已保存节点');
+        const selected = new Set(ids);
+        return exportTrojanNodes(config.nodes.filter(node => selected.has(node.id)), format);
     }
     function deleteNode(id) {
         if (!config.nodes.some(n => n.id === id)) throw Error('节点不存在，请刷新列表');
@@ -323,7 +339,7 @@ function createUpstreamExits({ dataDir, root = path.resolve(__dirname, '..'), id
         return {exitName:result.exitName,ip,family:net.isIP(ip),durationMs:result.durationMs};
     }
     async function close(){closed=true;for(const runtime of runtimes.values()){clearTimeout(runtime.timer);try{(runtime.worker||await runtime.starting)?.stop();}catch(_){}}runtimes.clear();tickets.clear();}
-    return { publicConfig,saveNode,deleteNode,saveService,content,runTask,requestScope,fetch:routedFetch,cliArgs,publicProxy,testPage,confirmExit,serviceScope,wrapService,observeCommand,
+    return { publicConfig,saveNode,deleteNode,importNodes,exportNodes,saveService,content,runTask,requestScope,fetch:routedFetch,cliArgs,publicProxy,testPage,confirmExit,serviceScope,wrapService,observeCommand,
         analyze(url,work){return content(url,work,value=>valid(value)&&(!storage.getStore()?.requireFormats || Boolean(value?.formats?.length)));},
         scope(url,work){return storage.getStore()?work():withContext(context(url),work);},
         ready(){const ctx=storage.getStore();if(ctx?.initialError)return Promise.reject(ctx.initialError);if(ctx?.managed){ctx.hadNetwork=true;return transport(ctx);}return Promise.resolve();},

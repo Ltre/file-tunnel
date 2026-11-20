@@ -32,7 +32,7 @@ function normalize(node) {
     // These are the explicitly retained display/diagnostic adapters. They may
     // change UI bookkeeping, but must not change transfer I/O or its decisions.
     if (node.type === 'ExpressionStatement' && node.expression.type === 'CallExpression' &&
-        ['onProgress', 'reportUploadProgress', 'endUploadProgress', 'capturePeerRoute']
+        ['onProgress', 'reportUploadProgress', 'endUploadProgress', 'stopUploadDrainProgress', 'capturePeerRoute']
             .includes(node.expression.callee.property?.name)) return null;
     const result = Object.fromEntries(Object.entries(node)
         .filter(([key]) => !['start', 'end', 'raw'].includes(key))

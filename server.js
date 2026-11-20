@@ -4048,6 +4048,28 @@ function canReadForwardedFile(targetSessionId, deviceId, sourceSessionId, fileId
     } catch (_) { return false; }
 }
 
+// A legacy destination record may outlive its original forward audit/grant.
+// It still permits looking for that exact file INSIDE the destination. This
+// deliberately does not authorize reading any data from the private source.
+function canSeekDestinationCopy(targetSessionId, deviceId, sourceSessionId, fileId, recordMessageId = '') {
+    const target = sessions.get(targetSessionId);
+    if (!target?.devices?.has(deviceId) || !canUseTunnelCapability(target, deviceId, 'read')) return false;
+    const accepts = message => {
+        if (!message?.id || (recordMessageId && message.id !== recordMessageId)) return false;
+        if (Array.isArray(target.deletedMessageIds) ? target.deletedMessageIds.includes(message.id) : target.deletedMessageIds?.has?.(message.id)) return false;
+        const files = message.type === 'file' ? [message.fileInfo] : message.type === 'collection' ? message.collection?.files || [] : [];
+        return files.some(file => file?.id === fileId && file.backupSourceSessionId === sourceSessionId && file.forwardedToSessionId === targetSessionId);
+    };
+    // Require the server's persisted, non-deleted target reference. A client
+    // claiming a source ID or forwarding marker alone cannot grant anything.
+    try {
+        if (recordMessageId && (typeof recordMessageId !== 'string' || recordMessageId.length > 100)) return false;
+        const sql = 'SELECT r.payload_json FROM transfer_records r JOIN transfer_files f ON f.session_id = r.session_id AND f.message_id = r.message_id WHERE r.session_id = ? AND f.file_id = ? AND r.deleted_at IS NULL AND f.removed_at IS NULL';
+        const rows = infraStore?.query?.(sql + (recordMessageId ? ' AND r.message_id = ?' : ''), recordMessageId ? [targetSessionId, fileId, recordMessageId] : [targetSessionId, fileId]) || [];
+        return rows.some(row => { try { return accepts(JSON.parse(row.payload_json)); } catch (_) { return false; } });
+    } catch (_) { return false; }
+}
+
 function getSessionPermissionPayload(session, deviceId = '') {
     const admins = normalizeTunnelAdminRecords(session?.admins || {});
     return {
@@ -9562,11 +9584,13 @@ io.on('connection', (socket) => {
             // differ from the active receiver's identity. The signed grant is
             // still required; a claimed source device ID alone grants nothing.
             const sourceDeviceId = data.sourceDeviceId || currentDevice;
-            if (!forwarded && !tunnelAccess.verify(data.sourceAccessGrant, data.sourceSessionId, sourceDeviceId)) return emitSocketError('permission-denied','来源隧道尚未获得访问权');
+            const sourceAuthorized = forwarded || tunnelAccess.verify(data.sourceAccessGrant, data.sourceSessionId, sourceDeviceId);
+            const destinationOnly = !sourceAuthorized && canSeekDestinationCopy(currentSession, currentDevice, data.sourceSessionId, fileId, data.recordMessageId);
+            if (!sourceAuthorized && !destinationOnly) return emitSocketError('permission-denied','来源隧道尚未获得访问权');
             // A forwarder may now be in the destination while its copied bytes
             // remain indexed under the source in IndexedDB. Discover that exact
             // destination-owned file locally as well, after verifying ownership.
-            if (forwarded && sessions.get(currentSession)?.devices?.has(currentDevice) && !sessions.get(currentSession)?.fileAssets?.get(fileId)?.providers?.size) {
+            if ((forwarded || destinationOnly) && sessions.get(currentSession)?.devices?.has(currentDevice) && !sessions.get(currentSession)?.fileAssets?.get(fileId)?.providers?.size) {
                 const recent = socket.data.forwardedFileDiscoveries ||= new Map();
                 const key = JSON.stringify([currentSession,fileId]), now = Date.now();
                 if (!recent.has(key) || now - recent.get(key) >= 2000) {
@@ -9577,7 +9601,7 @@ io.on('connection', (socket) => {
             }
             // A forwarded record grants this file, independently of volatile
             // provider announcements. Prefer caches already in the destination.
-            if (forwarded && sessions.get(currentSession)?.fileAssets?.get(fileId)?.providers?.size) data.sourceSessionId = currentSession;
+            if (destinationOnly || (forwarded && sessions.get(currentSession)?.fileAssets?.get(fileId)?.providers?.size)) data.sourceSessionId = currentSession;
         }
         if(!socket.data.magnetAssetId||event==='join-session')return next();
         const allowed=['file-asset-request','file-asset-discovery','file-asset-transfer-status'],magnet=infraStore?.getMagnet(socket.data.magnetId)||magnets.get(socket.data.magnetId);
