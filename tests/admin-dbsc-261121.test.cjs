@@ -66,3 +66,26 @@ test('admin DBSC accepts the current payload-key proof format and validates URL 
     const renewedChallenge=/^"([^"]+)"/.exec(badRes.headers['Secure-Session-Challenge'])[1];
     assert.equal(auth.refreshDbsc(refreshReq(modernJwt(pair,{jti:renewedChallenge,aud:refreshUrl,sub:id})),makeRes()).status,200);
 });
+
+test('admin DBSC registration scope uses the actual localhost HTTP origin',t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'admin-dbsc-localhost-'));
+    t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+    fs.writeFileSync(path.join(dir,'.gauth-admin.json'),JSON.stringify({secret:'JBSWY3DPEHPK3PXP',createdAt:'fixture'}));
+    const auth=createAdminAuth({dataDir:dir}),pair=crypto.generateKeyPairSync('ec',{namedCurve:'P-256'});
+    for(const [host,protocol,origin] of [
+        ['localhost','http','http://localhost'],
+        ['127.0.0.1:3000','http','http://127.0.0.1:3000'],
+        ['localhost','https','https://localhost'],
+        ['example.com','http','https://example.com']
+    ]){
+        const request=makeReq({host});request.protocol=protocol;
+        const startResponse=makeRes();auth.beginBinding(request,startResponse);
+        const pending=cookieFrom(startResponse,'__Host-tunnel_admin_dbsc_pending');
+        const challenge=/challenge="([^"]+)"/.exec(startResponse.headers['Secure-Session-Registration'])[1];
+        const registerRequest=makeReq({host,cookie:pending,'secure-session-response':modernJwt(pair,{
+            jti:challenge,aud:origin+'/api/admin/auth/dbsc/register'
+        })});registerRequest.protocol=protocol;
+        const instructions=auth.registerDbsc(registerRequest,makeRes());
+        assert.equal(instructions?.scope.origin,origin,host+' scope origin');
+    }
+});

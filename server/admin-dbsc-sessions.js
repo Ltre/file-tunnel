@@ -128,8 +128,9 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
         return {pending:true,dbscRequired:true,expiresAt:now+PENDING_MS};
     }
     function instructions(id,req){
-        const host=String(req.get('host')||'').replace(/[^a-zA-Z0-9.:[\]-]/g,'');
-        const origin='https://'+host;
+        // DBSC permits HTTP for localhost testing. The scope must match the
+        // registration request's actual origin, including its scheme.
+        const origin=endpointAudience(req,'');
         return {session_identifier:id,refresh_url:'/api/admin/auth/dbsc/refresh',scope:{origin,include_site:false,scope_specification:[]},
             credentials:[{type:'cookie',name:COOKIE_NAME,attributes:'Path=/; Secure; HttpOnly; SameSite=Strict'}]};
     }
