@@ -1,7 +1,7 @@
 # 系统架构、运行边界与数据所有权
 
-> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
-> **文档更新时间**：`2026-11-19`
+> **源码基线 Commit**：`4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`  
+> **文档更新时间**：`2026-11-21`
 > 本文按当前合入实现区分隧道基础审计的 sql.js、网盘元数据的原生 SQLite WAL、独立 S3 凭据和 Telegram 外部消息。不得把已有 SQLite/S3 仍写作计划，也不得把有限兼容与多实例安全夸大成完全实现。
 
 ## 1. 整体定位
@@ -462,3 +462,12 @@ P2P 信令限流与普通消息分开。此前加入的 `abandonedAttemptId` 主
 `server/web-zip-sync.js` 现在可枚举持久历史中的同源转发副本，对已验证的同一网页 root 统一同步版本和编辑授权；待办记录可在同一来源的其它副本仍存在时重新锚定。发布按来源/root 串行，防止并发旧版本覆盖新版本。该组同步仍受创建者、来源证明、编辑凭据和当前权限约束。
 
 完整上游出口实现见 [upstream-exits.md](./upstream-exits.md)；其它模块的详细行为见 [transfer-cache.md](./transfer-cache.md)、[web-workshop.md](./web-workshop.md) 和 [download-transcode.md](./download-transcode.md)。
+
+
+## 15. 2026-11-20—21：节点交换、来源诊断与日志/限流边界
+
+- 上游节点导入/导出由独立 `server/trojan-node-formats.js` 负责，使用 `yaml@2.8.2` 解析 Clash YAML；只映射服务端当前支持的 Trojan TCP/TLS 连接字段，不把客户端的路由、DNS 或高级传输设置应用到服务端运行时。批量导入追加新节点并原子写入，不修改既有服务策略。
+- 跨隧道文件恢复仍以来源 grant/已验证转发关系为优先证明；新增的目标副本回退只核验目标隧道的成员 read 权限和服务端持久记录中的精确文件引用，只允许在目标隧道内找源，不授予来源隧道读取权。真正拒绝时通过关联诊断记录必要元数据，不读取或记录文件正文/授权凭据。
+- 浏览器日志位于独立的 `TunnelBrowserLogs` IndexedDB，不属于 `infra.sqlite`、网盘 `disk.sqlite` 或业务文件缓存；滚动淘汰和配额回收仅作用于该日志库。来源诊断客户端通过 `getKey` 检查缓存键，不读取文件 Blob。
+- 通用 API 限流与应用壳资源读取分开：明确页面/静态资源 GET/HEAD 不消耗通用 API 额度；业务 API 仍受限。已登记成员只有在服务端验证同一隧道和设备的 grant 后，才可在短码查询/Socket 重入时跳过猜码计数。
+- DataChannel 发送进度增加本地缓冲排空采样，仅改变显示估算；分块、背压、P2P/Relay 决策、接收 ACK 和完整缓存提交顺序保持原有协议。

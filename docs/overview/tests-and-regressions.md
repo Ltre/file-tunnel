@@ -1,7 +1,7 @@
 # 测试体系、人工验收与历史回归索引
 
-> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
-> **文档更新时间**：`2026-11-19`
+> **源码基线 Commit**：`4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`  
+> **文档更新时间**：`2026-11-21`
 
 ## 1. 为什么本项目尤其依赖回归资料
 
@@ -519,3 +519,30 @@ AI 后续做 bisect/调研时，应把 commit title 中的这些自然语言作�
 - 用户现场偶发 Relay 根因和启动等待问题仍未完全查明；本轮修复的是可证实的多源路线误标，不代表整个现场故障已解决。
 - 没有逐一使用真实登录凭据/正式节点验证所有上游服务；本机 Trojan TLS 夹具不等于所有用户节点均可连接。
 - 本次 Overview 文档更新没有重新运行 Node、Chrome、WebRTC、Telegram 或 Linux 原生测试；以上数字均引用当前分支开发日志的最终阶段记录。
+
+
+## 21. 2026-11-20—21：节点批量操作、浏览器日志、来源恢复与重入限流
+
+### 新增测试文件（7）
+
+| 范围 | 测试 |
+|---|---|
+| Trojan 节点格式 | `trojan-formats-261120.test.cjs` |
+| 上游管理 UI | `requirements-261120.browser.cjs` |
+| 浏览器日志滚动保留 | `browser-logs-rolling-261120.browser.cjs` |
+| 来源权限诊断 | `source-access-diagnostic-261120.browser.cjs`、`source-access-feedback-261120.test.cjs` |
+| 短码重入限流 | `tunnel-rejoin-rate-limit-261121.test.cjs`、`tunnel-rejoin-rate-limit-261121.browser.cjs` |
+
+### 修改既有测试（5）
+
+- `browser-logs-261103.browser.cjs`：更新日志容量/滚动策略 UI 断言；
+- `forwarded-server-assets-261117.test.cjs`、`source-access-261107.test.cjs`：覆盖目标副本受限恢复与来源权限边界；
+- `transfer-baseline-261116.test.cjs`、`whole-file-progress-261116.test.cjs`：把排空进度采样列为显示适配，不放宽传输 I/O 和 ACK 基线，并验证 99% 等待接收端 ACK。
+
+### 开发日志记录的验证结果与限制
+
+- 261120 上游节点格式/接口相关 Node 22 单元与集成批次 **200/200 通过**，Chrome **8/8 通过**；格式往返测试覆盖字段映射、IPv6、SNI、证书验证、特殊密码、Clash YAML 锚点、坏格式/不支持选项、原子回滚和管理员鉴权。没有逐个在八种第三方客户端中实机导入。
+- 来源权限相关 Node **72/72 通过**、浏览器日志专项 **13/13 通过**、整页恢复 **2/2 通过**。覆盖未加入/旧会话请求不误报、目标成员精确副本恢复、真正无权仍拒绝、诊断脱敏及日志检索/导出。
+- 261121 短码限流专项 Node **75 通过、0 失败、2 跳过**，Chrome **3/3 通过**。较广关联批次 **80 通过、5 失败、2 跳过**；5 项失败是旧 VM 夹具缺少 `mountMarkdownReferenceRoute`、`downloadForms`、`upstreamExits` 依赖，在未修改 HEAD 上重放也相同，不能作为本轮产品回归或全仓通过证据。
+- 45 文件/220,000,000 字节的正式 60 秒用例仍有超时未通过记录。独立对照中未修改 HEAD 为 68.6242 秒、当前实现为 66.0856 秒，均超过 60 秒；两次正文逐字节一致，但不能将超时用例写成通过或据单次对照宣称性能保证。
+- 实体 Android 退出重入、真实手机进度体验、正式站同一旧副本部署后复验、所有上游真实节点/客户端导入仍需现场验收。本次文档同步没有重新运行测试。

@@ -1,7 +1,7 @@
 # PWA、功能首页 UI、响应式布局与全局交互
 
-> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
-> **文档更新时间**： 2026-11-19
+> **源码基线 Commit**：`4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`  
+> **文档更新时间**： 2026-11-21
 
 ## 子模块文档
 
@@ -463,7 +463,7 @@ Service Worker 对已有缓存壳的指定首页路由提供最长约 1 秒的 n
 
 ### 发布壳和语言包
 
-当前语言启动包、13 个额外按需语言包、设置内系统语言确认和生成/构建检查详见 [localization.md](./pwa-ui/localization.md)。当前 Service Worker 资源句柄为 `instant-tunnel-v151-content-v8-261119-1`；激活时只清理本应用 `instant-tunnel-*` 旧缓存，避免删除同域其它应用的 CacheStorage。
+当前语言启动包、13 个额外按需语言包、设置内系统语言确认和生成/构建检查详见 [localization.md](./pwa-ui/localization.md)。当前 Service Worker 资源句柄为 `instant-tunnel-v155-content-v8-261121-rejoin`；激活时只清理本应用 `instant-tunnel-*` 旧缓存，避免删除同域其它应用的 CacheStorage。
 
 
 ## 26. 2026-11-16—19：窄屏拖动、Markdown 返回历史与资源更新
@@ -482,6 +482,15 @@ Service Worker 对已有缓存壳的指定首页路由提供最长约 1 秒的 n
 
 ### 发布资源
 
-Service Worker 静态资源句柄提升至 `instant-tunnel-v151-content-v8-261119-1`；`content-v8` 业务缓存语义保持不变。新语言包仍按原有按需加载策略，不因版本提升清理业务 IndexedDB。
+Service Worker 静态资源句柄提升至 `instant-tunnel-v155-content-v8-261121-rejoin`；`content-v8` 业务缓存语义保持不变。新语言包仍按原有按需加载策略，不因版本提升清理业务 IndexedDB。
 
 专项回归：`tests/control-center-drag-261118.browser.cjs`、`tests/markdown-navigation-261116.browser.cjs`、`tests/requirements-261119.browser.cjs`。
+
+
+## 27. 2026-11-20—21：轻量入口重入反馈与资源版本
+
+- `client/tunnel-entry.js` 和首页短码加入流程会为本机已知隧道附带该隧道自己的 deviceId/grant；只对服务端确认的同一隧道成员凭据提供重入限流例外。错误反馈区分通用 API 429 与短码猜测限流，非 JSON 响应不再直接暴露 JSON 解析错误。
+- 强制刷新时，应用壳和明确静态资源 GET/HEAD 不消耗通用 API 限流额度；API 仍执行原限流和鉴权。已保存 grant 只保留本机当前隧道选择，真正加入仍由服务端 Socket 校验。
+- Service Worker 当前静态资源句柄为 `instant-tunnel-v155-content-v8-261121-rejoin`；业务 `content-v8` 缓存语义不变，不因版本提升清除业务 IndexedDB。
+
+专项回归：`tests/tunnel-rejoin-rate-limit-261121.browser.cjs`、`tests/requirements-261120.browser.cjs`。
