@@ -1,7 +1,7 @@
 # Telegram 虚拟网盘：身份、文件系统、上传、流媒体与管理
 
-> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
-> **文档更新时间**：`2026-11-19`
+> **源码基线 Commit**：`4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`  
+> **文档更新时间**：`2026-11-21`
 > **重要现状**：网盘共享元数据已改用 node:sqlite 的磁盘 SQLite WAL（当前 schema 6）；S3 Compatible 子集、共享 Content Object、渐进上传、回收站、协同挂载等均已合入。S3 凭据、上传暂存、Telegram Chat 字典等仍有独立文件；不等于实现完整 AWS S3 或多实例分布式一致性。
 
 ## 1. 产品初衷
@@ -813,3 +813,10 @@ Content 在仍有引用、租约、历史已确认关联或可疑频道别名时
 - 这项调整不改变 Telegram 文件实际托管、分区、Content Object 或 S3 协议；只增加服务端 Telegram API 的受控出口路由。完整策略见 [upstream-exits.md](./upstream-exits.md)。
 
 专项测试：`tests/disk-admin-download-261118.test.cjs`。
+
+
+## 35. 2026-11-20：目录选择器选中状态高亮
+
+- `client/disk-directory-picker.css` 为 Telegram 网盘目标目录选择器的 `.disk-folder-target.selected` 增加更明显的主题强调色渐变、白色文字、加粗、内边框和阴影；Orbit 主题使用单独的深色渐变，避免强调色与文字对比不足。
+- 样式限定在网盘目录选择浮层内，只改善已选目标的视觉辨识；目录选择、创建、复制、移动、转存及确认路径逻辑均未改变。
+- 开发日志记录使用实际目录选择器在 7 个主题下检查选中、悬停、重选和确认路径；问题复现图见 `prompts/resources/BUG-261120/disk-tree-selector-toggle-bug.jpg`。这不是目录树功能重构。

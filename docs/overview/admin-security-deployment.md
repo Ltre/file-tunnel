@@ -1,7 +1,7 @@
 # 管理后台、安全边界与部署
 
-> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
-> **文档更新时间**：`2026-11-19`
+> **源码基线 Commit**：`4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`  
+> **文档更新时间**：`2026-11-21`
 
 ## 1. 管理后台定位
 
@@ -389,6 +389,12 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 
 当前部分路由已经有 express-rate-limit 或内部 throttle；后续 public commercialization 不能把测试环境宽松设置直接上线。
 
+当前通用 HTTP 限流为每 IP **15 分钟 1000 次**。为避免 API 额度耗尽后连首页和强制刷新都无法打开，明确的应用壳页面、记录页和 `/client/`、构建 `/assets/` 下白名单静态资源的 **GET/HEAD** 不再计入该通用 API 额度。例外仅匹配固定路径/资源后缀和安全读取方法；API（即使路径看起来像 JS/JSON）、未知路径及同路径 POST 仍受限，不是按扩展名或 Accept 头全局放行。
+
+短码猜测限流仍为每 IP **10 分钟 40 次**。HTTP 短码查询和 Socket `join-by-short-code` 只有在服务端验证了绑定**同一 sessionId + deviceId** 的有效成员 grant 时才不计入猜码次数；空凭据、伪造/错配凭据或其它隧道凭据仍计数。阈值没有提高、计数没有重置，也没有放宽成员授权。前端将 `LOCAL_REQUEST_RATE_LIMIT` 与真正短码猜测限流区分提示；已保存 grant 的临时 API 429 只保留当前隧道选择，后续 Socket 仍由服务端校验。
+
+相关回归：`tests/tunnel-rejoin-rate-limit-261121.test.cjs`、`tests/tunnel-rejoin-rate-limit-261121.browser.cjs`。
+
 ## 18. 数据备份
 
 项目数据不是一个文件：
@@ -458,6 +464,7 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 ## 24. 后台控制台、设备权限、日志和反代限流（2026-10—11）
 
 - 管理后台现在包括 `/admin/tunnels`、`/admin-tunnel-permissions`、设备/磁链、存储总览、浏览器日志、系统备份及原有运营入口。前台 `client/admin-overview.js/.css`、`admin-tunnel-permissions.js`、`browser-logs.js/.css` 分离业务，服务端 `server/tunnel-permissions.js` 和现有 Admin Auth 逐次核验身份。选中设备并不赋予会话成员身份。
+- 浏览器日志保存在当前浏览器独立的 `TunnelBrowserLogs` IndexedDB 中，与服务端日志、隧道文件缓存和网盘业务数据分开；当前上限为 **256 MiB 或 100 万条**，达到上限按最旧写入 ID 滚动淘汰并继续记录。待写队列最多 200 条，错误日志优先于普通操作日志。
 - 基础数据后台使用 `infra.sqlite`，不能与 `disk.sqlite`、`media-library.sqlite` 或 `streaming-console.json` 混为一个库；系统备份是独立管理员操作，具体 FULL/CORE、WAL、分段清单、失败/恢复规则见 [system-backup.md](./system-backup.md)。
 - `server/request-rate-limit.js` 对限流 Key 单独识别请求链：仅在可信 Cloudflare 地址来源下考虑受限 `CF-Connecting-IP` 等头部，禁止任意客户端伪造代理 IP。不能为了限流而全局开启不受限 `trust proxy`，否则 Origin、协议和访问控制都可能被改变。
 - `server/process-diagnostics.js` 记录启动、退出/信号、异常类型和资源量、过滤敏感错误文本；这提供排查依据，不能代替系统内存/进程转储。管理员私钥、网盘授权与串流设备凭据应继续保持最小权限和独立生命周期。
@@ -500,9 +507,24 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 
 ### 依赖与构建
 
-- 当前项目最低 Node 版本为 **22.16.0**；`undici` 固定为 **7.30.2**。yt-dlp 使用命令行 `--proxy`，不依赖 shell `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY`。
+- 当前项目最低 Node 版本为 **22.16.0**；`undici` 固定为 **7.30.2**，节点 Clash YAML 交换格式使用固定版本 `yaml@2.8.2`。yt-dlp 使用命令行 `--proxy`，不依赖 shell `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY`。
 - `tools/deploy/build.mjs` 复制 sing-box 运行文件，`tools/deploy/verify.mjs` 校验上游出口管理路由与发布资源。Windows x64 本机真实 sing-box + 隔离 Trojan TLS 网关已验证；Linux 原生执行、所有真实服务凭据和用户节点组合未宣称全部验收。
 
 完整路由和任务锁定规则见 [upstream-exits.md](./upstream-exits.md)。
 
 专项测试：`tests/upstream-exits-261114.test.cjs`、`tests/upstream-native-261114.test.cjs`、`tests/upstream-cache-261114.test.cjs`、`tests/upstream-candidates-261119.test.cjs`、`tests/disk-admin-download-261118.test.cjs`。
+
+
+## 28. 2026-11-20—21：浏览器日志滚动保留、来源拒绝诊断与重入限流
+
+### 浏览器日志存储
+
+- `client/browser-logs.js` 的容量上限由 64 MiB/10 万条调整为 **256 MiB/100 万条**。达到任一上限时，在同一 IndexedDB 事务中淘汰最旧记录、追加新记录并更新统计，不再“日志满后停止记录”。
+- 待写队列仍最多 200 条；队列满时优先淘汰普通操作日志，保留待写错误。若浏览器实际存储配额早于应用阈值触发 `QuotaExceededError`，只在日志库内最多回收 2048 条旧日志，目标回收量为当前批次约两倍或至少 4 KiB，然后重试一次；不会清理文件缓存或业务 CacheStorage。回收后仍失败则如实显示日志存储不可用。
+- 跨隧道来源权限拒绝会生成稳定 code `FILE_SOURCE_ACCESS_DENIED` 和 `CAONIMA-GPT` 关联日志。服务端只附带目标成员可读的有限记录元数据，不返回 grant、token 或文件正文；客户端只记录请求/恢复上下文及缓存键是否存在，不读取大 Blob。该诊断帮助区分未加入、旧会话、目标引用缺失和真正来源授权拒绝，不代替实际权限校验。
+
+### 验证记录与限制
+
+- 开发日志记录浏览器日志专项 **13/13**、来源诊断相关 Node **72/72**、生产整页恢复 **2/2**；261121 限流专项 Node **75 通过、0 失败、2 跳过**、Chrome **3/3**。
+- 较广关联批次 **80 通过、5 失败、2 跳过**；5 项失败为旧测试夹具缺少 `mountMarkdownReferenceRoute`、`downloadForms`、`upstreamExits` 依赖，在未修改 HEAD 上重放也相同，不作为本轮修复成功或产品回归的证据。
+- 45 文件/220,000,000 字节正式 60 秒用例仍保留超时未通过记录；未修改 HEAD 和当前实现的独立对照均超过 60 秒。实体 Android 和正式站同一旧记录复验仍待用户现场完成。本次 Overview 同步未重新运行测试。
