@@ -1353,6 +1353,7 @@ require('./server/upstream-exit-routes').registerUpstreamExitRoutes(app, { exits
 //禁止直接从pages目录，以无校验态访问管理页面
 app.use([
     '/pages/admin.html',
+    '/pages/admin-users.html',
     '/pages/admin-layout.html',
     '/pages/admin-devices.html',
     '/pages/admin-tunnel-permissions.html',

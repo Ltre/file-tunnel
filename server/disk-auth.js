@@ -6,6 +6,8 @@ const { loadKey } = require('./disk-data');
 const { openDiskRepository } = require('./disk-repository');
 const scrypt = promisify(crypto.scrypt);
 const digest = value => crypto.createHash('sha256').update(String(value)).digest('hex');
+const DISK_PERMISSIONS = Object.freeze(['disk.s3.manage', 'disk.riskyUpload', 'webZip.publishEdit']);
+const emptyPermissions = () => Object.fromEntries(DISK_PERMISSIONS.map(key => [key, false]));
 async function hashSecret(value) {
     const salt = crypto.randomBytes(16).toString('hex');
     return salt + ':' + (await scrypt(value, salt, 64)).toString('hex');
@@ -56,7 +58,8 @@ function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn 
         catch (error) { webauthnPromise = null; if (/MODULE_NOT_FOUND/.test(error.code || '')) throw new Error('PASSKEY_SERVER_UNAVAILABLE'); throw error; }
     }
     queueMicrotask(() => passkeyMethods().catch(() => {}));
-    const publicUser = user => user ? { id: user.id, user_id: user.id, name: user.name || user.username || '网盘用户', username: user.username || '', telegramId: user.telegramId || '', provider: user.provider || (user.telegramId ? 'telegram' : 'passkey'), passkeyCount: (user.passkeys || []).length, createdAt: user.createdAt || 0 } : null;
+    const publicUser = user => user ? { id: user.id, user_id: user.id, name: user.name || user.username || '网盘用户', username: user.username || '', telegramId: user.telegramId || '', provider: user.provider || (user.telegramId ? 'telegram' : 'passkey'), passkeyCount: (user.passkeys || []).length, createdAt: user.createdAt || 0,
+        permissions: Object.fromEntries(DISK_PERMISSIONS.map(key => [key, user.permissions?.[key] === true])), permissionVersion: Number(user.permissionVersion) || 0 } : null;
     const publicApp = app => ({ app_id: app.app_id, remark: app.remark, enabled: app.enabled, passkey_origin: app.passkeyOrigin || '', secretConfigured: true, createdAt: app.createdAt, lastUsedAt: app.lastUsedAt || 0, lastIssuedAt: app.lastIssuedAt || 0 });
     function seal(value) {
         const iv = crypto.randomBytes(12);
@@ -73,6 +76,26 @@ function createDiskAuth({ dataDir, now = Date.now, tokenTTL = 3600000, webauthn 
         sessionKey: key,
         user(id) { return publicUser(data.users.find(user => user.id === String(id))); },
         users() { return data.users.map(publicUser); },
+        hasPermission(id, permission) {
+            return DISK_PERMISSIONS.includes(permission) && data.users.find(user => user.id === String(id))?.permissions?.[permission] === true;
+        },
+        setPermissions(id, changes, operator = 'administrator') {
+            const user = data.users.find(entry => entry.id === String(id));
+            if (!user) throw new Error('USER_NOT_FOUND');
+            if (!changes || typeof changes !== 'object' || Array.isArray(changes) ||
+                !Object.keys(changes).length || Object.keys(changes).some(key => !DISK_PERMISSIONS.includes(key) || typeof changes[key] !== 'boolean'))
+                throw new Error('DISK_PERMISSION_INVALID');
+            const previous = { ...user };
+            const permissions = { ...emptyPermissions(), ...user.permissions, ...changes };
+            if (DISK_PERMISSIONS.some(key => permissions[key] !== (user.permissions?.[key] === true))) {
+                user.permissions = permissions;
+                user.permissionVersion = (Number(user.permissionVersion) || 0) + 1;
+                user.permissionUpdatedAt = now();
+                user.permissionUpdatedBy = operator;
+                try { save(); } catch (error) { Object.assign(user, previous); throw error; }
+            }
+            return publicUser(user);
+        },
         fromTelegram(identity, provider = 'telegram') {
             const telegramId = String(identity.id);
             if (!/^\d{1,20}$/.test(telegramId)) throw new Error('TELEGRAM_ID_INVALID');

@@ -26,6 +26,7 @@ const { createContentProof } = require('./disk-content-proof');
 const { createContentAdmin } = require('./disk-content-admin');
 const { createS3Credentials } = require('./s3/credentials');
 const { createDiskStaticResources } = require('./disk-static-resources');
+const { normalizeMime, isRiskyFile, assertRiskyUploadAllowed } = require('./disk-risky-files');
 const { createDiskPartitions, validateName: validatePartitionName } = require('./disk-partitions');
 const { createDiskTrash } = require('./disk-trash');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
@@ -119,6 +120,8 @@ function createDiskSpaces(dataDir, defaultStore) {
     };
 }
 function errorStatus(code) {
+    if (code === 'DISK_RISKY_UPLOAD_FORBIDDEN' || code === 'DISK_S3_MANAGE_FORBIDDEN') return 403;
+    if (code === 'DISK_PERMISSION_INVALID') return 400;
     if(code==='MOUNT_READ_ONLY')return 403;
     if(code==='FOLDER_UPLOAD_NOT_FOUND')return 404;
     if (/^COLLABORATION_|^INVITE_/.test(code)) return /NOT_FOUND/.test(code) ? 404 : 403;
@@ -138,6 +141,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     if(!['execute','observe'].includes(contentCleanupMode)) throw new Error('CONTENT_CLEANUP_MODE_INVALID');
     const log = createDiskUploadLog(dataDir);
     const userS3Credentials = createS3Credentials(dataDir);
+    const assertRisky = (userId, name, type) => assertRiskyUploadAllowed(auth, userId, name, type);
     const recordUploadFailure = (job, error) => {
         try { operations.fail(job.operationId, error); }
         catch (diagnosticError) { log('upload.failure-state-write-failed', { uploadId: job.id, operationId: job.operationId, error: networkDetails(diagnosticError) }); }
@@ -167,6 +171,14 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const measureMetadata = (req, name, work) => req.diskMetadataTiming?.measure ? req.diskMetadataTiming.measure(name, work) : work();
     browser.use(metadataTiming); external.use(metadataTiming);
     const admin = express.Router();
+    admin.get('/users', (_req, res) => res.set('Cache-Control','no-store').json({users:auth.users()}));
+    admin.patch('/users/:id/permissions', (req, res) => {
+        const origin = req.get('Origin');
+        if (req.get('Sec-Fetch-Site') === 'cross-site' || origin && origin !== getOrigin(req)) return res.status(403).json({error:'ORIGIN_MISMATCH'});
+        if (!req.is('application/json')) return res.status(415).json({error:'CONTENT_TYPE_INVALID'});
+        try { res.set('Cache-Control','no-store').json({user:auth.setPermissions(req.params.id,req.body?.permissions,'administrator')}); }
+        catch(error) { res.status(error.message==='USER_NOT_FOUND'?404:400).json({error:error.message}); }
+    });
     const spaces = createDiskSpaces(dataDir, defaultStore);
     const partitions = createDiskPartitions({ dataDir, spaces, s3Credentials: userS3Credentials });
     let objectStorage;
@@ -314,6 +326,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const candidates = files.map(entry => {
             const source = sourceDrive.get(ownerId, entry.id);
             if (!source || ['blocked', 'deleted'].includes(source.reviewStatus) || !source.contentId) throw new Error('CONTENT_COPY_SOURCE_INVALID');
+            assertRisky(targetUser.id,source.name,source.type);
             return { source, folderPath: translate(entry.folderPath) };
         });
         const leases = new Map();
@@ -462,6 +475,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     const file = source.drive.get(source.ownerId, candidate.id);
                     if (!activeReview(file) || file.contentId !== candidate.contentId
                         || String(file.folderPath || '') !== candidate.folderPath) throw diskOperationError('CONTENT_COPY_SOURCE_CHANGED','SOURCE_REFERENCE_CHANGED');
+                    assertRisky(target.ownerId,file.name,file.type);
                     assertVisibleDirectory(source.drive, source.ownerId, file.folderPath || '', 'CONTENT_COPY_SOURCE_INVALID');
                     const physical = content.resolve(file.contentId)?.physical;
                     if (!physical) throw new Error('CONTENT_NOT_AVAILABLE');
@@ -904,7 +918,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     };
     async function prepareRemoteResponse(req, res, backend, file, { inline = false, operationId = '', diskSpace = req.diskScope?.diskSpace ?? req.query.disk_space ?? '', cancelUnusedCacheFill = false } = {}) {
         if (!Number(file.size)) {
-            res.status(200).set({ 'Accept-Ranges': 'bytes', 'Content-Type': file.type || 'application/octet-stream', 'Content-Length': '0', 'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.name)}` });
+            res.status(200).set({ 'Accept-Ranges': 'bytes', 'Content-Type': isRiskyFile(file.name,file.type)?'application/octet-stream':normalizeMime(file.type), 'Content-Length': '0', 'Content-Disposition': `${inline&&!isRiskyFile(file.name,file.type) ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.name)}`, 'X-Content-Type-Options':'nosniff' });
             return { source: Readable.from([]), range: { start: 0, end: -1, partial: false }, abort: new AbortController() };
         }
         const range = parseRange(req.get('Range'), file.size);
@@ -919,10 +933,13 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const length = range.end - range.start + 1;
         res.status(range.partial ? 206 : 200);
         res.set('Accept-Ranges', 'bytes');
-        res.set('Content-Type', file.type || 'application/octet-stream');
+        const risky=isRiskyFile(file.name,file.type);
+        res.set('Content-Type',risky?'application/octet-stream':normalizeMime(file.type));
+        res.set('X-Content-Type-Options','nosniff');
+        if(risky)res.set('Content-Security-Policy','sandbox');
         res.set('Content-Length', String(length));
         if (range.partial) res.set('Content-Range', `bytes ${range.start}-${range.end}/${file.size}`);
-        res.set('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.name)}`);
+        res.set('Content-Disposition', `${inline&&!risky ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(file.name)}`);
         if (operationId) res.set('X-Disk-Operation-Id', operationId);
         if (/^-?\d+$/.test(String(backend.channelId || ''))) res.set('X-Drop2Tunnel-Telegram-Chat-Id', String(backend.channelId));
         return { source, range, abort };
@@ -994,11 +1011,20 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const remaining = Math.min(grant.expiresAt ? Math.max(0, Math.floor((grant.expiresAt - Date.now()) / 1000)) : 31536000,
             staticResources.effectiveCacheSeconds(grant, file));
         if (!remaining) throw new Error('STATIC_NOT_FOUND');
-        res.set('Cache-Control', 'public, max-age=' + Math.min(remaining, 31536000));
-        if (/^(?:text\/html|application\/xhtml\+xml|image\/svg\+xml)(?:;|$)/i.test(String(file.type || '')))
-            res.set('Content-Security-Policy', 'sandbox');
-        if (req.method === 'HEAD') return res.status(200).set({ 'Content-Type': file.type || 'application/octet-stream',
-            'Content-Length': String(file.size), 'Accept-Ranges': 'bytes' }).end();
+        const risky = isRiskyFile(file.name,file.type);
+        // A revoked static link must not survive a shared cache. Active content
+        // never runs as a document under the application's origin.
+        const staticHeaders = () => {
+            res.set('Cache-Control','no-store, max-age=0');
+            res.set('CDN-Cache-Control','no-store');
+            res.set('Content-Type',risky?'application/octet-stream':normalizeMime(file.type));
+            if (risky) {
+                res.set('Content-Security-Policy','sandbox');
+                res.set('Content-Disposition',`attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`);
+            }
+        };
+        staticHeaders();
+        if (req.method === 'HEAD') return res.status(200).set({ 'Content-Length': String(file.size), 'Accept-Ranges': 'bytes' }).end();
         const backend = file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
         const remote = await prepareRemoteResponse(req, res, backend, file, { inline: true, diskSpace: file.sourceDiskSpace??grant.diskSpace });
         if (!remote) return;
@@ -1007,7 +1033,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const afterWait = Math.min(grant.expiresAt ? Math.max(0, Math.floor((grant.expiresAt - Date.now()) / 1000)) : 31536000,
             staticResources.effectiveCacheSeconds(grant, file));
         if (!afterWait) { remote.source.destroy(); throw new Error('STATIC_NOT_FOUND'); }
-        res.set('Cache-Control', 'public, max-age=' + Math.min(afterWait, 31536000));
+        staticHeaders();
         res.removeHeader('X-Drop2Tunnel-Telegram-Chat-Id');
         await pipeline(remote.source, res);
     }));
@@ -1556,6 +1582,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 for (const original of allowedFiles) {
                     if (!original.contentId) source.update(ownerId, original.id, {});
                     const file = source.get(ownerId, original.id);
+                    assertRisky(ownerId,file?.name,file?.type);
                     if (!file?.contentId) throw new Error('CONTENT_COPY_SOURCE_INVALID');
                     const physical = content.resolve(file.contentId)?.physical;
                     if (!physical) throw new Error('CONTENT_NOT_AVAILABLE');
@@ -1740,6 +1767,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 for (const folder of [...directories.keys()].sort((a, b) => a.length - b.length)) target.createDirectory(ownerId, destination(folder), depthFor(req.diskUser.id), 'system');
                 const result = [];
                 for (const file of files.values()) {
+                    assertRisky(ownerId,file.name,file.type);
                     const physical = content.resolve(file.contentId)?.physical;
                     if (!physical) throw new Error('CONTENT_NOT_AVAILABLE');
                     const backend = physical.backendId ? auth.backend(physical.backendId) : getDefaultBackend(physical.channelId);
@@ -1799,9 +1827,10 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         res.json(removed);
     }));
     browser.get('/spaces/s3', (req, res) => res.json({ credential: userS3Credentials.userSpace(req.diskUser.id, req.diskScope.diskSpace), endpoint: getOrigin(req).replace(/\/$/, '') + '/S3API', region: 'us-east-1' }));
-    browser.post('/spaces/s3', wrap((req, res) => res.status(201).json({ credential: userS3Credentials.enableUserSpace(req.diskUser.id, req.diskScope.diskSpace), endpoint: getOrigin(req).replace(/\/$/, '') + '/S3API', region: 'us-east-1' })));
-    browser.post('/spaces/s3/rotate', wrap((req, res) => res.json({ credential: userS3Credentials.rotateUserSpace(req.diskUser.id, req.diskScope.diskSpace), endpoint: getOrigin(req).replace(/\/$/, '') + '/S3API', region: 'us-east-1' })));
-    browser.delete('/spaces/s3', wrap((req, res) => res.json({ credential: userS3Credentials.disableUserSpace(req.diskUser.id, req.diskScope.diskSpace) })));
+    const requireS3Manage = (req, _res, next) => { if (!auth.hasPermission(req.diskUser.id,'disk.s3.manage')) throw new Error('DISK_S3_MANAGE_FORBIDDEN'); next(); };
+    browser.post('/spaces/s3', wrap(requireS3Manage), wrap((req, res) => res.status(201).json({ credential: userS3Credentials.enableUserSpace(req.diskUser.id, req.diskScope.diskSpace), endpoint: getOrigin(req).replace(/\/$/, '') + '/S3API', region: 'us-east-1' })));
+    browser.post('/spaces/s3/rotate', wrap(requireS3Manage), wrap((req, res) => res.json({ credential: userS3Credentials.rotateUserSpace(req.diskUser.id, req.diskScope.diskSpace), endpoint: getOrigin(req).replace(/\/$/, '') + '/S3API', region: 'us-east-1' })));
+    browser.delete('/spaces/s3', wrap(requireS3Manage), wrap((req, res) => res.json({ credential: userS3Credentials.disableUserSpace(req.diskUser.id, req.diskScope.diskSpace) })));
     browser.get('/static-resources', (req, res) => res.json({ links: staticResources.list(req.diskScope) }));
     browser.post('/static-resources', wrap((req, res) => res.status(201).json({ link: staticResources.create(req.diskScope, req.diskStore, req.body || {}) })));
     browser.post('/static-resources/settings', wrap((req, res) => res.status(201).json({ link: staticResources.configureTarget(req.diskScope, req.diskStore, req.body || {}) })));
@@ -2063,6 +2092,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         }));
         router.patch('/files/:id', wrap((req, res) => {
             const file = requireEntity(getFile(req));
+            if (Object.hasOwn(req.body || {}, 'name')) assertRisky(owner(req),req.body.name,file.type);
             const checkWritable=()=>{
                 const selection={kind:'file',id:file.id};
                 const moving=Object.hasOwn(req.body||{},'folderPath')&&assertMoveProtection(req,scope(req),store(req),selection,req.body.folderPath);
@@ -2077,6 +2107,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 const drive = store(req);
                 checkWritable();
                 const modified = persistence.atomic(() => {
+                    if (Object.hasOwn(req.body || {}, 'name')) assertRisky(owner(req),req.body.name,drive.get(owner(req),file.id)?.type);
                     const changed = drive.modifyFile(owner(req), file.id, req.body || {}, depthFor(req.diskUser.id));
                     if (changed.folderPath !== originalPath || changed.name !== originalName) collaborations.relocateFile(owner(req), req.diskScope.diskSpace, file.id, changed.folderPath, changed.name);
                     return changed;
@@ -2411,6 +2442,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const results=[];
             try {
             for(const file of files){
+                assertRisky(owner(req),file?.name,file?.type);
                 if(!Number.isSafeInteger(file?.size) || file.size<0 || file.size>LOGICAL_FILE_UPLOAD_LIMIT)throw new Error('telegram-drive-upload-size-invalid');
                 if(typeof file.name!=='string' || !file.name.trim() || file.name.length>180)throw new Error('telegram-drive-name-invalid');
                 const folder=normalizeTelegramDrivePath(file.folderPath ?? req.body.folderPath ?? '');
@@ -2450,10 +2482,12 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 try { handle = await fsp.open(source.path, 'r'); }
                 catch (_) { throw new Error('TASK_SAVE_SOURCE_UNAVAILABLE'); }
                 const stat = await handle.stat(), current = await resolveTaskSource(req, req.body);
+                assertRisky(actor.id,source.name,source.type);
                 if (!stat.isFile() || stat.size !== source.size || source.size <= 0 || source.size > LOGICAL_FILE_UPLOAD_LIMIT || current.path !== source.path || current.version !== source.version) throw new Error('TASK_SAVE_SOURCE_UNAVAILABLE');
                 const authorization = contentProof.authorization(req);
                 const assertAuthorized = () => {
                     contentProof.assertAuthorization(authorization);
+                    assertRisky(actor.id,source.name,source.type);
                     if (partitions.find(actor.id, context.diskSpace).scopeKey !== context.diskSpace) throw new Error('DISK_SPACE_NOT_FOUND');
                     assertStaticDirectoryWritable(context, diskStore, folderPath);
                     objectStorage.assertWritable(context, [folderPath, source.name].filter(Boolean).join('/'));
@@ -2506,6 +2540,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                 if (!name) throw new Error('SOURCE_PATH_INVALID');
                 return { ...file, name, folderPath: normalizeTelegramDrivePath(parts.join('/')) };
             });
+            for (const file of files) assertRisky(req.diskUser.id,file.name,file.type);
             const limit = LOGICAL_FILE_UPLOAD_LIMIT;
             const progressive = req.body?.progressive === true && typeof telegram.pushChunk === 'function' && typeof telegram.finalizeGroups === 'function';
             if (progressive && activeProgressiveUploads.size >= 20) throw new Error('UPLOAD_ACTIVE_LIMIT');
@@ -2513,6 +2548,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             const job = store(req).begin({ owner: req.diskUser, folderPath: req.body?.folderPath, files, progressive, maxDepth: depthFor(req.diskUser.id), uploadLimit: limit, backendId: storage.id || '', channelId: storage.channelId, sourceAppId: req.diskApp?.appId || 'system', metadata: req.body?.metadata || {} });
             pendingJob = job;
             job.storage = storage;
+            job.assertAuthorized = () => { contentProof.assertAuthorization(contentAuthorization); for(const file of files)assertRisky(req.diskUser.id,file.name,file.type); };
             if (progressive) activeProgressiveUploads.add(job.id);
             try {
                 for(const [index,file] of files.entries()) {
@@ -2746,6 +2782,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
             if (!Number.isSafeInteger(incomingSize) || incomingSize < 0 || incomingSize > LOGICAL_FILE_UPLOAD_LIMIT || (!replacement && incomingSize !== file.size)) throw new Error('REPAIR_SIZE_INVALID');
             if(req.editorSave && incomingSize>20_000_000)throw new Error('FILE_EDIT_TOO_LARGE');
             const incomingType = replacement ? String(req.get('X-Disk-File-Type') || file.type || 'application/octet-stream').slice(0, 120) : file.type;
+            assertRisky(owner(req),file.name,incomingType);
             const operation = operations.create(scope(req), 'repair', req.editorSave ? '正在保存文件正文' : replacement ? '正在替换协同文件' : '正在接收本机修复副本', incomingSize);
             operations.update(operation.operation_id, { folderPath: file.folderPath || '', ...(req.collaboration ? { collaborationId: req.collaboration.id } : {}) }, true);
             const job = store(req).begin({ owner: req.diskUser, folderPath: '', files: [{ name: crypto.randomUUID(), type: incomingType, size: incomingSize }], maxDepth: depthFor(req.diskUser.id), uploadLimit: LOGICAL_FILE_UPLOAD_LIMIT });
@@ -2776,6 +2813,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
                     const previous = { fileId: file.fileId, fileUniqueId: file.fileUniqueId, messageId: file.messageId, mediaGroupId: file.mediaGroupId, parts: file.parts || [] };
                     assertCurrentCollaboration(req);
                     const current=store(req).get(owner(req),file.id);
+                    assertRisky(owner(req),current?.name,incomingType);
                     if(req.diskMount)mountedNamespace.resolve(req.diskViewerId,req.diskLocalScope.diskSpace,req.diskMount.mount.id).file(file.id);
                     if(current?.contentId!==before.contentId || current?.logicalContentVersion!==before.logicalContentVersion || current?.physicalRevision!==before.physicalRevision || current?.name!==before.name || current?.folderPath!==before.folderPath)throw new Error('CONTENT_WRITE_CONFLICT');
                     store(req).update(owner(req), file.id, { ...remote, ...(replacement ? { size: incomingSize, type: incomingType, thumbnail: null,
@@ -2797,6 +2835,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         router.put('/files/:id/content',wrap(async(req,res)=>{req.editorSave=true;await saveContent(req,res);}));
         router.post('/files/content',wrap(async(req,res,next)=>{
             const folder=normalizeTelegramDrivePath(req.query.folderPath||'');
+            assertRisky(owner(req),req.query.name,req.get('X-Disk-File-Type')||'text/plain');
             assertStaticDirectoryWritable(scope(req),store(req),folder);
             const created=store(req).putMetadataObject(req.diskUser,folder,req.query.name,req.get('X-Disk-File-Type')||'text/plain',{},depthFor(owner(req)));
             req.params.id=created.id;req.editorSave=true;req.editorNewId=created.id;req.editorNewVersion=Number(created.logicalContentVersion||0);
@@ -2811,6 +2850,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     contents(browser); contents(external);
     async function uploadObjectStream({ mapping, owner, info, input, size, contentType, expectedSha256, expectedMd5, metadata, replaceId, signal, onProgress }) {
         const sourceAppId = ['media-library', 'download-task', 'system-backup'].includes(mapping.sourceAppId) ? mapping.sourceAppId : 's3';
+        assertRisky(owner.id,info.name,contentType);
         const diskSpace = String(mapping.diskSpace || '');
         const diskStore = spaces.get(diskSpace);
         if (replaceId) assertStaticFileWritable({ userId: owner.id, diskSpace }, diskStore.get(owner.id, replaceId));
@@ -2858,7 +2898,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const job = diskStore.begin({ owner, folderPath: info.folderPath, files: [{ name: info.name, type: contentType, size }], maxDepth: depthFor(owner.id), uploadLimit: LOGICAL_FILE_UPLOAD_LIMIT,
             backendId: storage.id || '', channelId: storage.channelId, sourceAppId, metadata, replaceId });
         job.storage = storage;
-        job.assertAuthorized = mapping.assertAuthorized;
+        job.assertAuthorized = () => { mapping.assertAuthorized?.(); assertRisky(owner.id,info.name,contentType); };
         try {
             const operation = operations.create(req.diskScope, 'upload', `${sourceAppId === 's3' ? 'S3 上传' : sourceAppId === 'download-task' ? '抓取任务转存' : sourceAppId === 'system-backup' ? '系统备份' : '媒体收藏转存'}：${info.key}`, size);
             job.operationId = operation.operation_id;
@@ -2958,7 +2998,8 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         uploadStream: uploadObjectStream, queueTelegram: enqueueTelegramUpload, onContentDelete: cleanupDeletedContent,
         protectFile: (userId, diskSpace, id) => collaborations.protectFile(userId, diskSpace, id)
             || staticResources.protectFile({ userId, diskSpace }, spaces.get(diskSpace).get(userId, id)),
-        protectDirectory: (userId, diskSpace, folder) => staticResources.protectDirectory({ userId, diskSpace }, spaces.get(diskSpace), folder), maxDepth:scope=>depthFor(scope.userId), mountedNamespace });
+        protectDirectory: (userId, diskSpace, folder) => staticResources.protectDirectory({ userId, diskSpace }, spaces.get(diskSpace), folder), maxDepth:scope=>depthFor(scope.userId), mountedNamespace,
+        assertRiskyUpload: assertRisky });
     browser.use(failure); external.use(failure);
     return { browser, external, admin, shared, publicStatic, spaces, objectStorage, retryCaptions, retryRemoteCleanup, metadataTiming, expireIdleUploads,
         revokeContentSession: req => contentProof.revokeSession(req),

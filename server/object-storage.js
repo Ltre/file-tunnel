@@ -30,7 +30,7 @@ function parseByteRange(header, size) {
     if (![start, end].every(Number.isSafeInteger) || start < 0 || start >= size || end < start) throw new Error('InvalidRange');
     return { start, end: Math.min(end, size - 1), partial: true };
 }
-function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange, uploadStream, queueTelegram, onContentDelete = async () => {}, protectFile = () => false, protectDirectory = () => false, maxDepth = () => 30, mountedNamespace }) {
+function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRange, uploadStream, queueTelegram, onContentDelete = async () => {}, protectFile = () => false, protectDirectory = () => false, maxDepth = () => 30, mountedNamespace, assertRiskyUpload = () => {} }) {
     const scopeOf = mapping => ({ userId: String(mapping.userId), diskSpace: String(mapping.diskSpace || '') });
     const storeOf = mapping => spaces.get(scopeOf(mapping).diskSpace);
     const backendOf = file => file.backendId ? auth.backend(file.backendId) : getDefaultBackend(file.channelId);
@@ -79,6 +79,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
         mountedNamespace?.assertWritable(mapping,key);
         const info = objectKey(key), current = stat(mapping, key), store = storeOf(mapping), owner = auth.user(scopeOf(mapping).userId);
         if (!owner) throw new Error('AccessDenied');
+        if (!info.folder) assertRiskyUpload(owner.id,info.name,contentType);
         if (!Number.isSafeInteger(size) || size < 0 || size > UPLOAD_LIMIT) throw new Error('EntityTooLarge');
         if (info.folder && size !== 0) throw new Error('InvalidObjectName');
         if (info.folder && protectDirectory(owner.id, scopeOf(mapping).diskSpace, info.path)) throw new Error('AccessDenied');
@@ -132,6 +133,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
             return put(toMapping, toKey, Readable.from([]), { size: 0, contentType: source.type, metadata: source.directory.s3Marker.metadata || {} });
         }
         if (target.folder) throw new Error('InvalidObjectName');
+        assertRiskyUpload(scopeOf(toMapping).userId,target.name,source.type);
         const fromBackend = backendOf(source.file), toBackend = uploadBackend(toMapping);
         const sameBackend = String(fromBackend.token) === String(toBackend.token) && String(fromBackend.baseUrl || '') === String(toBackend.baseUrl || '');
         if (!sameBackend) {
@@ -141,13 +143,14 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
         if (!source.size) return put(toMapping, toKey, Readable.from([]), { size: 0, contentType: source.type, metadata: source.file.metadata || {} });
         const store = storeOf(toMapping), owner = auth.user(scopeOf(toMapping).userId), current = stat(toMapping, toKey);
         if (!owner) throw new Error('AccessDenied');
+        assertRiskyUpload(owner.id,target.name,source.type);
         if (current?.file && protectFile(owner.id, scopeOf(toMapping).diskSpace, current.file.id)) throw new Error('AccessDenied');
         const logicalId = current?.file?.id || crypto.randomUUID();
         if(source.file.contentId) {
             // S3 credentials already authorize the source object. This is a
             // reference transaction, not a Telegram file_id resend.
             if(scopeOf(fromMapping).userId !== scopeOf(toMapping).userId) throw new Error('AccessDenied');
-            fromMapping.assertAuthorized?.(); toMapping.assertAuthorized?.();
+            fromMapping.assertAuthorized?.(); toMapping.assertAuthorized?.(); assertRiskyUpload(owner.id,target.name,source.type);
             return store.putCopiedObject(owner,target.folderPath,target.name,source.file,source.file.parts,fromBackend,maxDepth(scopeOf(toMapping)),current?.file?.id || '',logicalId);
         }
         const physical = (source.file.parts || []).map((part, index) => ({ fileIndex: 0, logicalFileId: logicalId, partIndex: index + 1, partCount: source.file.parts.length, originalSize: source.size, offset: part.offset, size: part.size, sha256: part.sha256, reuseFileId: part.fileId, reuseFileUniqueId: part.fileUniqueId, name: target.name, type: source.type }));
@@ -155,7 +158,7 @@ function createObjectStorage({ spaces, auth, telegram, getDefaultBackend, openRa
             for (const part of physical) await telegram.call(toBackend, 'getFile', { file_id: part.reuseFileId });
             return telegram.uploadPhysical(toBackend, [{ name: target.name, size: source.size, type: source.type, folderPath: target.folderPath, logicalId: physical[0].logicalFileId }], physical, () => {}, { userId: owner.id, diskSpace: scopeOf(toMapping).diskSpace });
         });
-        try { fromMapping.assertAuthorized?.(); toMapping.assertAuthorized?.(); return store.putCopiedObject(owner, target.folderPath, target.name, source.file, remotes, toBackend, maxDepth(scopeOf(toMapping)), current?.file?.id || '', logicalId); }
+        try { fromMapping.assertAuthorized?.(); toMapping.assertAuthorized?.(); assertRiskyUpload(owner.id,target.name,source.type); return store.putCopiedObject(owner, target.folderPath, target.name, source.file, remotes, toBackend, maxDepth(scopeOf(toMapping)), current?.file?.id || '', logicalId); }
         catch (error) { await telegram.remove(toBackend, { name: target.name, channelId: toBackend.channelId, createdAt: Date.now(), parts: remotes }).catch(() => {}); throw error; }
     }
     return { assertWritable:(mapping,key,options)=>mountedNamespace?.assertWritable(mapping,key,options),stat, list, open, openFile, put, remove, deleteFile, copy, keyInfo: objectKey, parseByteRange, limit: UPLOAD_LIMIT, partSize: MAX_TELEGRAM_PART_SIZE };

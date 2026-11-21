@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>用户管理 · Drop2Tunnel</title><link rel="stylesheet" href="/client/admin-overview.css"><script defer src="/client/admin-users.js"></script>
+<style>
+main{max-width:1100px;margin:auto;padding:24px}table{width:100%;border-collapse:collapse;background:#fff;color:#17212f;border-radius:8px;overflow:hidden}td,th{padding:12px;text-align:left;border-bottom:1px solid #dde5ed}th{white-space:nowrap;background:#f1f5f9}td small{display:block;color:#64748b}.actions{white-space:nowrap}label{display:inline-flex;align-items:center;gap:6px}button{cursor:pointer}#notice{min-height:24px;margin:14px 0}tr[aria-busy="true"]{opacity:.55}@media(max-width:730px){table{display:block;overflow-x:auto}main{padding:12px}}
+</style></head>
+<body><main><h1>用户管理</h1><p>三项权限默认关闭。仅为明确指定的可信账号开启；权限变更立即由服务端生效。</p>
+<button type="button" id="reload">刷新账号</button><p id="notice" role="status"></p>
+<table><thead><tr><th>账号</th><th>S3 开关</th><th>风险文件上传</th><th>网页 ZIP 创建／编辑／发送</th><th>操作</th></tr></thead><tbody id="users"></tbody></table>
+</main></body></html>

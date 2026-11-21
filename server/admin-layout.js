@@ -1,8 +1,9 @@
 'use strict';
 const path = require('node:path');
-const ADMIN_PAGES = ['/admin', '/admin/home', '/admin/tunnels', '/admin/tunnel-permissions', '/admin/devices', '/admin/magnets', '/tgbot', '/sns-cookies', '/sns-dl', '/youtube-premium-dl', '/upstream-exits', '/media-library', '/video-transcode', '/disk-management', '/s3-management', '/data-usage', '/system-backup', '/telegram-content', '/vclient', '/video-transcode-guide.html'];
+const ADMIN_PAGES = ['/admin', '/admin/home', '/admin/users', '/admin/tunnels', '/admin/tunnel-permissions', '/admin/devices', '/admin/magnets', '/tgbot', '/sns-cookies', '/sns-dl', '/youtube-premium-dl', '/upstream-exits', '/media-library', '/video-transcode', '/disk-management', '/s3-management', '/data-usage', '/system-backup', '/telegram-content', '/vclient', '/video-transcode-guide.html'];
 
 function registerAdminLayout(app, { requireAuth, root }) {
+    app.get('/admin/users', requireAuth, (_req,res) => res.set('Cache-Control','no-store').sendFile(path.join(root,'pages','admin-users.html')));
     app.get('/admin/home', requireAuth, (_req, res) => {
         res.setHeader('Cache-Control', 'no-store');
         res.sendFile(path.join(root, 'pages', 'admin.html'));
