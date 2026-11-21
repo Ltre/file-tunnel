@@ -95,7 +95,9 @@
 
 第六轮（2026-11-17）当时逐文件核对同一分支两端的 Git tree：`pages/**` 为 **30** 个；`client/**` 101 → **116**（新增 15）；`server/**` 94 → **95**（新增 1）；`tests/**` 299 → **332**（新增 33，另有 11 个测试/夹具文件修改）；`tools/**` 50 → **52**（新增 2，另有部署构建脚本修改）。以上为第六轮历史快照，不代表第七轮后的当前计数。
 
-第七轮只在当前 `dev/doc-overview` 分支比较上一轮源码锚点 `80c092aa1e50124f730e918215f1e7fa7d55a52a` → `1da33930cfb0f7022114825e2cb300ce18ff4eae`，共 **23 个提交、137 个非 `docs/overview/**` 变更文件**（68 新增、67 修改、2 删除）；没有检视其它分支。同一分支 Git tree 复核：Pages **30 → 31**、Client **116 → 121**（新增 6、移除旧 `fa.json` 1）、Server **95 → 98**、Tests **332 → 358**（新增 26、修改 14）、Tools **52 → 58**（新增 6）。新增上游出口管理、P2P 基线恢复与线路诊断、Web ZIP 同源副本同步、下载兜底、移动端 History/拖动和德语包等，详见第 5.10、6.10、7.2 节及对应模块文档。
+第七轮（2026-11-19）只在当前 `dev/doc-overview` 分支比较上一轮源码锚点 `80c092aa1e50124f730e918215f1e7fa7d55a52a` → `1da33930cfb0f7022114825e2cb300ce18ff4eae`，共 **23 个提交、137 个非 `docs/overview/**` 变更文件**（68 新增、67 修改、2 删除）；没有检视其它分支。同一分支 Git tree 复核：Pages **30 → 31**、Client **116 → 121**、Server **95 → 98**、Tests **332 → 358**、Tools **52 → 58**。
+
+第八轮（2026-11-21）只在当前 `dev/doc-overview` 分支比较 `1da33930cfb0f7022114825e2cb300ce18ff4eae` → `4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`，共 **22 个提交、47 个非 `docs/overview/**` 变更文件**（38 修改、9 新增）；没有检视其它分支。同一分支 Git tree 复核：Pages **31 → 31**、Client **121 → 121**、Server **98 → 99**、Tests **358 → 365**、Tools **58 → 58**。新增上游节点格式互转、浏览器日志滚动保留、来源授权诊断与目标副本恢复、重入限流修正等，详见第 5.11、6.11、7.3 节及对应模块文档。
 
 所以：
 
@@ -254,6 +256,19 @@
 
 **验收结果：当前 121 个 `client/**` 文件均有明确模块归属。**
 
+### 5.11 2026-11-20—21 客户端修改
+
+本轮没有新增 Client 文件，修改的客户端入口均归入既有模块：
+
+| 修改文件 | 对应 Overview |
+|---|---|
+| `client/browser-logs.js` | `admin-security-deployment.md`（日志滚动保留、配额回收） |
+| `client/file-assets.js` | `transfer-cache.md`（DataChannel 排空期间的发送进度） |
+| `client/tunnel-entry.js`、`app.js` | `tunnel-core.md`、`pwa-ui.md`（已授权成员重入与限流提示；来源拒绝诊断） |
+| `client/upstream-exits.js/.css`、`pages/upstream-exits.html` | `upstream-exits.md`、`admin-security-deployment.md`（批量节点操作） |
+| `client/disk-directory-picker.css` | `telegram-drive.md`（目录选择高亮，仅视觉调整） |
+| `client/i18n-catalog.js`、`client/i18n-bootstrap.js`、14 个按需语言 JSON | `pwa-ui/localization.md`（日志滚动保留策略文案） |
+
 ## 6. 当前服务端模块覆盖表
 
 ### 6.1 管理/基础设施
@@ -370,7 +385,13 @@
 - `server/upstream-exits.js`、`server/upstream-exit-routes.js` → [upstream-exits.md](./upstream-exits.md)、`architecture.md`、`admin-security-deployment.md`；
 - `server/youtube-reference-language.js` → `download-transcode.md`（仅 YouTube 可选参考信息的地区语言回退）。
 
-**验收结果：当前 98 个 `server/**` 文件均有明确模块归属。**
+**验收结果：当前 99 个 `server/**` 文件均有明确模块归属。**
+
+### 6.11 2026-11-20—21 新增/修改服务端
+
+- 新增 `server/trojan-node-formats.js` → [upstream-exits.md](./upstream-exits.md)（八种 Trojan 节点交换格式的解析/导出）；
+- 修改 `server/upstream-exits.js`、`server/upstream-exit-routes.js` → `upstream-exits.md`、`admin-security-deployment.md`（批量导入/导出 API、原子追加和管理员鉴权）；
+- 修改 `server.js` → `tunnel-core.md`、`transfer-cache.md`、`admin-security-deployment.md`（短码已授权重入限流、静态壳读取例外、目标副本受限恢复和来源拒绝诊断）。
 
 ## 7. 工具链覆盖
 
@@ -421,23 +442,23 @@
 
 ### 7.1 测试树增量
 
-第六轮 `tests/**` 从 299 增至 332 个文件：新增 33 个测试文件，另修改 11 个既有测试/夹具；本轮增量后当前为 358 个。新增测试按模块列于 [tests-and-regressions.md](./tests-and-regressions.md)，不是 33 项全部独立的新业务功能；其中包含对旧网盘账号、挂载、登录和部署路径补回的回归覆盖。
+第六轮 `tests/**` 从 299 增至 332 个文件：新增 33 个测试文件，另修改 11 个既有测试/夹具；第七轮增至 358 个，第八轮再增 7 个至当前 **365** 个。新增测试按模块列于 [tests-and-regressions.md](./tests-and-regressions.md)，不是全部独立的新业务功能；其中包含对旧路径的回归覆盖。
 
 ### 7.2 2026-11-11—19 新增工具文件 6 项
 
 - `tools/sing-box/README.md`、`manifest.json`、`win-x64/sing-box.exe`、`win-x64/LICENSE`、`linux-x64/sing-box`、`linux-x64/LICENSE` → [upstream-exits.md](./upstream-exits.md)、`admin-security-deployment.md`；
 - `tools/deploy/build.mjs`、`tools/deploy/verify.mjs` 同步修改：构建复制 sing-box 运行文件，发布校验识别上游出口管理路由。
 
-**当前目录计数：Pages 31、Client 121、Server 98、Tests 358、Tools 58。**
+**第七轮结束时目录计数：Pages 31、Client 121、Server 98、Tests 358、Tools 58。**
 
 ## 8. 根入口覆盖
 
 - `AGENTS.md` → 参与项目协作和 Overview 维护的长期约定，参见 `master.md`、`admin-security-deployment.md`；
 - `app.js` → 多模块前端 orchestrator，详见 `architecture.md` 与各功能模块；
 - `server.js` → 多模块服务端 orchestrator，详见 `architecture.md` 与各功能模块；
-- `service-worker.js` → `pwa-ui.md` + `web-workshop.md`；
+- `service-worker.js` → `pwa-ui.md` + `web-workshop.md`；当前静态资源版本为 `instant-tunnel-v155-content-v8-261121-rejoin`，业务 `content-v8` 语义不变；
 - `manifest.webmanifest` → `pwa-ui.md`；
-- `package.json` → `architecture.md`、`admin-security-deployment.md`、相关工具文档；
+- `package.json` / `package-lock.json` → `architecture.md`、`admin-security-deployment.md`、`upstream-exits.md`；本轮新增固定版本 `yaml@2.8.2`，用于 Clash YAML 节点交换格式；
 - `tunnel.config.json` → 部署/运行时配置，归属 `admin-security-deployment.md`；
 - start scripts / Nginx config → `admin-security-deployment.md`。
 
@@ -496,6 +517,8 @@
 
 2026-10 后续已整理至 261019-2：二维码与旧成员资格、媒体结果删除和收藏目录、网盘源端失联、YouTube 手写格式及服务端转存。测试对应 `tests/features-261017-3/4.test.cjs`、`features-261018-1.test.cjs`、`features-261019-1.test.cjs`、`features-261019-2*.test.cjs` 及 browser fixture。
 
+2026-11-20—21 增量见第八轮：Trojan 节点格式互转与批量检查、浏览器日志滚动保留、跨隧道来源诊断和目标副本受限恢复、DataChannel 排空进度、短码重入限流、网盘目录选择高亮。依据 `docs/devlog/dev-2611.md`、`prompts/dev-prompt-logs/dev-2611.md`、`docs/guide/Drop2Tunnel-User-Manual.zh-CN.md` 和本分支实际源码/测试。
+
 2026-11 当前增量证据包括 `docs/devlog/dev-2611.md`、`docs/devlog/version-compare-261116_1754-0de94882c998bd6d1556e80954fa3840835e0746.md`、`docs/devlog/version-compare-261118_0555-0de94882c998bd6d1556e80954fa3840835e0746.md` 及对应 `[QA]...txt`。它们记录版本差异、失败证据、修复边界和开发阶段测试；不能将隔离环境通过等同于真实 Android、正式 Telegram 或所有上游服务验收。用户操作说明同步见 `docs/guide/Drop2Tunnel-User-Manual.zh-CN.md` 第 29 章。
 
 ## 10. 计划/Idea 的处理
@@ -524,7 +547,7 @@
 - [x] 主要历史阶段有时间线；
 - [x] 当前 31 个 Pages 有归属；
 - [x] 当前 121 个 Client 文件有归属；
-- [x] 当前 98 个 Server 文件有归属；
+- [x] 当前 99 个 Server 文件有归属；
 - [x] 当前工具/VClient 有归属；
 - [x] 未来 Idea 与当前实现分离；
 - [x] Overview 后续增量扫描规则已明确；
@@ -533,4 +556,13 @@
 
 以上条件已经全部满足，**初始 Overview 创建阶段正式关闭**。
 
-当前已完成第七轮增量维护，下一轮源码比较锚点为 `1da33930cfb0f7022114825e2cb300ce18ff4eae`，维护规则以 [VERSION.md](./VERSION.md) 为准。
+当前已完成第八轮增量维护，下一轮源码比较锚点为 `4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`，维护规则以 [VERSION.md](./VERSION.md) 为准。
+
+
+### 7.3 2026-11-20—21 测试树增量
+
+- `tests/**` 从 **358 增至 365**：新增 7 个测试文件、修改 5 个既有测试；无删除。
+- 新增：`browser-logs-rolling-261120.browser.cjs`、`requirements-261120.browser.cjs`、`source-access-diagnostic-261120.browser.cjs`、`source-access-feedback-261120.test.cjs`、`trojan-formats-261120.test.cjs`、`tunnel-rejoin-rate-limit-261121.browser.cjs`、`tunnel-rejoin-rate-limit-261121.test.cjs`。
+- 修改：`browser-logs-261103.browser.cjs`、`forwarded-server-assets-261117.test.cjs`、`source-access-261107.test.cjs`、`transfer-baseline-261116.test.cjs`、`whole-file-progress-261116.test.cjs`。
+
+**当前目录计数：Pages 31、Client 121、Server 99、Tests 365、Tools 58。**
