@@ -11308,7 +11308,21 @@ io.on('connection', (socket) => {
                 // A cold runtime must recover a confirmed webpage publication,
                 // including its pending sync state, from the durable record.
                 const savedWebZip = !session.history.some(entry => entry.message.id === message.id) && infraStore?.getHistoryMessage?.(sessionId,message.id);
-                if (savedWebZip?.webZipUpdateVersion) message = savedWebZip;
+                const restoredFromServer = Boolean(savedWebZip?.webZipUpdateVersion);
+                if (restoredFromServer) message = savedWebZip;
+                const restoredWebZipFiles = webZipFiles(message).filter(isWebZipFile);
+                if (restoredWebZipFiles.length) {
+                    // Reconciliation is a second publication path, not merely
+                    // a read: never trust a browser snapshot as an old signed
+                    // record or let it bypass the normal Socket.IO authorizer.
+                    const trusted = restoredFromServer
+                        ? restoredWebZipFiles.every(file => validWebZipStamp(file,message.id,sessionId,
+                            webZipTrustIntegrityStamp.accountId(file.webZipTrustIntegrityStamp)))
+                        : message.sender === currentDevice && canSocketPublishWebZip(socket)
+                            && canUseTunnelCapability(session,currentDevice,'sendWebZip')
+                            && validWebZipMessage(message,sessionId,webZipAccount(socket));
+                    if (!trusted) { rejectedCount++; continue; }
+                }
                 if (message.type === 'markdown' || message.markdownAttachments || message.snsMarkdownProgress || message.snsMarkdownRevision) {
                     // A browser snapshot cannot create or change server-owned attachments.
                     const live = getHistoryMessageEntry(session, message.id)?.message;

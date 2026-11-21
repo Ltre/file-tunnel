@@ -8,7 +8,9 @@ const path=require('node:path');
 
 const COOKIE_NAME='__Host-tunnel_admin_session';
 const PENDING_COOKIE='__Host-tunnel_admin_dbsc_pending';
-const COOKIE_SECONDS=120;
+// Chrome proactively refreshes DBSC credentials within two minutes of expiry.
+// A two-minute cookie would therefore trigger refresh on almost every request.
+const COOKIE_SECONDS=300;
 const PENDING_MS=120000;
 const SESSION_MS=7*24*60*60*1000;
 const cleanId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{20,128}$/.test(value)?value:'';
@@ -29,7 +31,7 @@ function parseStructuredString(value){
     if(text.startsWith('"')){try{return JSON.parse(text);}catch(_){return '';}}
     return text;
 }
-function verifyProof(token,expectedJwk,challenge,registration=false){
+function verifyProof(token,expectedJwk,challenge,registration=false,{audience='',sessionId=''}={}){
     if(typeof token!=='string'||token.length>8192||!/^[-\w]+\.[-\w]+\.[-\w]+$/.test(token))return null;
     try{
         const [h,p,s]=token.split('.');
@@ -37,15 +39,32 @@ function verifyProof(token,expectedJwk,challenge,registration=false){
         const claims=JSON.parse(Buffer.from(p,'base64url').toString('utf8'));
         if(header.typ!=='dbsc+jwt'||!['ES256','RS256'].includes(header.alg)||claims.jti!==challenge)return null;
         if(!registration&&header.jwk!==undefined)return null;
-        if(registration&&(!header.jwk||typeof header.jwk!=='object'||header.jwk.d))return null;
-        const jwk=registration?header.jwk:expectedJwk;
-        if(!jwk||header.alg==='ES256'&&(jwk.kty!=='EC'||jwk.crv!=='P-256')||header.alg==='RS256'&&jwk.kty!=='RSA')return null;
+        const payloadKey=claims.key;
+        const modern=payloadKey!==undefined;
+        // Chrome versions use both the original JWK-in-header format and the
+        // newer W3C JWK-in-payload format. Never accept ambiguous key sources.
+        if(registration&&Boolean(header.jwk)===modern)return null;
+        if(modern){
+            if(!payloadKey||typeof payloadKey!=='object'||payloadKey.d||
+                !audience||claims.aud!==audience||!Number.isFinite(claims.iat)||
+                Math.abs(Date.now()/1000-claims.iat)>600)return null;
+            if(!registration&&claims.sub!==sessionId)return null;
+        }
+        if(claims.aud!==undefined&&claims.aud!==audience)return null;
+        if(!registration&&claims.sub!==undefined&&claims.sub!==sessionId)return null;
+        const jwk=registration?(modern?payloadKey:header.jwk):expectedJwk;
+        if(!jwk||typeof jwk!=='object'||jwk.d)return null;
+        if(header.alg==='ES256'&&(jwk.kty!=='EC'||jwk.crv!=='P-256')||header.alg==='RS256'&&jwk.kty!=='RSA')return null;
         if(!registration&&header.alg!==(jwk.kty==='EC'?'ES256':'RS256'))return null;
         const key=crypto.createPublicKey({key:jwk,format:'jwk'});
         if(header.alg==='RS256'&&key.asymmetricKeyDetails?.modulusLength<2048)return null;
         const good=crypto.verify('sha256',Buffer.from(h+'.'+p),
             {key,dsaEncoding:header.alg==='ES256'?'ieee-p1363':'der'},Buffer.from(s,'base64url'));
         if(!good)return null;
+        if(!registration&&modern){
+            const supplied=crypto.createPublicKey({key:payloadKey,format:'jwk'}).export({format:'jwk'});
+            if(JSON.stringify(supplied)!==JSON.stringify(key.export({format:'jwk'})))return null;
+        }
         // Retain only public parameters. Never persist caller-controlled JWK extras.
         return {jwk:key.export({format:'jwk'}),alg:header.alg};
     }catch(_){return null;}
@@ -56,6 +75,14 @@ function deviceInfo(agent){
     const browser=/(?:Edg|OPR|Chrome|Firefox|Version)\/[\d.]+/.exec(ua)?.[0]||'未知';
     const model=/(?:Pixel|SM-[A-Z0-9]+|iPhone|iPad|Redmi|Mi )[^;) ]*/i.exec(ua)?.[0]||'未提供';
     return {model,os,browser,userAgent:ua};
+}
+
+function endpointAudience(req,route){
+    const host=String(req.get?.('host')||req.headers?.host||'');
+    if(!/^[\w.:[\]-]+$/.test(host))return '';
+    const local=/^(?:localhost|127\.0\.0\.1|\[::1\])(?::|$)/i.test(host);
+    const scheme=local&&req.protocol==='http'?'http':'https';
+    return `${scheme}://${host}${route}`;
 }
 
 function createAdminDbscSessions({dataDir,signingKey,marker}){
@@ -112,7 +139,8 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
         // Registration is a native browser request; no JS-provided public key
         // or device fingerprint is accepted in place of its signed DBSC JWT.
         if(!item||item.expiresAt<=Date.now())return null;
-        const proof=verifyProof(parseStructuredString(req.get('Secure-Session-Response')),null,item.challenge,true);
+        const proof=verifyProof(parseStructuredString(req.get('Secure-Session-Response')),null,item.challenge,true,
+            {audience:endpointAudience(req,'/api/admin/auth/dbsc/register')});
         if(!proof)return null;
         pending.delete(id);
         const now=Date.now(),session={id:random(),accountId:'administrator',marker:marker(),publicKey:proof.jwk,algorithm:proof.alg,
@@ -128,7 +156,8 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
         if(!id)return {status:403};
         const sessions=load(),session=sessions.find(value=>value.id===id);
         if(!session||session.revokedAt||!session.boundAt||session.expiresAt<=Date.now()||session.marker!==marker())return {status:403};
-        const proof=session.refreshChallenge&&verifyProof(parseStructuredString(req.get('Secure-Session-Response')),session.publicKey,session.refreshChallenge);
+        const proof=session.refreshChallenge&&verifyProof(parseStructuredString(req.get('Secure-Session-Response')),session.publicKey,session.refreshChallenge,false,
+            {audience:endpointAudience(req,'/api/admin/auth/dbsc/refresh'),sessionId:id});
         if(proof&&session.refreshChallenge&&session.refreshChallengeAt+60000>Date.now()){
             session.refreshChallenge='';session.refreshChallengeAt=0;
             session.lastRefreshAt=Date.now();session.lastActivityAt=Date.now();save(sessions);

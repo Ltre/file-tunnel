@@ -9,8 +9,9 @@ function totp(secret){const alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567',bytes=[]
     const h=crypto.createHmac('sha1',Buffer.from(bytes)).update(counter).digest(),offset=h[19]&15;
     return String((h.readUInt32BE(offset)&0x7fffffff)%1000000).padStart(6,'0');
 }
-function proof(pair,jti,register){const header={typ:'dbsc+jwt',alg:'ES256',...(register?{jwk:pair.publicKey.export({format:'jwk'})}:{})};
-    const signed=b64(header)+'.'+b64({jti});return signed+'.'+crypto.sign('sha256',Buffer.from(signed),{key:pair.privateKey,dsaEncoding:'ieee-p1363'}).toString('base64url');}
+function proof(pair,jti,audience){const header={typ:'dbsc+jwt',alg:'ES256'};
+    const claims={jti,aud:audience,iat:Math.floor(Date.now()/1000),key:pair.publicKey.export({format:'jwk'})};
+    const signed=b64(header)+'.'+b64(claims);return signed+'.'+crypto.sign('sha256',Buffer.from(signed),{key:pair.privateKey,dsaEncoding:'ieee-p1363'}).toString('base64url');}
 test('trusted account publishes SHA-only Web ZIP; tamper, cross-record use and subsequent permission revocation fail closed',async t=>{
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'webzip-trusted-e2e-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
     const secret='JBSWY3DPEHPK3PXP';fs.writeFileSync(path.join(dir,'.gauth-admin.json'),JSON.stringify({secret,createdAt:'test-marker'}));
@@ -24,7 +25,8 @@ test('trusted account publishes SHA-only Web ZIP; tamper, cross-record use and s
     const pending=cookie(login,'__Host-tunnel_admin_dbsc_pending'),challenge=/challenge="([^"]+)"/.exec(login.headers.get('Secure-Session-Registration'))?.[1];
     assert.ok(pending&&challenge);
     const pair=crypto.generateKeyPairSync('ec',{namedCurve:'P-256'});
-    const bound=await json(root+'/api/admin/auth/dbsc/register',{}, {Cookie:pending,'Secure-Session-Response':proof(pair,challenge,true)});
+    const bound=await json(root+'/api/admin/auth/dbsc/register',{}, {Cookie:pending,
+        'Secure-Session-Response':proof(pair,challenge,root+'/api/admin/auth/dbsc/register')});
     assert.equal(bound.status,200);const adminCookie=cookie(bound,'__Host-tunnel_admin_session');assert.ok(adminCookie);
 
     const start=await fetch(root+'/api/telegram/drive/oidc/start',{redirect:'manual'});assert.equal(start.status,302);
@@ -44,11 +46,32 @@ test('trusted account publishes SHA-only Web ZIP; tamper, cross-record use and s
     const sessionId=crypto.randomUUID(),deviceId=crypto.randomUUID(),messageId=crypto.randomUUID(),fileId=crypto.randomUUID();
     socket.emit('join-session',{sessionId,deviceId,deviceName:'Trusted device',createTunnel:true});
     const grant=(await grantPromise).grant;await new Promise(resolve=>setTimeout(resolve,80));
+    // Reconciliation is also a write path. An unauthenticated socket may not
+    // smuggle an unsigned executable archive through its restored history.
+    const unsignedId=crypto.randomUUID();
+    const reconciliation=new Promise(resolve=>socket.once('session-history',resolve));
+    socket.emit('history-reconcile',{sessionId,messages:[{id:unsignedId,sender:deviceId,type:'file',timestamp:Date.now(),
+        fileInfo:{id:crypto.randomUUID(),name:'restored.html.zip',type:'application/zip',webZip:true,size:4}}]});
+    const recovered=await reconciliation;
+    assert.equal(recovered.messages.some(message=>message.id===unsignedId),false,'unsigned web ZIP must not be restored into server history');
     const authorize=await json(root+'/api/telegram/web-zip/socket-auth',{sessionId,deviceId,socketId:socket.id,accessGrant:grant},{Cookie:diskCookie});
     assert.equal(authorize.status,200);const body=await authorize.json();
     const emit=(event,data)=>new Promise((resolve,reject)=>socket.timeout(5000).emit(event,data,(error,value)=>error?reject(error):resolve(value)));
     assert.equal((await emit('web-zip-auth',{proof:body.proof})).ok,true);
     const sha256=crypto.createHash('sha256').update('original ZIP bytes fixture').digest('hex');
+    const restoredMessageId=crypto.randomUUID(),restoredFileId=crypto.randomUUID(),forgedMessageId=crypto.randomUUID();
+    const restoredStamp=await emit('web-zip-stamp',{sessionId,messageId:restoredMessageId,fileId:restoredFileId,sha256});
+    assert.equal(restoredStamp.ok,true);
+    const restoredFile={id:restoredFileId,name:'restored.html.zip',type:'application/zip',webZip:true,size:26,
+        webZipSha256:sha256,webZipTrustIntegrityStamp:restoredStamp.stamp};
+    const signedReconciliation=new Promise(resolve=>socket.once('session-history',resolve));
+    socket.emit('history-reconcile',{sessionId,messages:[
+        {id:restoredMessageId,sender:deviceId,type:'file',timestamp:Date.now(),fileInfo:restoredFile},
+        {id:forgedMessageId,sender:deviceId,type:'file',timestamp:Date.now(),fileInfo:restoredFile}
+    ]});
+    const signedSnapshot=await signedReconciliation;
+    assert.equal(signedSnapshot.messages.some(message=>message.id===restoredMessageId),true,'signed same-record restore must still work');
+    assert.equal(signedSnapshot.messages.some(message=>message.id===forgedMessageId),false,'a stamp cannot be moved to another restored record');
     const stamped=await emit('web-zip-stamp',{sessionId,messageId,fileId,sha256});assert.equal(stamped.ok,true);
     const recorded=new Promise(resolve=>socket.once('message-ack',resolve));
     socket.emit('message',{sessionId,message:{id:messageId,sender:deviceId,type:'file',timestamp:Date.now(),
