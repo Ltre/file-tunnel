@@ -1,7 +1,7 @@
 # 上游网络出口管理、Trojan 节点与任务级路由
 
-> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`
-> **文档更新时间**：2026-11-19
+> **源码基线 Commit**：`4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`
+> **文档更新时间**：2026-11-21
 
 ## 1. 模块定位
 
@@ -102,7 +102,9 @@ SNS 和 YouTube Premium 页面在格式解析表单中提供“网络出口”�
 
 
 - `GET /api/upstream-exits`：读取节点、服务策略及运行状态；
-- `POST /api/upstream-exits/nodes`、`PUT/DELETE /api/upstream-exits/nodes/:id`：节点管理；
+- `POST /api/upstream-exits/nodes`、`PUT/DELETE /api/upstream-exits/nodes/:id`：单节点管理；
+- `POST /api/upstream-exits/nodes/import`：批量导入节点文本；
+- `POST /api/upstream-exits/nodes/export`：按所选节点 ID 和格式生成附件下载；
 - `PUT /api/upstream-exits/services/:id`：独立保存服务策略；
 - `POST /api/upstream-exits/test`：指定出口测试网页；
 - `POST /api/upstream-exits/confirm`：用户主动确认出口 IP。
@@ -111,12 +113,21 @@ Trojan 节点列表位于左侧，右侧显示所选节点窄表单；上游服�
 
 出口 IP/网页测试由用户点击触发，固定使用指定出口，不自动轮换；不做后台 IP 轮询、地区推断或自动节点排序。
 
+### 批量节点管理
+
+- 管理页提供批量导入、批量导出和批量连通性检查；各服务候选列表提供“全选/撤销全选”。撤销全选恢复本次全选前的勾选集合，各服务独立保存。
+- 导入自动识别 JSON、Clash YAML、Trojan URI 文本和 Base64 订阅；导出支持 Drop2Tunnel 原生 JSON、Clash YAML、Shadowrocket Trojan URI、sing-box outbounds JSON、v2rayNG/Hiddify Base64 订阅、Trojan-Qt5 与 Igniter 的 `gui-config.json`，共八种格式。
+- 单次导入最多 500 项、文件不超过 2 MiB。只映射当前节点表单可表达的 Trojan TCP/TLS 字段；WebSocket、gRPC、Reality、指纹、证书固定等不支持项明确跳过并报告原因，不会静默丢弃后伪装成成功。
+- 导入为新节点并生成新 ID，不覆盖已有节点或服务策略；服务配置和节点原有数据保持不变。批量写入失败时整批回滚。原生格式保留备注；其它客户端格式只交换节点连接信息，不包含本系统服务路由策略。
+- 导入/导出 API 均要求管理员认证。导出文件含节点密码，响应使用 `no-store` 附件下载，用户应按敏感配置文件保管。
+- 批量连通性检查逐个使用指定节点执行出口 IP 和网页访问测试；IP 失败仍继续页面测试，不自动改用其它节点。关闭对话框不取消本次检查，重新打开可查看当前结果。
+
 ## 8. 配置、日志与部署
 
 - 配置文件：`.tunnel-data/upstream-exits.json`，目录/文件按最小权限创建，文件权限为 0600。
 - 运行时文件：`.tunnel-data/upstream-runtime/`；Unix 环境下运行时目录按 0700 创建，配置文件按 0600 创建。
 - API 不返回节点密码；日志对节点密码、Bot token、Cookie、URL 用户凭据及敏感查询参数脱敏。
-- 项目最低 Node 版本为 **22.16.0**；Undici 固定为 **7.30.2**。
+- 项目最低 Node 版本为 **22.16.0**；Undici 固定为 **7.30.2**；节点 Clash YAML 解析依赖固定为 `yaml@2.8.2`。
 - `tools/deploy/build.mjs` 复制 sing-box 文件，`tools/deploy/verify.mjs` 检查新增页面路由和发布资源。
 
 ## 9. 测试与限制
@@ -127,10 +138,12 @@ Trojan 节点列表位于左侧，右侧显示所选节点窄表单；上游服�
 - `tests/upstream-native-261114.test.cjs`
 - `tests/upstream-cache-261114.test.cjs`
 - `tests/upstream-candidates-261119.test.cjs`
+- `tests/trojan-formats-261120.test.cjs`
+- `tests/requirements-261120.browser.cjs`
 - `tests/disk-admin-download-261118.test.cjs`
 - `tests/sns-media-route-261117.browser.cjs`
 - `tests/sns-bilibili-261117.test.cjs`
 
-开发日志记录 Node 22.16.0 相关单元/集成批次 112/112、系统 Chrome 35/35 和隔离 Trojan TLS 夹具验证。它们不是所有服务/所有真实账号的全量验收。
+开发日志记录 261120 阶段 Node 22 相关单元/集成批次 200/200、Chrome 8/8，以及真实 Trojan TLS 隔离夹具验证。它们不是所有服务/所有真实账号的全量验收；八种导出格式的代码往返测试也不等同于在八个第三方客户端逐个实机导入验收。
 
 Linux sing-box 原生执行尚未验证；没有 macOS/ARM 二进制；未逐一使用真实用户凭据验证所有上游服务。真实手机、用户实际代理网络和现场出口可用性仍需用户环境验收。

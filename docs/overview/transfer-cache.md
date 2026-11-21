@@ -1,7 +1,7 @@
 # 传输记录、文件资产、缓存与恢复链路
 
-> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
-> **文档更新时间**：`2026-11-19`
+> **源码基线 Commit**：`4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`  
+> **文档更新时间**：`2026-11-21`
 
 ## 子模块文档
 
@@ -506,7 +506,7 @@ SNS/X 帖子转成 Markdown 时，正文附件有对应生命周期和图片资�
 关联回归：`tests/p2p-connection-regression.test.cjs`、`p2p-live-261108.browser.cjs`、`source-access-261107.test.cjs`、`relay-diagnostics-261109.test.cjs`、`bulk-forward-261108.test.cjs`、`forward-confirmation-261108.test.cjs`、`forward-results-261108.browser.cjs`、`persisted-forward-261108.test.cjs`、`cache-safety-261107.test.cjs`。
 
 
-## 26. 2026-11-11—19：传输基线恢复、线路诊断、多源进度与缓存写入保护
+## 26. 2026-11-11—21：传输基线恢复、线路诊断、多源进度与缓存写入保护
 
 ### P2P 当前故障处理
 
@@ -531,6 +531,19 @@ SNS/X 帖子转成 Markdown 时，正文附件有对应生命周期和图片资�
 - 当旧客户端/缓存恢复请求缺少 `recordMessageId` 时，服务端仅在目标隧道持久历史中按精确 `sessionId + fileId` 查找记录，再执行原有 sender、来源 grant、删除状态、文件元数据及前驱记录证明；请求提供了错误锚点或已有引用冲突时不会降级到宽泛查找。
 - 空 MIME 与 `application/octet-stream` 在旧转发记录核验时按同一未知二进制类型处理，不放宽所有权或来源证明。此回退仅恢复目标端已持有的精确副本，不授权读取原来源隧道其它文件。
 
-关联回归：`tests/transfer-baseline-261116.test.cjs`、`tests/file-route-diagnostics-261111.test.cjs`、`tests/file-progress-261114.test.cjs`、`tests/whole-file-progress-261116.test.cjs`、`tests/transfer-progress-261117.browser.cjs`、`tests/multi-source-route-261119.test.cjs`、`tests/cache-metadata-261111.browser.cjs`、`tests/forwarded-server-assets-261117.test.cjs`、`tests/direct-route-261116.test.cjs`、`tests/relay-complete-261116.test.cjs`。
+### 来源授权生命周期、目标副本回退与诊断（2026-11-20）
+
+- 文件请求/发现事件在检查来源权限前，先确认当前 Socket 已加入目标隧道、请求的 `sessionId` 与当前会话一致、设备仍是目标成员。尚未完成加入、旧隧道迟到包或已移除成员的请求交回既有处理器丢弃，不再误报“来源隧道尚未获得访问权”；加入完成后沿用原 `resumePending` 恢复路径。
+- 来源访问仍优先要求已验证的转发关系或来源隧道签名 grant。两者都不能证明时，新增的 `canSeekDestinationCopy()` 只允许目标隧道内的受限查找：当前设备必须是目标成员且具备 read 权限；服务端持久历史必须存在未删除的目标记录和未移除的文件引用；fileId、来源隧道、目标隧道及可选 recordMessageId 必须精确匹配。它只帮助发现/恢复目标隧道已经持有的那份副本，不授予来源隧道读取权、不扩展来源成员资格，也不允许读取来源隧道其它文件。
+- 没有目标在线供源时保留恢复意图，等待目标隧道内的缓存设备上线并公告后再沿现有流程请求；不会把“暂时没有供源”伪装成来源权限拒绝。真正无 read 权限、记录已删除/引用已移除、锚点冲突或文件不匹配仍拒绝。
+- 真正的来源拒绝会返回 `FILE_SOURCE_ACCESS_DENIED`，并附带 `CAONIMA-GPT` 关联诊断（request/transfer/file/record/session/socket 和授权判断）。只查询当前用户可读的目标记录，不返回来源凭据或文件正文；客户端 `app.js` 将其写入浏览器错误日志，IndexedDB 仅用 `getKey` 检查缓存键是否存在，不读取大文件正文。诊断辅助失败不能中断原权限提示。
+- Express `sendfile()` 的 `Request aborted/ECONNABORTED` 与 Socket.IO 来源授权拒绝是不同入口；当前日志没有证据证明二者同因，不能合并成一个根因。
+
+### DataChannel 缓冲排空期间的发送进度（2026-11-20）
+
+- 文件块入队后若 DataChannel 仍有 `bufferedAmount`，客户端每约 100 ms 采样一次已离开发送缓冲区的字节，更新发送端进度；采样仅影响显示，不增加网络消息或等待步骤。
+- 采样停止于通道关闭、失败、取消或缓冲排空；排空后进度最多显示 99%，整文件 100% 仍必须等待接收端完整缓存/完成 ACK。没有改变块大小、并发、背压、P2P/Relay 选路、超时或完成协议。
+
+关联回归：`tests/transfer-baseline-261116.test.cjs`、`tests/file-route-diagnostics-261111.test.cjs`、`tests/file-progress-261114.test.cjs`、`tests/whole-file-progress-261116.test.cjs`、`tests/transfer-progress-261117.browser.cjs`、`tests/multi-source-route-261119.test.cjs`、`tests/cache-metadata-261111.browser.cjs`、`tests/forwarded-server-assets-261117.test.cjs`、`tests/source-access-feedback-261120.test.cjs`、`tests/source-access-diagnostic-261120.browser.cjs`、`tests/direct-route-261116.test.cjs`、`tests/relay-complete-261116.test.cjs`。
 
 **现场边界：**开发日志仍将真实手机代理环境中的低速、偶发 Relay 根因及启动等待问题列为未完全查明；本机隔离 Chrome/WebRTC 的正文一致性不能代替实体 Android、用户 VPN 或真实磁盘环境验收。
