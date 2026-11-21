@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v155-content-v8-261121-rejoin';
+const CACHE_NAME = 'instant-tunnel-v156-content-v8-261121-web-zip-security';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -331,6 +331,11 @@ async function handleWebZipRuntime(request, url) {
     if (!runtimeId) return new Response('网页 ZIP 路径无效', { status:400 });
     const runtime = await readWebZipRuntime(runtimeId);
     if (!runtime || Number(runtime.expiresAt) <= Date.now()) return new Response('网页 ZIP 运行目录已过期', { status:410 });
+    if(!runtime.trust?.stamp)return new Response('网页 ZIP 未经可信发布验证',{status:403});
+    try{
+        const checked=await fetch('/api/telegram/web-zip/verify',{method:'POST',cache:'no-store',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(runtime.trust)});
+        if(!checked.ok||!(await checked.json()).ok)return new Response('网页 ZIP 签名已失效',{status:403});
+    }catch(_){return new Response('网页 ZIP 安全验证服务不可用',{status:503});}
     if (!filePath) filePath = runtime.entryPath || '';
     const file = (runtime.files || []).find(item => item.path === filePath);
     if (!file) return new Response('网页 ZIP 资源不存在', { status:404 });

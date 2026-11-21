@@ -4209,6 +4209,47 @@ function initAssetPresenceRefresh() {
     setInterval(() => refresh('presence-heartbeat', { allowHidden: true }), 30000);
 }
 
+let webZipPublishAllowed=false;
+async function refreshWebZipAccess(){
+    const previous=webZipPublishAllowed;
+    try{
+        const response=await fetch('/api/telegram/web-zip/access',{cache:'no-store'});
+        webZipPublishAllowed=response.ok&&(await response.json()).allowed===true;
+        if(webZipPublishAllowed&&state.socket?.connected&&state.sessionId){
+            const proofResponse=await fetch('/api/telegram/web-zip/socket-auth',{method:'POST',cache:'no-store',
+                headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:state.sessionId,deviceId:state.deviceId,
+                    socketId:state.socket.id,accessGrant:savedTunnelGrant(state.sessionId)})});
+            const proof=proofResponse.ok?await proofResponse.json():{};
+            if(!proof.ok)webZipPublishAllowed=false;
+            else{
+                const accepted=await new Promise(resolve=>state.socket.timeout(8000).emit('web-zip-auth',{proof:proof.proof},(error,result)=>resolve(!error&&result?.ok)));
+                webZipPublishAllowed=accepted;
+            }
+        }else if(!state.socket?.connected)webZipPublishAllowed=false;
+    }catch(_){webZipPublishAllowed=false;}
+    for(const id of ['webWorkshopBtn','topbarWorkshopBtn']){
+        const button=document.getElementById(id);if(button)button.hidden=!webZipPublishAllowed;
+    }
+    document.querySelectorAll('[data-control-tile="workshop"]').forEach(button=>{button.hidden=!webZipPublishAllowed;});
+    if(previous&&!webZipPublishAllowed){
+        document.querySelector('.web-zip-edit-dialog')?.remove();
+        window.WebWorkshop?.close();
+    }
+}
+async function signWebZipArchive(blob,fileInfo,messageId){
+    if(!webZipPublishAllowed)await refreshWebZipAccess();
+    if(!webZipPublishAllowed)throw Error('当前账号没有网页 ZIP 编辑／发送权限');
+    if(!state.socket?.connected)throw Error('隧道尚未连接，无法签发网页 ZIP');
+    const sessionId=state.sessionId;
+    const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())),value=>value.toString(16).padStart(2,'0')).join('');
+    const result=await new Promise((resolve,reject)=>state.socket.timeout(12000).emit('web-zip-stamp',{
+        sessionId,messageId,fileId:fileInfo.id,sha256
+    },(error,value)=>error?reject(Error('网页 ZIP 签名请求超时')):resolve(value)));
+    if(!result?.ok||state.sessionId!==sessionId)throw Error('服务器拒绝签发网页 ZIP，请检查账号权限或隧道状态');
+    fileInfo.webZipSha256=sha256;
+    fileInfo.webZipTrustIntegrityStamp=result.stamp;
+    return {fileId:fileInfo.id,messageId,sessionId,sha256,stamp:result.stamp};
+}
 async function sendFile(file, targetDeviceId = null, options = {}) {
     if (!requireTunnelPermission(/\.html\.zip$/i.test(String(file?.name || '')) ? 'sendWebZip' : 'sendFile')) return null;
     const externalFileHandle = Number(file?.size || 0) >= EXTERNAL_FILE_HANDLE_MIN_SIZE && options.externalFileHandle?.getFile
@@ -4219,6 +4260,10 @@ async function sendFile(file, targetDeviceId = null, options = {}) {
         isExternalFile: Boolean(externalFileHandle),
         externalSourceLabel: externalFileHandle ? '本机原文件' : options.externalSourceLabel
     });
+    // The original ZIP bytes are hashed locally; the server receives only a
+    // digest and transfer identifiers, never the archive body.
+    const webZipMessageId=options.collectionMessageId||generateId();
+    if(/\.html\.zip$/i.test(String(fileInfo.name||'')))await signWebZipArchive(file,fileInfo,webZipMessageId);
     if (externalFileHandle) {
         await storeAndAnnounceExternalFileAsset(file, externalFileHandle, fileInfo);
     } else if (!options.deferAssetStorage) {
@@ -4236,7 +4281,7 @@ async function sendFile(file, targetDeviceId = null, options = {}) {
     }
 
     const message = {
-        id: generateId(),
+        id: webZipMessageId,
         type: 'file',
         fileInfo: {
             ...fileInfo,
@@ -5038,7 +5083,10 @@ function webZipNewTabBadge(fileInfo) {
 }
 
 function openWebZipStandalone(fileInfo, options = {}) {
-    const url = `/web-zip-preview/${encodeURIComponent(fileInfo.id)}?name=${encodeURIComponent(getFileDisplayName(fileInfo) || '网页 ZIP')}&v=${encodeURIComponent(fileInfo.webZipRevision || fileInfo.timestamp || '')}${fileInfo.webZipHideFrame ? '&bare=1' : ''}`;
+    const params=new URLSearchParams({name:getFileDisplayName(fileInfo)||'网页 ZIP',v:String(fileInfo.webZipRevision||fileInfo.timestamp||''),
+        sessionId:state.sessionId||'',messageId:options.messageId||fileInfo.recordMessageId||'',sha256:fileInfo.webZipSha256||'',stamp:fileInfo.webZipTrustIntegrityStamp||''});
+    if(fileInfo.webZipHideFrame)params.set('bare','1');
+    const url = `/web-zip-preview/${encodeURIComponent(fileInfo.id)}?${params}`;
     if (fileInfo.webZipFullscreen === true) {
         document.getElementById('webZipFullscreenLayer')?.closeWebZip?.();
         const layer = document.createElement('section');
@@ -5063,6 +5111,7 @@ function openWebZipStandalone(fileInfo, options = {}) {
 }
 
 function showWebZipEditDialog(fileInfo, context = {}) {
+    if(!webZipPublishAllowed)return;
     fileInfo = { ...fileInfo, recordMessageId: context.messageId || context.sourceMessageId || fileInfo.recordMessageId };
     document.querySelector('.web-zip-edit-dialog')?.remove();
     const owner = fileInfo.creatorDeviceName || (fileInfo.creatorDeviceId ? '设备' + fileInfo.creatorDeviceId.slice(-4) : '未知设备');
@@ -5140,6 +5189,7 @@ async function publishWebZipUpdate(file, draft) {
         webZipUpdatedAt: Date.now()
     });
     await storeAndAnnounceFileAsset(file, fileInfo);
+    await signWebZipArchive(file,fileInfo,message.id);
     const locallyStoredVersion = await materializeCachedFileRecord(await getFromStore('files', fileInfo.id));
     if (!hasCompleteFileCache(locallyStoredVersion, fileInfo)) throw new Error('网页 ZIP 新版本未能完整写入本机缓存');
     if (state.sessionId !== sessionId) throw new Error(formatWebZipText('隧道已切换，请回到原隧道重新发布网页'));
@@ -5341,6 +5391,8 @@ async function sendFileCollection(files, options = {}) {
         remark: String(options.remark || '').trim().slice(0, RECORD_REMARK_MAX_LENGTH)
     };
 
+    for(let index=0;index<fileInfos.length;index++)if(/\.html\.zip$/i.test(String(fileInfos[index].name||'')))
+        await signWebZipArchive(entries[index].file,fileInfos[index],message.id);
     await publishHistoryMessage(message, { autoRequestAsset: false });
     entries.forEach((entry, index) => {
         enqueueOutboundFileAsset(entry.file, fileInfos[index], {
@@ -8429,7 +8481,7 @@ function renderMessageRecordActions(messageEl, message) {
         }));
     }
     const webZipFile = message.type === 'file' && /\.html\.zip$/i.test(String(message.fileInfo?.name || '')) ? message.fileInfo : null;
-    if (webZipFile) menuItems.push(createRecordActionButton('🌐', '编辑此网页', '申请权限、转入草稿箱或创建自己的副本', () => showWebZipEditDialog(webZipFile, { messageId:message.id, ownerDeviceId:webZipFile.ownerDeviceId || message.sender, sender:message.sender })));
+    if (webZipFile && webZipPublishAllowed) menuItems.push(createRecordActionButton('🌐', '编辑此网页', '申请权限、转入草稿箱或创建自己的副本', () => showWebZipEditDialog(webZipFile, { messageId:message.id, ownerDeviceId:webZipFile.ownerDeviceId || message.sender, sender:message.sender })));
     if (message.type === 'file' || message.type === 'collection') {
         menuItems.push(createRecordActionButton('✴↗', '使用光媒分享', message.type === 'collection' ? '将整个合辑作为可恢复光媒任务分享' : '将当前文件通过动态二维码分享', () => {
             shareHistoryMessageViaLight(message.id).catch(err => {
@@ -18273,6 +18325,7 @@ function initTunnelControlCenter(dialog) {
     for (const [id, icon, title, target] of actions) {
         const tile = document.createElement('button'); tile.type = 'button'; tile.className = 'control-center-tile';
         tile.dataset.controlTile = id; tile.title = title; tile.setAttribute('aria-label', title);
+        if(id==='workshop')tile.hidden=!webZipPublishAllowed;
         if (id === 'leave') tile.innerHTML = '<span class="leave-tunnel-panel-icon" aria-hidden="true"><span></span></span>';
         else if (id === 'streaming') { const image = document.createElement('img'); image.src = '/client/icons/streaming.png'; image.alt = ''; image.style.cssText = 'width:32px;height:32px;object-fit:contain'; tile.append(image); }
         else tile.textContent = icon;
@@ -19405,6 +19458,8 @@ function initStreamingConsoleIntegration() {
 }
 
 function initUI() {
+    refreshWebZipAccess().catch(()=>{});
+    setInterval(()=>refreshWebZipAccess().catch(()=>{}),15000);
     initTunnelSettings();
     initHistoryRecordSelection();
     initLanP2pGuide();
@@ -19419,6 +19474,8 @@ function initUI() {
             return fileId;
         },
         publishUpdate: publishWebZipUpdate,
+        trustPreview: async blob=>({...await signWebZipArchive(blob,{id:generateId()},generateId()),preview:true}),
+        canPublish:()=>webZipPublishAllowed,
         chooseResources: chooseWebWorkshopResources,
         focusFile: focusPublishedWebZip,
         sourceTunnelLabels: resolveWebWorkshopSourceTunnelLabels,
@@ -19493,6 +19550,7 @@ function initUI() {
         window.NotificationCenter?.open();
     });
     document.getElementById('webWorkshopBtn')?.addEventListener('click', () => {
+        if(!webZipPublishAllowed)return;
         document.getElementById('connectionHeaderMenu').hidden = true;
         window.WebWorkshop?.open();
     });

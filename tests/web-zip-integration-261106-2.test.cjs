@@ -15,8 +15,10 @@ test('actual publish callback, SQLite persistence and copied-file read gate defe
     const sessions=new Map([[ids.B,{devices:new Map([[ids.editor,{socketId:'editor-B'}]]),history:[{message:copy,size:JSON.stringify(copy).length}],historySize:JSON.stringify(copy).length,fileAssets:new Map([[ids.next,{metadata:{id:ids.next,name:'updated.html.zip',size:5,type:'application/zip'},providers:new Set([ids.editor])}]]),deletedMessageIds:[]}]]);
     const sockets=new Map([['editor-B',{connected:true,data:{deviceId:ids.editor}}]]),handlers=new Map(),broadcasts=[];
     const context={require:name=>require(path.join(root,name)),path,SERVER_DATA_DIR:dir,Map,Set,Date,JSON,Buffer,Promise,Error,setImmediate,console,
+        app:{get(){},post(){}},diskAuth:{user:()=>({permissionVersion:0}),hasPermission:()=>true,sessionKey:Buffer.alloc(32)},
         sessions,infraStore:infra,io:{sockets:{sockets}},MAX_MESSAGE_SIZE:1048576,MAX_HISTORY_SIZE:24*1048576,
         getHistoryMessageEntry:(session,id)=>session?.history.find(entry=>entry.message.id===id),createHistoryMessage:value=>JSON.parse(JSON.stringify(value)),
+        parseStoredTunnelAccess:()=>({permissions:{},admins:{},devicePermissions:{},managementDevices:{}}),
         enqueueInfraAudit:(task,_key,options)=>{setImmediate(()=>{try{task();options.onSuccess();}catch(error){options.onFinalFailure(error);}});return true;},
         emitToReadableSessionDevices:(session,_event,value)=>broadcasts.push({session,value}),scheduleSessionHistoryBroadcast(){},isFileAssetStillReferenced:()=>false,
         canUseTunnelCapability:session=>Boolean(session),getNearbyCandidates:()=>[],socket:{on:(name,run)=>handlers.set(name,run)},currentSession:ids.B,currentDevice:ids.editor,checkMessageRate:()=>true,isValidDeviceId:value=>/^[\da-f-]{36}$/i.test(value),
@@ -24,6 +26,9 @@ test('actual publish callback, SQLite persistence and copied-file read gate defe
         tunnelAccess:{verifyFileForward:()=>false}
     };
     vm.runInNewContext(section(server,'function readWebZipRecord(',"io.on('connection',")+';globalThis.service=webZipSync;',context);
+    // The legacy snapshot fixture targets sync/storage semantics. The real
+    // signed publication and role gates are verified in the security E2E suite.
+    vm.runInContext('canSocketPublishWebZip=()=>true;validWebZipStamp=()=>true;webZipAccount=()=>"fixture-account";',context);
     vm.runInContext(section(server,"    socket.on('web-zip-publish',","    socket.on('web-zip-edit-request',"),context);
     let credentialResult;handlers.get('web-zip-edit-credential')({sessionId:ids.B,messageId:ids.copy,fileId:ids.oldB},result=>credentialResult=result);
     assert.equal(credentialResult.ok,true);assert.match(credentialResult.credential,/^we1\./);
@@ -83,6 +88,7 @@ test('the real webpage writer retries a failed commit without acknowledging, bro
     const previous={id:'page',sessionId:'A',type:'file',fileInfo:{id:'old',webZip:true}},next={...previous,fileInfo:{id:'new',webZip:true}};
     let stored=previous,flushes=0,committed=false;const delivered=[];
     const context={require:name=>require(path.join(root,name)),path,SERVER_DATA_DIR:directory,Map,Set,Date,JSON,Buffer,Promise,Error,setImmediate,
+        app:{get(){},post(){}},diskAuth:{user:()=>({permissionVersion:0}),hasPermission:()=>true,sessionKey:Buffer.alloc(32)},
         console:{warn(){},error(){}},sessions:new Map(),io:{sockets:{sockets:new Map()}},MAX_MESSAGE_SIZE:1048576,MAX_HISTORY_SIZE:24*1048576,
         infraAuditPendingByKey:new Map(),infraAuditQueue:[],infraAuditDrainScheduled:false,INFRA_AUDIT_MAX_ATTEMPTS:3,
         infraStore:{getHistoryMessage:()=>stored,recordHistoryMessage:(_session,message)=>{stored=message;return{updated:true};},flush:()=>{committed=++flushes>1;return committed;}},

@@ -12,7 +12,7 @@ const equivalent=(a,b)=>a&&b&&a.creatorDeviceId===b.creatorDeviceId&&a.name===b.
 const version=file=>({id:file.id,revision:revision(file)});
 const failure=code=>{throw Error(code);};
 function replaceFile(message,id,file){const next=clone(message);if(next.type==='file')next.fileInfo=file;else next.collection.files=next.collection.files.map(value=>value.id===id?file:value);return next;}
-function createWebZipSync({filename,readRecord,listRecords=()=>[],writeRecord,canPublish,hasContent,canSync,credentials,isForwardedCopy=()=>false,log=()=>{}}){
+function createWebZipSync({filename,readRecord,listRecords=()=>[],writeRecord,canPublish,hasContent,canSync,credentials,resign,isForwardedCopy=()=>false,log=()=>{}}){
     let unavailable=false,saving=Promise.resolve(),scheduled=false,changed=false;
     const jobs=new Map(),running=new Map(),publishing=new Set(),publications=new Map();
     try{const saved=readJson(filename,{version:1,jobs:[]});if(saved.version!==1||!Array.isArray(saved.jobs))throw Error('invalid journal');for(const job of saved.jobs){if(!job?.key||!job.file?.id||!job.sessionId||!job.messageId)throw Error('invalid job');jobs.set(job.key,job);}}
@@ -61,6 +61,7 @@ function createWebZipSync({filename,readRecord,listRecords=()=>[],writeRecord,ca
             const current=readRecord(job.sessionId,target.message.id),copy=files(current).find(value=>value.id===target.file.id);
             if(!copy)continue;
             const next=transform(copy,current);if(!next||JSON.stringify(next)===JSON.stringify(copy))continue;
+            if(resign&&next.webZipTrustIntegrityStamp)resign(next,job.sessionId,current.id,job.file,job.sessionId,job.messageId);
             await writeRecord(job.sessionId,current,replaceFile(current,copy.id,next),{check:()=>jobs.get(job.key)===job&&(!canWrite||canWrite())});
         }
     }
@@ -78,6 +79,7 @@ function createWebZipSync({filename,readRecord,listRecords=()=>[],writeRecord,ca
             if(file.id!==job.file.id||file.creatorDeviceId!==job.file.creatorDeviceId||file.webZipRootId!==job.file.webZipRootId)continue;
             const source=sourceOf(job.sessionId,message,file);
             if(source?.sessionId!==job.origin.sessionId||source.messageId!==job.origin.messageId)continue;
+            if(resign&&job.file.webZipTrustIntegrityStamp)resign(job.file,job.sessionId,message.id,job.file,job.sessionId,job.messageId);
             job.credentialMessageId ||= job.messageId;job.messageId=message.id;return true;
         }
         return false;
@@ -85,7 +87,7 @@ function createWebZipSync({filename,readRecord,listRecords=()=>[],writeRecord,ca
     function ownedCopy(file,input,deviceId){
         const next={...file};
         for(const field of ['id','name','size','type','timestamp','data','cacheStoreRef','cacheStorage','serverAssetUrl','isServerAsset','telegramFileId','telegramFileUniqueId','telegramChatId','telegramFileIdUpdatedAt','backupSourceSessionId','forwardedToSessionId','forwardedSourceGrant','sourceFileId','webZipPendingSync','webZipSourceVersion','isExternalFile','externalFileHandle','externalFileMissing','isPartial','transferInterrupted','cacheCleared','restoreRequested'])delete next[field];
-        return{...clone(next),id:input.id,name:input.name,type:input.type,size:input.size,timestamp:Date.now(),ownerDeviceId:deviceId,sender:deviceId,isAsset:true,webZip:true,
+    return{...clone(next),id:input.id,name:input.name,type:input.type,size:input.size,webZipSha256:input.webZipSha256,webZipTrustIntegrityStamp:input.webZipTrustIntegrityStamp,timestamp:Date.now(),ownerDeviceId:deviceId,sender:deviceId,isAsset:true,webZip:true,
             webZipHideFrame:input.webZipHideFrame===true,webZipFullscreen:input.webZipFullscreen===true,webZipRevision:revision(file)+1,replacesFileId:file.id,webZipUpdatedAt:Date.now()};
     }
     const scopeOf=(sessionId,messageId,file,deviceId,origin)=>({sessionId,messageId,deviceId,creatorDeviceId:file.creatorDeviceId,
@@ -145,6 +147,7 @@ function createWebZipSync({filename,readRecord,listRecords=()=>[],writeRecord,ca
             if(!expected||!(current.id===expected.id&&revision(current)===expected.revision||current.id===job.previous.id&&revision(current)===revision(job.previous)))return mark(job,'WEB_ZIP_SOURCE_CHANGED');
             const next={...ownedCopy(current,job.file,current.ownerDeviceId||original.sender),webZipRootId:job.file.webZipRootId,
                 webZipRevision:revision(job.file),backupSourceSessionId:job.sessionId,forwardedToSessionId:job.origin.sessionId};
+            if(resign&&job.file.webZipTrustIntegrityStamp)resign(next,job.origin.sessionId,original.id,job.file,job.sessionId,job.messageId);
             await writeRecord(job.origin.sessionId,original,replaceFile(original,current.id,next),{
                 source:'cross-tunnel-forward',copyFromSessionId:job.sessionId,
                 check:()=>jobs.get(job.key)===job&&canSync(job.deviceId,job.origin.sessionId,job.sessionId)&&canPublish(job.sessionId,job.deviceId)&&canEdit(files(readRecord(job.sessionId,job.messageId)).find(value=>value.id===job.file.id),job.deviceId)

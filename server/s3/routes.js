@@ -6,6 +6,7 @@ const rateLimit = require('../request-rate-limit');
 const { verify, decodeAwsChunks, sha256 } = require('./sigv4');
 const { esc, tag, document, errorDocument, deleteRequest } = require('./xml');
 const { createS3Credentials } = require('./credentials');
+const { isRiskyFile, normalizeMime } = require('../disk-risky-files');
 
 const MESSAGES = {
     MOUNT_READ_ONLY:'Mounted collaborations are read-only for S3. Use the Web drive for authorized changes.',
@@ -216,8 +217,11 @@ function createS3Gateway({ dataDir, objectStorage }) {
                 if (!object) throw new Error('NoSuchKey');
                 const range = objectStorage.parseByteRange(req.headers.range, object.size);
                 const length = range.end - range.start + 1;
-                res.status(range.partial ? 206 : 200).set({ 'Accept-Ranges': 'bytes', 'Content-Type': object.type,
+                const risky=isRiskyFile(key,object.type);
+                res.status(range.partial ? 206 : 200).set({ 'Accept-Ranges': 'bytes', 'Content-Type': risky?'application/octet-stream':normalizeMime(object.type),
                     'Content-Length': String(Math.max(0, length)), 'ETag': `"${object.etag}"`, 'Last-Modified': new Date(object.updatedAt).toUTCString() });
+                res.set('X-Content-Type-Options','nosniff');
+                if(risky)res.set({'Content-Security-Policy':'sandbox','Content-Disposition':`attachment; filename*=UTF-8''${encodeURIComponent(key.split('/').at(-1))}`});
                 for (const [name, value] of Object.entries(object.kind === 'marker' ? object.directory?.s3Marker?.metadata || {} : object.file.metadata || {}))
                     if (name.startsWith('x-amz-meta-') && typeof value === 'string') res.set(name, value);
                 if (range.partial) res.set('Content-Range', `bytes ${range.start}-${range.end}/${object.size}`);
@@ -230,7 +234,9 @@ function createS3Gateway({ dataDir, objectStorage }) {
             throw new Error('NotImplemented');
         } catch (error) {
             if (res.headersSent) return res.destroy(error);
-            const code = error.message === 'DISK_NAME_CONFLICT' ? 'OperationAborted' : MESSAGES[error.message] ? error.message : 'InternalError';
+            const code = error.message === 'DISK_NAME_CONFLICT' ? 'OperationAborted'
+                : error.message === 'DISK_RISKY_UPLOAD_FORBIDDEN' ? 'AccessDenied'
+                : MESSAGES[error.message] ? error.message : 'InternalError';
             if (code === 'InternalError') console.warn('[s3] request failed', { requestId, error: error.message });
             if (code === 'InvalidRange' && selected) {
                 try { const object = objectStorage.stat(selected, partsFromRequest(req, mount).key); if (object) res.set('Content-Range', `bytes */${object.size}`); } catch (_) {}

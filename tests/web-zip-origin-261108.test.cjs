@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),path=require('node:path'),os=require('node:os');
-const {createWebZipSync}=require('../server/web-zip-sync'),{createWebZipCredentials}=require('../server/web-zip-credentials');
+const {createWebZipSync}=require('../server/web-zip-sync'),{createWebZipCollaborationCredential:createWebZipCredentials}=require('../server/web-zip-collaboration-credentials');
 test('repeated forwarded-page publication preserves its verified source after a pending edit and server restart',async t=>{
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'webzip-origin-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
     const source=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8'),start=source.indexOf('    isForwardedCopy: (sessionId,messageId,file,origin) => {'),end=source.indexOf('    canPublish:',start);
@@ -50,7 +50,7 @@ test('an old completed copy recovers its exact origin with the cached signed edi
     const refresh=()=>service.issueCredential({sessionId:'B',messageId:'copy',fileId:'old-edit',deviceId:'editor',editCredential:token});
     assert.equal(refresh(),token,'refresh retains the original source scope');
     const server=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8'),handlers=new Map();
-    vm.runInNewContext(server.slice(server.indexOf("    socket.on('web-zip-edit-credential',"),server.indexOf("    socket.on('web-zip-edit-request',")),{socket:{on:(event,run)=>handlers.set(event,run)},sessions:new Map([['B',{devices:new Map([['editor',{}]])}]]),currentSession:'B',currentDevice:'editor',checkMessageRate:()=>true,webZipSync:service});
+    vm.runInNewContext(server.slice(server.indexOf("    socket.on('web-zip-edit-credential',"),server.indexOf("    socket.on('web-zip-edit-request',")),{socket:{on:(event,run)=>handlers.set(event,run)},sessions:new Map([['B',{devices:new Map([['editor',{}]])}]]),currentSession:'B',currentDevice:'editor',checkMessageRate:()=>true,webZipSync:service,canSocketPublishWebZip:()=>true});
     const app=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8'),memory=new Map([['webZipEditCredential:editor:B:copy',token]]);
     const client={state:{sessionId:'B',deviceId:'editor',socket:{connected:true,timeout(){return this;},emit:(event,data,ack)=>handlers.get(event)(data,result=>ack(null,result))}},localStorage:{getItem:key=>memory.get(key)},formatWebZipText:value=>value,rememberWebZipEditCredential:credential=>memory.set('webZipEditCredential:editor:B:copy',credential)};
     vm.runInNewContext(app.slice(app.indexOf('async function requestWebZipEditCredential('),app.indexOf('function renderWebZipRecordLabels(')),client);

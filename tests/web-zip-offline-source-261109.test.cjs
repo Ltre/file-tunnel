@@ -13,12 +13,14 @@ test('two source-anchor updates commit through real publish handlers and SQLite 
  const live={devices:new Map([[editor,{socketId:peer.id}],[creator,{socketId:'creator-B'}]]),history:[{message:copy,size:JSON.stringify(copy).length}],historySize:JSON.stringify(copy).length,fileAssets:new Map(),deletedMessageIds:[]};
  const sessions=new Map([[B,live]]),sockets=new Map([[peer.id,peer],['creator-B',{connected:true,data:{deviceId:creator}}]]),writes=[];
  const context={require:name=>require(path.join(root,name)),path,SERVER_DATA_DIR:dir,Map,Set,Date,JSON,Buffer,Promise,Error,setImmediate,console,sessions,infraStore:infra,io:{sockets:{sockets}},tunnelAccess:access,
+  app:{get(){},post(){}},diskAuth:{user:()=>({permissionVersion:0}),hasPermission:()=>true,sessionKey:Buffer.alloc(32)},
   MAX_MESSAGE_SIZE:1048576,MAX_HISTORY_SIZE:24*1048576,currentSession:B,currentDevice:editor,profileDevice:null,clientIp:'127.0.0.1',socket:peer,checkMessageRate:()=>true,isValidDeviceId:value=>/^[\da-f-]{36}$/i.test(value),isValidSessionId:value=>[A,B].includes(value),normalizeShortCode:value=>value||'',reserveShortCode:()=>true,historyLog(){},
   sanitizeString:(value,limit)=>String(value||'').slice(0,limit),getNearbyCandidates:()=>[],
   getHistoryMessageEntry:(session,id)=>session?.history.find(entry=>entry.message.id===id),createHistoryMessage:value=>JSON.parse(JSON.stringify(value)),
   enqueueInfraAudit:(task,_key,options)=>setImmediate(()=>{try{task();options.onSuccess();}catch(error){options.onFinalFailure(error);}}),
   emitToReadableSessionDevices:(_session,_event,value)=>writes.push(value),scheduleSessionHistoryBroadcast(){},isFileAssetStillReferenced:()=>false};
  vm.runInNewContext(part('const DEFAULT_TUNNEL_PERMISSIONS =','function canReadForwardedFile(')+part('function readWebZipRecord(',"io.on('connection',")+';globalThis.service=webZipSync;',context);
+ vm.runInContext('canSocketPublishWebZip=()=>true;validWebZipStamp=()=>true;webZipAccount=()=>"fixture-account";',context);
  infra.setTunnelAccess(A,creator,{read:true});
  vm.runInContext(part("    socket.on('register-session-codes',",'    // 信令转发')+part("    socket.on('web-zip-publish',","    socket.on('web-zip-edit-request',"),context);
  handlers.get('register-session-codes')({entries:[{sessionId:A,shortCode:'',deviceId:sourceEditor,accessGrant:access.issue(A,sourceEditor)},{sessionId:B,shortCode:'',deviceId:editor,accessGrant:access.issue(B,editor)}]});

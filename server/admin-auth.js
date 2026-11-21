@@ -2,9 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const {privateKeyFile}=require('./private-key-file');
-
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const COOKIE_NAME = 'tunnel_admin_session';
+const {createAdminDbscSessions}=require('./admin-dbsc-sessions');
 
 function base32Encode(buffer) {
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -59,15 +57,6 @@ function verifyTotp(secret, token, now = Date.now()) {
         if (crypto.timingSafeEqual(Buffer.from(candidate), Buffer.from(expected))) return true;
     }
     return false;
-}
-
-function parseCookies(header) {
-    return String(header || '').split(';').reduce((cookies, part) => {
-        const index = part.indexOf('=');
-        if (index < 0) return cookies;
-        cookies[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
-        return cookies;
-    }, {});
 }
 
 function createAdminAuth(options) {
@@ -159,50 +148,17 @@ function createAdminAuth(options) {
         const marker = readMarker();
         return Boolean(marker && verifyTotp(marker.secret, token));
     }
-
-    function createSession() {
-        const marker = readMarker();
-        if (!marker) throw new Error('admin-auth-setup-required');
-        const payload = Buffer.from(JSON.stringify({
-            iat: Date.now(),
-            exp: Date.now() + SESSION_TTL_MS,
-            marker: marker.createdAt,
-            nonce: crypto.randomBytes(12).toString('base64url')
-        })).toString('base64url');
-        const signature = crypto.createHmac('sha256', signingKey()).update(payload).digest('base64url');
-        return `${payload}.${signature}`;
-    }
-
-    function verifySession(value) {
-        const [payload, signature] = String(value || '').split('.');
-        if (!payload || !signature) return false;
-        const expected = crypto.createHmac('sha256', signingKey()).update(payload).digest('base64url');
-        if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return false;
-        try {
-            const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
-            const marker = readMarker();
-            return Number(data.exp) > Date.now() && Boolean(marker?.createdAt) && data.marker === marker.createdAt;
-        } catch (_) {
-            return false;
-        }
-    }
+    const dbsc=createAdminDbscSessions({dataDir,signingKey,marker:()=>readMarker()?.createdAt||''});
 
     function isAuthenticated(req) {
-        // Cookies with the same name but different paths can coexist. A stale
-        // duplicate must not mask a valid signed session; malformed input is ignored.
-        for(const part of String(req.headers.cookie||'').split(';')){const index=part.indexOf('=');if(part.slice(0,index).trim()!==COOKIE_NAME)continue;try{const value=decodeURIComponent(part.slice(index+1));if(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value)&&verifySession(value))return true;}catch(_){} }
-        return false;
-    }
-
-    function cookieHeader(req, value, maxAge = Math.floor(SESSION_TTL_MS / 1000)) {
-        const secure = req.secure || String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
-        return `${COOKIE_NAME}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+        return Boolean(dbsc.verify(req,true));
     }
 
     function requireAuth(req, res, next) {
         if (isAuthenticated(req)) return next();
         res.setHeader('X-Admin-Auth-Reason',diagnose(req));
-        if (req.path.startsWith('/api/')) return res.status(401).json({ error: 'admin-auth-required' });
+        if (req.path.startsWith('/api/') || String(req.originalUrl||'').startsWith('/api/'))
+            return res.status(401).json({ error: 'admin-auth-required' });
         return res.redirect(`/admin-auth?next=${encodeURIComponent(req.originalUrl || '/admin')}`);
     }
 
@@ -214,12 +170,17 @@ function createAdminAuth(options) {
         getSetup,
         finishSetup,
         verifyToken,
-        createSession,
-        cookieHeader,
+        beginBinding:dbsc.begin,
+        registerDbsc:dbsc.register,
+        refreshDbsc:dbsc.refresh,
+        sessions:dbsc.list,
+        getSession:dbsc.verify,
+        revokeSession:dbsc.revoke,
+        logout:dbsc.revokeRequest,
+        cookieHeader:dbsc.cookieHeader,
         requireAuth
     };
-    function diagnose(req){if(isAuthenticated(req))return 'VALID';const values=String(req.headers.cookie||'').split(';').filter(p=>p.trim().startsWith(COOKIE_NAME+'='));if(!values.length)return 'COOKIE_MISSING';
-        if(!readMarker())return 'AUTH_CONFIGURATION_UNREADABLE';for(const part of values){try{const value=decodeURIComponent(part.slice(part.indexOf('=')+1)),[payload,signature]=value.split('.'),expected=crypto.createHmac('sha256',signingKey()).update(payload).digest('base64url');if(signature!==expected)continue;const data=JSON.parse(Buffer.from(payload,'base64url'));if(data.marker!==readMarker()?.createdAt)return 'AUTH_CONFIGURATION_CHANGED';if(Number(data.exp)<=Date.now())return 'SESSION_EXPIRED';}catch(_){} }return 'SESSION_SIGNATURE_MISMATCH';}
+    function diagnose(req){if(isAuthenticated(req))return 'VALID';if(!readMarker())return 'AUTH_CONFIGURATION_UNREADABLE';return 'DBSC_BINDING_REQUIRED';}
 }
 
 module.exports = { createAdminAuth };

@@ -1,0 +1,32 @@
+'use strict';
+const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os');
+const {createWebZipTrustIntegrityStamp}=require('../server/web-zip-trust-integrity-stamp');
+const {createWebZipCollaborationCredential}=require('../server/web-zip-collaboration-credentials');
+const sha256='e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+test('WebZipTrustIntegrityStamp binds complete digest, record, tunnel, account and permission version independently of editing grants',t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'webzip-trust-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+    let permission=true,version=3;
+    const service=()=>createWebZipTrustIntegrityStamp({dataDir:dir,user:()=>({permissionVersion:version}),hasPermission:()=>permission});
+    const scope={sha256,fileId:'file-id',messageId:'message-id',sessionId:'session-id',accountId:'trusted-account'};
+    const token=service().issue(scope),other=service();
+    assert.equal(other.verify(token,scope),true);
+    assert.equal(other.accountId(token),scope.accountId);
+    for(const field of Object.keys(scope))assert.equal(other.verify(token,{...scope,[field]:field==='sha256'?'0'.repeat(64):'other'}),false,field);
+    assert.equal(other.verify(token+'x',scope),false,'signed stamp tamper');
+    assert.equal(other.verify('wzt1.'+token.split('.')[1]+'.'+token.split('.')[2].slice(1),scope),false);
+    assert.equal(other.verify('we1.'+token.split('.')[1]+'.'+token.split('.')[2],scope),false,'collaboration prefix never verifies as trust');
+    const edit=createWebZipCollaborationCredential({dataDir:dir});
+    assert.equal(edit.verify(token,{}),false,'trust stamp never authorizes collaboration');
+    version+=1;assert.equal(other.verify(token,scope),false,'permission version change revokes old stamp');
+    version-=1;permission=false;assert.equal(other.verify(token,scope),false,'permission revocation revokes old stamp');
+    assert.throws(()=>other.issue(scope),/WEB_ZIP_TRUST_DENIED/);
+    permission=true;
+    const issued=Date.now();t.mock.method(Date,'now',()=>issued+8*86400000);
+    assert.equal(other.verify(token,scope),false,'expired stamp cannot run');
+});
+test('two security modules use independent persisted keys and clear purpose separation',t=>{
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'webzip-keys-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+    createWebZipTrustIntegrityStamp({dataDir:dir,user:()=>({permissionVersion:0}),hasPermission:()=>true});
+    createWebZipCollaborationCredential({dataDir:dir});
+    assert.notEqual(fs.readFileSync(path.join(dir,'.web-zip-edit.key'),'utf8'),fs.readFileSync(path.join(dir,'.web-zip-trust-integrity.key'),'utf8'));
+});

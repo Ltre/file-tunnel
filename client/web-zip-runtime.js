@@ -22,6 +22,15 @@
         return inferred !== 'application/octet-stream' ? inferred : (declaredType || inferred);
     };
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    async function verifyArchive(blob,trust){
+        if(!trust||!/^[a-f0-9]{64}$/.test(trust.sha256||'')||!trust.stamp||!trust.fileId||!trust.messageId||!trust.sessionId)
+            throw Error('网页 ZIP 缺少可信发布签名戳');
+        const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('');
+        if(hash!==trust.sha256)throw Error('网页 ZIP 内容摘要不匹配，已阻止运行');
+        const response=await fetch('/api/telegram/web-zip/verify',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(trust)});
+        if(!response.ok||(await response.json()).ok!==true)throw Error('网页 ZIP 签名无效或发布权限已撤销');
+        return true;
+    }
 
     function repairExternalScriptTags(source) {
         const html = String(source || '');
@@ -186,6 +195,7 @@
     }
 
     async function mount(entries, options = {}) {
+        if(!options.trust?.stamp)throw Error('网页 ZIP 未经可信发布校验，不允许建立可执行目录');
         options.onStatus?.('正在启动网页 ZIP 运行服务…');
         await ensureController();
         options.onStatus?.('正在准备网页 ZIP 虚拟目录…');
@@ -205,7 +215,7 @@
         if (!entry) throw new Error('网页 ZIP 中没有 HTML 入口文件');
         const id = global.crypto?.randomUUID?.() || `runtime-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         const rootPath = entry.path.split('/').slice(0, -1).join('/');
-        await transact('readwrite', store => store.put({ id, entryPath:entry.path, rootPath, files, createdAt:Date.now(), expiresAt:Date.now() + (Number(options.ttl) || DEFAULT_TTL) }));
+        await transact('readwrite', store => store.put({ id, entryPath:entry.path, rootPath, files, trust:options.trust, createdAt:Date.now(), expiresAt:Date.now() + (Number(options.ttl) || DEFAULT_TTL) }));
         options.onStatus?.(repairedScripts ? `正在打开网页 ZIP（已兼容 ${repairedScripts} 个未闭合外链脚本标签）…` : '正在打开网页 ZIP…');
         const encodedPath = entry.path.split('/').map(encodeURIComponent).join('/');
         const url = `/web-zip-runtime/${encodeURIComponent(id)}/${encodedPath}?v=${Date.now()}`;
@@ -219,5 +229,5 @@
     }
 
     const unmount = id => id ? transact('readwrite', store => store.delete(id)) : Promise.resolve();
-    global.WebZipRuntime = { mount, unmount, cleanup, _test:{ normalizePath, guessType, runtimeType, repairExternalScriptTags, supportsRuntime, RUNTIME_PROTOCOL } };
+    global.WebZipRuntime = { mount, verifyArchive, unmount, cleanup, _test:{ normalizePath, guessType, runtimeType, repairExternalScriptTags, supportsRuntime, RUNTIME_PROTOCOL } };
 })(window);
