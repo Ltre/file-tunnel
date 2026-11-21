@@ -1217,20 +1217,38 @@ app.post('/api/admin/auth/setup', adminAuthRateLimit, (req, res) => {
     if (adminAuth.isConfigured()) return res.status(409).json({ error: 'admin-auth-already-configured' });
     if (!isPrivateAdminSetupRequest(req)) return res.status(403).json({ error: 'admin-auth-setup-local-network-required' });
     if (!adminAuth.finishSetup(req.body?.token, req.body?.issuer)) return res.status(401).json({ error: 'invalid-totp' });
-    res.setHeader('Set-Cookie', adminAuth.cookieHeader(req, adminAuth.createSession()));
-    res.json({ ok: true });
+    res.json(adminAuth.beginBinding(req,res));
 });
 
 app.post('/api/admin/auth/login', adminAuthRateLimit, (req, res) => {
     if (!adminAuth.isConfigured()) return res.status(409).json({ error: 'admin-auth-setup-required' });
     if (!adminAuth.verifyToken(req.body?.token)) return res.status(401).json({ error: 'invalid-totp' });
-    res.setHeader('Set-Cookie', adminAuth.cookieHeader(req, adminAuth.createSession()));
-    res.json({ ok: true });
+    res.json(adminAuth.beginBinding(req,res));
+});
+
+app.post('/api/admin/auth/dbsc/register',adminAuthRateLimit,(req,res)=>{
+    const instructions=adminAuth.registerDbsc(req,res);
+    if(!instructions)return res.status(403).json({error:'admin-dbsc-registration-invalid'});
+    res.json(instructions);
+});
+app.post('/api/admin/auth/dbsc/refresh',adminAuthRateLimit,(req,res)=>{
+    const result=adminAuth.refreshDbsc(req,res);
+    res.status(result.status).json(result.instructions||{error:'admin-dbsc-proof-required'});
 });
 
 app.post('/api/admin/auth/logout', (req, res) => {
+    adminAuth.logout(req);
     res.setHeader('Set-Cookie', adminAuth.cookieHeader(req, '', 0));
     res.json({ ok: true });
+});
+
+app.get('/api/admin/security/sessions',adminAuth.requireAuth,(req,res)=>{
+    res.setHeader('Cache-Control','no-store');
+    res.json({currentSessionId:adminAuth.getSession(req)?.id,sessions:adminAuth.sessions()});
+});
+app.delete('/api/admin/security/sessions/:id',adminAuth.requireAuth,(req,res)=>{
+    if(!adminAuth.revokeSession(req.params.id))return res.status(404).json({error:'session-not-found'});
+    res.setHeader('Cache-Control','no-store');res.json({ok:true});
 });
 
 
@@ -1354,6 +1372,7 @@ require('./server/upstream-exit-routes').registerUpstreamExitRoutes(app, { exits
 app.use([
     '/pages/admin.html',
     '/pages/admin-users.html',
+    '/pages/admin-security.html',
     '/pages/admin-layout.html',
     '/pages/admin-devices.html',
     '/pages/admin-tunnel-permissions.html',

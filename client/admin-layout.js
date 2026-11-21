@@ -3,6 +3,7 @@
     const items = [
         ['概览', '/admin/home', '⌂', '隧道总览'],
         ['安全与权限', '/admin/users', '♙', '用户管理'],
+        ['', '/admin/security', '♧', '安全中心'],
         ['', '/admin/tunnels', '☷', '隧道列表'],
         ['', '/admin/tunnel-permissions', '⚿', '隧道权限与隧道管理设备'],
         ['', '/admin/devices', '◎', '所有访问设备'],

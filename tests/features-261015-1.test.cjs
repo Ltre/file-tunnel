@@ -3,13 +3,16 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),fs=requir
 const {createAdminAuth}=require('../server/admin-auth'),{createTunnelAccess}=require('../server/tunnel-access'),{createTaskAutoCache}=require('../server/task-auto-cache');
 const read=name=>fs.readFileSync(name,'utf8'),tick=()=>new Promise(setImmediate);
 function directory(t){const dir=fs.mkdtempSync(path.join(os.tmpdir(),'dr2t-261015-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));return dir;}
-test('administrator signature survives reconstruction; stale duplicate and malformed cookies do not mask the valid session',t=>{
+test('administrator signing key stays durable and damaged keys fail closed',t=>{
     const dataDir=directory(t);fs.writeFileSync(path.join(dataDir,'.gauth-admin.json'),JSON.stringify({secret:'JBSWY3DPEHPK3PXP',createdAt:'fixture'}));
-    const first=createAdminAuth({dataDir}),token=first.createSession(),key=fs.readFileSync(path.join(dataDir,'.admin-session.key'),'utf8'),again=createAdminAuth({dataDir});
-    const request={headers:{cookie:'tunnel_admin_session=invalid; tunnel_admin_session='+token+'; tunnel_admin_session=%ZZ'}};
-    assert.equal(again.isAuthenticated(request),true);assert.equal(again.diagnose(request),'VALID');assert.equal(fs.readFileSync(path.join(dataDir,'.admin-session.key'),'utf8'),key);
-    assert.equal(again.diagnose({headers:{}}),'COOKIE_MISSING');assert.equal(again.diagnose({headers:{cookie:'tunnel_admin_session='+token+'x'}}),'SESSION_SIGNATURE_MISMATCH');
-    fs.writeFileSync(path.join(dataDir,'.admin-session.key'),'');assert.throws(()=>again.createSession(),/SIGNING_KEY_EMPTY/);assert.equal(fs.readFileSync(path.join(dataDir,'.admin-session.key'),'utf8'),'','never regenerate a damaged key silently');
+    const first=createAdminAuth({dataDir}),response={headers:{},setHeader(key,value){this.headers[key]=value;}};
+    const req={headers:{'user-agent':'Chrome DBSC fixture'},get(name){return this.headers[name.toLowerCase()]||'localhost';}};
+    first.beginBinding(req,response);
+    first.isAuthenticated({headers:{cookie:'__Host-tunnel_admin_session=aa.aa'}});
+    const key=fs.readFileSync(path.join(dataDir,'.admin-session.key'),'utf8'),again=createAdminAuth({dataDir});
+    assert.equal(again.isAuthenticated({headers:{cookie:'tunnel_admin_session=old'}}),false);
+    assert.equal(fs.readFileSync(path.join(dataDir,'.admin-session.key'),'utf8'),key);
+    fs.writeFileSync(path.join(dataDir,'.admin-session.key'),'');assert.equal(again.isAuthenticated({headers:{cookie:'__Host-tunnel_admin_session=aa.aa'}}),false);assert.equal(fs.readFileSync(path.join(dataDir,'.admin-session.key'),'utf8'),'','never regenerate a damaged key silently');
 });
 test('tunnel grants are durable, bound to both identifiers, cannot be forged, and short-code attempts are bounded',t=>{
     const dir=directory(t),gate=createTunnelAccess(dir),token=gate.issue('tunnel','device');assert.equal(createTunnelAccess(dir).verify(token,'tunnel','device'),true);

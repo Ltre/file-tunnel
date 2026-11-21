@@ -61,7 +61,7 @@ async function init(){
         }
         mode='setup';
         document.getElementById('title').textContent='绑定管理员身份验证器';
-        document.getElementById('description').textContent='这是首次设置。绑定成功后，管理会话将在本浏览器保持 30 天。';
+        document.getElementById('description').textContent='这是首次设置。TOTP 验证后，浏览器还必须完成 DBSC 设备绑定才能进入后台。请使用支持 DBSC 的 HTTPS 浏览器。';
         setupEl.classList.remove('hidden');
         issuerInput.value=data.setup.issuer||'Instant Tunnel Admin';
         renderSetup(data.setup);
@@ -83,7 +83,16 @@ document.getElementById('form').addEventListener('submit',async event=>{
     });
     const data=await response.json().catch(()=>({}));
     if(!response.ok){statusEl.textContent=data.error==='invalid-totp'?'验证码无效或已过期':'验证失败，请稍后重试';return;}
-    location.replace(next);
+    statusEl.textContent='动态验证码已通过，正在等待浏览器完成 DBSC 安全设备绑定…';
+    document.querySelector('#form button').disabled=true;
+    const deadline=Date.now()+120000;
+    while(Date.now()<deadline){
+        await new Promise(resolve=>setTimeout(resolve,1500));
+        const check=await fetch('/api/admin/auth/status',{cache:'no-store'}).then(response=>response.json()).catch(()=>({}));
+        if(check.authenticated){location.replace(next);return;}
+    }
+    document.querySelector('#form button').disabled=false;
+    statusEl.textContent='DBSC 绑定未完成：此浏览器可能尚未支持 DBSC，或当前不是 HTTPS 安全上下文。请更换兼容浏览器重新验证。';
 });
 
 init().catch(error=>{statusEl.textContent=error.message;});

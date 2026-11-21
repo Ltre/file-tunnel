@@ -16,18 +16,16 @@ class Element {
 }
 const options = { Option: class extends Element { constructor(name, value) { super('option'); this.textContent = name; this.value = value; } } };
 
-test('new administrator tokens and cookies last 30 days; expiry, marker revocation and signature checks remain enforced', t => {
+test('TOTP alone and legacy 30-day cookie cannot authenticate an administrator', t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dr2t-admin-261014-'));
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const marker = path.join(dir, '.gauth-admin.json'); fs.writeFileSync(marker, JSON.stringify({ secret: 'JBSWY3DPEHPK3PXP', createdAt: 'fixture' }));
-    const auth = createAdminAuth({ dataDir: dir }), token = auth.createSession(), payload = JSON.parse(Buffer.from(token.split('.')[0], 'base64url'));
-    assert.ok(Math.abs(payload.exp - payload.iat - 30 * 86400000) < 5);
-    assert.match(auth.cookieHeader({ secure: true, headers: {} }, token), /HttpOnly; SameSite=Strict; Max-Age=2592000; Secure$/);
-    const authenticated = value => auth.isAuthenticated({ headers: { cookie: 'tunnel_admin_session=' + value } });
-    t.mock.method(Date, 'now', () => payload.iat + 29 * 86400000); assert.equal(authenticated(token), true);
-    t.mock.method(Date, 'now', () => payload.exp); assert.equal(authenticated(token), false);
-    t.mock.method(Date, 'now', () => payload.iat); assert.equal(authenticated(token + 'x'), false);
-    fs.writeFileSync(marker, JSON.stringify({ secret: 'JBSWY3DPEHPK3PXP', createdAt: 'changed' })); assert.equal(authenticated(token), false);
+    const auth = createAdminAuth({ dataDir: dir });
+    assert.equal(auth.verifyToken('000000'), false);
+    assert.equal(typeof auth.createSession, 'undefined');
+    assert.match(auth.cookieHeader(null,'fixture'), /HttpOnly; Secure; SameSite=Strict; Max-Age=120$/);
+    assert.equal(auth.isAuthenticated({ headers:{cookie:'tunnel_admin_session=old-token'} }),false);
+    assert.equal(auth.diagnose({headers:{}}),'DBSC_BINDING_REQUIRED');
 });
 
 function landingAndDisk(search) {
