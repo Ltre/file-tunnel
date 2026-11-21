@@ -1,7 +1,7 @@
 # 源码、开发日志与 Prompt 对照索引
 
-> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
-> **文档更新时间**：`2026-11-19`
+> **源码基线 Commit**：`4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`  
+> **文档更新时间**：`2026-11-21`
 
 > 目的：后续 AI 遇到一个功能时，先知道应该读哪些“当前代码”和哪些“历史需求”，而不是全仓库盲搜一个关键词后凭局部结果判断。
 
@@ -477,7 +477,7 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 |---|---|---|
 | Trojan 节点八种格式互转、批量导入/导出和批量连通性检查 | `server/trojan-node-formats.js`、`server/upstream-exits.js`、`server/upstream-exit-routes.js`、`client/upstream-exits.js/.css`、`pages/upstream-exits.html` | [upstream-exits.md](./upstream-exits.md)、用户手册第 29.4 节、`tests/trojan-formats-261120.test.cjs`、`tests/requirements-261120.browser.cjs` |
 | 浏览器日志滚动保留、错误优先和配额回收 | `client/browser-logs.js`、`client/i18n-catalog.js`、`client/i18n-bootstrap.js`、`client/i18n/*.json` | [admin-security-deployment.md](./admin-security-deployment.md)、[localization.md](./pwa-ui/localization.md)、`tests/browser-logs-rolling-261120.browser.cjs` |
-| 跨隧道来源授权生命周期、目标隧道精确副本恢复和拒绝诊断 | `server.js`、`app.js`、`client/browser-logs.js` | [transfer-cache.md](./transfer-cache.md)、[tunnel-core.md](./tunnel-core.md)、`tests/forwarded-server-assets-261117.test.cjs`、`source-access-feedback-261120.test.cjs`、`source-access-diagnostic-261120.browser.cjs` |
+| 跨隧道来源授权生命周期、目标隧道精确副本恢复和拒绝诊断 | `server.js`、`app.js`、`client/browser-logs.js` | [transfer-cache.md](./transfer-cache.md)、[tunnel-core.md](./tunnel-core.md)、`tests/forwarded-server-assets-261117.test.cjs`、`tests/source-access-feedback-261120.test.cjs`、`tests/source-access-diagnostic-261120.browser.cjs` |
 | DataChannel 已排队字节排空期间的发送进度 | `client/file-assets.js` | [transfer-cache.md](./transfer-cache.md)、`tests/whole-file-progress-261116.test.cjs`、`tests/transfer-baseline-261116.test.cjs` |
 | 已授权成员退出重入、短码猜测限流和强制刷新可用性 | `server.js`、`app.js`、`client/tunnel-entry.js` | [tunnel-core.md](./tunnel-core.md)、[admin-security-deployment.md](./admin-security-deployment.md)、`tests/tunnel-rejoin-rate-limit-261121.test.cjs`、`tests/tunnel-rejoin-rate-limit-261121.browser.cjs` |
 | 网盘目录选择目标高亮（仅 CSS） | `client/disk-directory-picker.css` | [telegram-drive.md](./telegram-drive.md)、`prompts/resources/BUG-261120/disk-tree-selector-toggle-bug.jpg`、`tests/requirements-261120.browser.cjs` |
