@@ -28,7 +28,7 @@ test('网页 ZIP 使用 Service Worker 虚拟目录运行完整文件树', () =>
     assert.match(worker, /Cross-Origin-Resource-Policy/);
     assert.match(worker, /status:206/);
     assert.match(worker, /web-zip-runtime-ping/);
-    assert.match(worker, /instant-tunnel-v78/);
+    assert.match(worker, /const CACHE_NAME = 'instant-tunnel-v\d+/);
 
     const standalone = source('pages/web-zip-preview.html');
     assert.match(standalone, /WebZipRuntime\.mount\(entries,/);
@@ -53,7 +53,7 @@ test('草稿支持改名和来源传输记录锚点', () => {
     const workshop = source('client/web-workshop.js');
     const app = source('app.js');
     assert.match(workshop, /data-action="rename">改名/);
-    assert.match(workshop, /🔗 原记录/);
+    assert.match(workshop, /🔗 <span>原记录<\/span>/);
     assert.match(workshop, /config\.focusMessage/);
     assert.match(app, /focusMessage: \(messageId, source = \{\}\) => focusTransferRecordById/);
 });
@@ -78,8 +78,9 @@ test('网盘菜单脱离带 backdrop-filter 的卡片并统一按视口定位', 
 
 test('路由页在桌面与移动端使用独立固定顶栏显示品牌标题', () => {
     const page = source('pages/index.html');
-    assert.match(source('client/tunnel-landing.css'), /\.tunnel-landing-topbar\s*\{[\s\S]*?position:\s*fixed/);
+    assert.match(source('client/tunnel-landing.css'), /#sessionLanding\{position:fixed/);
+    assert.match(source('client/tunnel-landing.css'), /\.tunnel-landing-topbar\{position:(?:absolute|fixed)/);
     assert.match(page, /href="\/client\/tunnel-landing\.css"/);
-    assert.match(page, /id="sessionLanding"[\s\S]*?<header class="tunnel-landing-topbar"><strong>🚀 Drop2Tunnel Studio<\/strong><\/header>/);
+    assert.match(page, /id="sessionLanding"[\s\S]*?<header class="tunnel-landing-topbar"><strong>[\s\S]*?<span>Drop2Tunnel Studio<\/span><\/strong><\/header>/);
     assert.doesNotMatch(page, /tunnel-landing-main">\s*<div class="header">/);
 });

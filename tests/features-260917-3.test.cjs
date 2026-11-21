@@ -8,7 +8,7 @@ const source = file => fs.readFileSync(path.join(root, file), 'utf8');
 
 test('Service Worker 只顺序预缓存核心资源且单个 404 不阻止网页 ZIP 运行服务安装', () => {
     const worker = source('service-worker.js');
-    assert.match(worker, /instant-tunnel-v78/);
+    assert.match(worker, /const CACHE_NAME = 'instant-tunnel-v\d+/);
     assert.match(worker, /for \(const resource of PRECACHE_CORE\)/);
     assert.match(worker, /if \(response\.ok && !response\.redirected\) await cache\.put/);
     assert.doesNotMatch(worker, /Promise\.allSettled\(APP_SHELL\.map/);
@@ -27,9 +27,9 @@ test('网页 ZIP 两个入口显示启动阶段并对 Service Worker 等待设�
     assert.match(runtime, /X-Web-Zip-Runtime/);
     assert.match(runtime, /options\.onStatus\?\.\('正在启动网页 ZIP 运行服务/);
     assert.match(preview, /正在解压网页 ZIP/);
-    assert.match(preview, /WebZipRuntime\.mount\(entries,\{onStatus/);
+    assert.match(preview, /WebZipRuntime\.mount\(entries,\{trust,onStatus/);
     assert.match(workshop, /web-workshop-preview-status/);
-    assert.match(workshop, /global\.WebZipRuntime\.mount\(files,\{entryPath,onStatus/);
+    assert.match(workshop, /global\.WebZipRuntime\.mount\(files,\{trust,entryPath,onStatus/);
     assert.match(preview, /renderEpoch/);
     assert.match(workshop, /previewEpoch/);
 });

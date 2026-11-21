@@ -9,6 +9,9 @@ function fixture({reject=false}={}){
         createFileInfoFromFile:(file,options)=>({...options,id:options.fileId,name:file.name,type:file.type,size:file.size}),
         state:{deviceId:'editor',deviceName:'Editor',sessionId:'B',socket:{timeout(){return this;},emit(event,data,ack){assert.equal(event,'web-zip-publish');if(reject)return ack(null,{ok:false,error:'WEB_ZIP_SOURCE_CHANGED'});const next=JSON.parse(JSON.stringify(message));next.fileInfo={...data.fileInfo,id:'new',webZipPendingSync:{state:'pending',sessionId:'A',messageId:'origin'}};ack(null,{ok:true,message:next});}}},
         requestWebZipEditCredential:async()=> 'fixture-credential',storeAndAnnounceFileAsset:async()=>{},getFromStore:async()=>({id:'new',data:new Blob(['new'])}),materializeCachedFileRecord:async x=>x,hasCompleteFileCache:()=>true,
+        // Signature issuance is covered by the real HTTP/Socket security suite;
+        // this legacy fixture isolates the optimistic-update regression.
+        signWebZipArchive:async(_blob,info)=>{info.webZipSha256='0'.repeat(64);info.webZipTrustIntegrityStamp='fixture-stamp';},
         updateHistoryMessage:async next=>updates.push(next),applyHistoryMessageUpdate:async next=>updates.push(next),refreshFileMessage:async()=>{},
         recentlyPublishedWebZipMessages:new Map(),enqueueFileCacheCleanup:ids=>cleaned.push(...ids),Date,JSON,Math,Promise,Error,window:{},
     };
