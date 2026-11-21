@@ -468,3 +468,19 @@ Git Log 中 2026-07-02 ~ 07-04 多个 commit 直接记录：
 - Web ZIP / S3 静态链接安全：`prompts/ideas/Security of webzip and S3 static links 261118.md`、`prompts/ideas/[QA]Security of webzip and S3 static links 261118.txt`。需求建议与已实现代码须逐项区分。
 - 隧道传输验收基线：`docs/other/[尚未决定采用] 隧道传输链路核心验收基线 v1.0.md`、`v1.1.md` 明确尚未决定采用，不可作为当前协议的规范性依据。
 - 版本对照与故障证据：`docs/devlog/version-compare-261116_1754-0de94882c998bd6d1556e80954fa3840835e0746.md`、`version-compare-261118_0555-0de94882c998bd6d1556e80954fa3840835e0746.md` 及对应 QA 文本；用于解释历史版本差异、失败证据与修复边界，最终行为仍由当前源码决定。
+
+
+
+## 21. 2026-11-20—21 当前分支新增导航
+
+| 已合入能力/行为 | 当前代码入口 | 主要证据/文档 |
+|---|---|---|
+| Trojan 节点八种格式互转、批量导入/导出和批量连通性检查 | `server/trojan-node-formats.js`、`server/upstream-exits.js`、`server/upstream-exit-routes.js`、`client/upstream-exits.js/.css`、`pages/upstream-exits.html` | [upstream-exits.md](./upstream-exits.md)、用户手册第 29.4 节、`tests/trojan-formats-261120.test.cjs`、`tests/requirements-261120.browser.cjs` |
+| 浏览器日志滚动保留、错误优先和配额回收 | `client/browser-logs.js`、`client/i18n-catalog.js`、`client/i18n-bootstrap.js`、`client/i18n/*.json` | [admin-security-deployment.md](./admin-security-deployment.md)、[localization.md](./pwa-ui/localization.md)、`tests/browser-logs-rolling-261120.browser.cjs` |
+| 跨隧道来源授权生命周期、目标隧道精确副本恢复和拒绝诊断 | `server.js`、`app.js`、`client/browser-logs.js` | [transfer-cache.md](./transfer-cache.md)、[tunnel-core.md](./tunnel-core.md)、`tests/forwarded-server-assets-261117.test.cjs`、`source-access-feedback-261120.test.cjs`、`source-access-diagnostic-261120.browser.cjs` |
+| DataChannel 已排队字节排空期间的发送进度 | `client/file-assets.js` | [transfer-cache.md](./transfer-cache.md)、`tests/whole-file-progress-261116.test.cjs`、`tests/transfer-baseline-261116.test.cjs` |
+| 已授权成员退出重入、短码猜测限流和强制刷新可用性 | `server.js`、`app.js`、`client/tunnel-entry.js` | [tunnel-core.md](./tunnel-core.md)、[admin-security-deployment.md](./admin-security-deployment.md)、`tests/tunnel-rejoin-rate-limit-261121.test.cjs`、`tests/tunnel-rejoin-rate-limit-261121.browser.cjs` |
+| 网盘目录选择目标高亮（仅 CSS） | `client/disk-directory-picker.css` | [telegram-drive.md](./telegram-drive.md)、`prompts/resources/BUG-261120/disk-tree-selector-toggle-bug.jpg`、`tests/requirements-261120.browser.cjs` |
+| 发布缓存版本及日志策略多语言 | `service-worker.js`、`client/i18n-catalog.js`、`client/i18n-bootstrap.js`、`client/i18n/*.json`、`package.json`、`package-lock.json` | [pwa-ui.md](./pwa-ui.md)、[localization.md](./pwa-ui/localization.md)、`docs/devlog/dev-2611.md` |
+
+本轮证据文档：`docs/devlog/dev-2611.md`（261120、261120-3、261121）、`prompts/dev-prompt-logs/dev-2611.md`、`docs/guide/Drop2Tunnel-User-Manual.zh-CN.md` 第 29.4 节。Prompt/Devlog 用于解释需求与验证边界；当前行为仍以本分支源码为准。
