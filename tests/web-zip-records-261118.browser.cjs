@@ -1,6 +1,6 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),vm=require('node:vm'),acorn=require('acorn');
-const {createWebZipSync}=require('../server/web-zip-sync'),{createWebZipCredentials}=require('../server/web-zip-credentials');
+const {createWebZipSync}=require('../server/web-zip-sync'),{createWebZipCollaborationCredential:createWebZipCredentials}=require('../server/web-zip-collaboration-credentials');
 const {chromium}=require(path.join(os.homedir(),'.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'));
 const root=path.resolve(__dirname,'..'),server=fs.readFileSync(path.join(root,'server.js'),'utf8'),app=fs.readFileSync(path.join(root,'app.js'),'utf8');
 const section=(source,start,end)=>source.slice(source.indexOf(start),source.indexOf(end,source.indexOf(start)));

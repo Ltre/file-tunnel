@@ -1,6 +1,6 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),vm=require('node:vm');
-const {createWebZipSync}=require('../server/web-zip-sync'),{createWebZipCredentials}=require('../server/web-zip-credentials');
+const {createWebZipSync}=require('../server/web-zip-sync'),{createWebZipCollaborationCredential:createWebZipCredentials}=require('../server/web-zip-collaboration-credentials');
 const clone=value=>JSON.parse(JSON.stringify(value));
 const pause=()=>new Promise(resolve=>setTimeout(resolve,10));
 async function settled(predicate){for(let i=0;i<100&&!predicate();i++)await pause();assert.ok(predicate(),'copy group did not settle');}
@@ -108,6 +108,7 @@ test('real SQLite writer finds a sibling outside live history and commits altern
     const live=messages=>({devices:new Map([['editor',{socketId:'editor'}]]),history:messages.map(message=>({message,size:JSON.stringify(message).length})),historySize:messages.reduce((sum,message)=>sum+JSON.stringify(message).length,0),fileAssets:new Map(),deletedMessageIds:[]});
     const sessions=new Map([['A',live([original])],['B',live([one])]]),root=path.resolve(__dirname,'..'),source=fs.readFileSync(path.join(root,'server.js'),'utf8');
     const broadcasts=[],context={require:name=>require(path.join(root,name)),path,SERVER_DATA_DIR:dir,Map,Set,Date,JSON,Buffer,Promise,Error,setImmediate,console,
+        app:{get(){},post(){}},crypto:require('node:crypto'),diskAuth:{sessionKey:Buffer.from('fixture'),user:()=>({permissionVersion:0}),users:()=>[],hasPermission:()=>true},
         sessions,infraStore:infra,io:{sockets:{sockets:new Map([['editor',{connected:true,data:{deviceId:'editor'}}]])}},MAX_MESSAGE_SIZE:1048576,MAX_HISTORY_SIZE:24*1048576,
         getHistoryMessageEntry:(session,id)=>session?.history.find(entry=>entry.message.id===id),createHistoryMessage:clone,
         enqueueInfraAudit:(task,_key,options)=>setImmediate(()=>{try{task();options.onSuccess();}catch(error){options.onFinalFailure(error);}}),

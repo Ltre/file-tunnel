@@ -8,7 +8,7 @@ function setup(t){
  const context={Map,Set,sessions,io:{sockets:{sockets}},canUseTunnelCapability:(_s,id)=>id!=='denied',getNearbyCandidates:()=>[],socket:{...socket,on:(key,fn)=>handlers.set(key,fn)},
   tunnelAccess:access,infraStore:{findShortCodeForSession:id=>id==='A'?'AAAAA':'BBBBB'},normalizeShortCode:x=>x,isValidSessionId:x=>['A','B'].includes(x),reserveShortCode:()=>true,historyLog(){},currentSession:'A',currentDevice:'editor-A',profileDevice:null,clientIp:'127.0.0.1',console,
   webZipSync:{topologyChanged:()=>changes++}};
- vm.runInNewContext(part('function canSyncWebZipSource(','const webZipSync =')+part("    socket.on('register-session-codes',","    // 信令转发"),context);
+ vm.runInNewContext(part('function canSyncWebZipSource(','const webZipTrustIntegrityStamp=')+part("    socket.on('register-session-codes',","    // 信令转发"),context);
  const register=(s=socket,proofs={A:'editor-A',B:'editor-B'})=>{context.socket=s;handlers.get('register-session-codes')({entries:Object.entries(proofs).map(([sessionId,deviceId])=>({sessionId,deviceId,shortCode:sessionId==='A'?'AAAAA':'BBBBB',accessGrant:access.issue(sessionId,deviceId)}))});};
  return{context,socket,sessions,sockets,register,get changes(){return changes;},handlers};
 }
@@ -37,7 +37,7 @@ test('durable pending work resumes through a verified identity when the creator 
  const f=setup(t),directory=fs.mkdtempSync(path.join(os.tmpdir(),'webzip-pending-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
  const original={id:'original-file',name:'page.html.zip',size:3,type:'application/zip',webZip:true,creatorDeviceId:'creator',webZipEditors:[]},copy={...original,id:'copy-file',webZipEditors:['editor-B']};
  const records=new Map([['A:original',{id:'original',type:'file',sender:'creator',fileInfo:original}],['B:copy',{id:'copy',type:'file',sender:'editor-B',fileInfo:copy,forwardedFrom:{sessionId:'A',messageId:'original'}}]]);
- const service=require('../server/web-zip-sync').createWebZipSync({filename:path.join(directory,'pending.json'),credentials:require('../server/web-zip-credentials').createWebZipCredentials({dataDir:directory}),
+ const service=require('../server/web-zip-sync').createWebZipSync({filename:path.join(directory,'pending.json'),credentials:require('../server/web-zip-collaboration-credentials').createWebZipCollaborationCredential({dataDir:directory}),
   readRecord:(s,id)=>records.get(s+':'+id),writeRecord:async(s,previous,next,options={})=>{assert.notEqual(options.check?.(),false);records.set(s+':'+previous.id,next);return next;},
   canPublish:(s,id)=>s==='B'&&id==='editor-B',hasContent:()=>true,isForwardedCopy:()=>true,canSync:f.context.canSyncWebZipSource});
  f.context.webZipSync=service;

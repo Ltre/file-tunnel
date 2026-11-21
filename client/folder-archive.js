@@ -99,6 +99,9 @@
     }
 
     async function extractZip(blob) {
+        const MAX_ARCHIVE=256*1024*1024,MAX_FILE=64*1024*1024,MAX_TOTAL=256*1024*1024,MAX_ENTRIES=4096;
+        if(blob.size>MAX_ARCHIVE)throw new Error('网页 ZIP 超出安全大小上限');
+        const started=Date.now();
         const bytes = new Uint8Array(await blob.arrayBuffer());
         const entries = [];
         const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -108,12 +111,17 @@
         }
         if (endOffset < 0) throw new Error('ZIP 文件缺少中央目录');
         const entryCount = view.getUint16(endOffset + 10, true);
+        if(entryCount>MAX_ENTRIES)throw new Error('网页 ZIP 文件项过多');
         let offset = view.getUint32(endOffset + 16, true);
         const decoder = new TextDecoder();
+        let expanded=0;
         for (let index = 0; index < entryCount; index++) {
+            if(Date.now()-started>20000)throw new Error('网页 ZIP 解压超过安全时间上限');
             if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) throw new Error('ZIP 中央目录损坏');
             const compression = view.getUint16(offset + 10, true);
             const compressedSize = view.getUint32(offset + 20, true);
+            const uncompressedSize=view.getUint32(offset+24,true);
+            if(uncompressedSize>MAX_FILE||expanded+uncompressedSize>MAX_TOTAL)throw Error('网页 ZIP 解压大小超过安全上限');
             const nameLength = view.getUint16(offset + 28, true);
             const extraLength = view.getUint16(offset + 30, true);
             const commentLength = view.getUint16(offset + 32, true);
@@ -129,9 +137,21 @@
                 if (compression === 0) data = compressed;
                 else if (compression === 8 && typeof DecompressionStream === 'function') {
                     const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-                    data = new Uint8Array(await new Response(stream).arrayBuffer());
+                    const reader=stream.getReader(),chunks=[];let size=0;
+                    try{
+                        while(true){
+                            if(Date.now()-started>20000)throw Error('网页 ZIP 解压超过安全时间上限');
+                            const {done,value}=await reader.read();if(done)break;
+                            size+=value.byteLength;
+                            if(size>MAX_FILE||expanded+size>MAX_TOTAL)throw Error('网页 ZIP 解压大小超过安全上限');
+                            chunks.push(value);
+                        }
+                    }catch(error){await reader.cancel().catch(()=>{});throw error;}finally{reader.releaseLock();}
+                    data=new Uint8Array(size);let write=0;for(const chunk of chunks){data.set(chunk,write);write+=chunk.byteLength;}
                 } else if (compression === 8) throw new Error('当前浏览器不支持解压 Deflate ZIP');
                 else throw new Error(`不支持 ZIP 压缩方式 ${compression}`);
+                if(data.length!==uncompressedSize)throw Error('网页 ZIP 文件尺寸校验失败');
+                expanded+=data.length;
                 entries.push({ path: normalizePath({ path }), data });
             } else entries.push({ path:normalizePath({ path }), data:new Uint8Array() });
             offset += 46 + nameLength + extraLength + commentLength;

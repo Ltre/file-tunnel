@@ -9570,8 +9570,67 @@ function canSyncWebZipSource(deviceId, sourceSessionId, editingSessionId) {
     return false;
 }
 
+const webZipTrustIntegrityStamp=require('./server/web-zip-trust-integrity-stamp').createWebZipTrustIntegrityStamp({
+    dataDir:SERVER_DATA_DIR,user:id=>diskAuth.user(id),hasPermission:(id,key)=>diskAuth.hasPermission(id,key)
+});
+app.get('/api/telegram/web-zip/access',(req,res)=>{
+    const identity=getTelegramDriveIdentity(req);
+    res.setHeader('Cache-Control','no-store');
+    res.json({allowed:Boolean(identity&&diskAuth.hasPermission(identity.id,'webZip.publishEdit'))});
+});
+const webZipFiles=message=>message?.type==='file'?[message.fileInfo].filter(Boolean):message?.type==='collection'?message.collection?.files||[]:[];
+const isWebZipFile=file=>Boolean(file&&(file.webZip===true||/\.html\.zip$/i.test(String(file.name||''))));
+const webZipScope=(file,messageId,sessionId,accountId)=>({fileId:file.id,messageId,sessionId,accountId,sha256:file.webZipSha256});
+function validWebZipStamp(file,messageId,sessionId,accountId){
+    return webZipTrustIntegrityStamp.verify(file.webZipTrustIntegrityStamp,webZipScope(file,messageId,sessionId,accountId));
+}
+function validWebZipMessage(message,sessionId,accountId){
+    return webZipFiles(message).filter(isWebZipFile).every(file=>validWebZipStamp(file,message.id,sessionId,accountId));
+}
+const webZipAuthMac=payload=>crypto.createHmac('sha256',diskAuth.sessionKey).update('web-zip-socket-auth\0'+payload).digest('base64url');
+app.post('/api/telegram/web-zip/socket-auth',(req,res)=>{
+    const identity=getTelegramDriveIdentity(req),sessionId=req.body?.sessionId,deviceId=req.body?.deviceId,socketId=req.body?.socketId;
+    const socket=io.sockets.sockets.get(socketId),session=sessions.get(sessionId);
+    if(!identity||!diskAuth.hasPermission(identity.id,'webZip.publishEdit')||!socket||!session||
+        !tunnelAccess.verify(req.body?.accessGrant,sessionId,deviceId)||socket.data?.currentWebZipSessionId!==sessionId||
+        socket.data?.currentWebZipDeviceId!==deviceId||!session.devices.has(deviceId)||
+        !canUseTunnelCapability(session,deviceId,'sendWebZip'))return res.status(403).json({ok:false});
+    const user=diskAuth.user(identity.id),payload=Buffer.from(JSON.stringify({accountId:identity.id,permissionVersion:user.permissionVersion||0,
+        socketId,sessionId,deviceId,expiresAt:Date.now()+30000})).toString('base64url');
+    res.setHeader('Cache-Control','no-store');res.json({ok:true,proof:payload+'.'+webZipAuthMac(payload)});
+});
+function verifyWebZipSocketProof(socket,token){
+    try{const [payload,mac,...extra]=String(token||'').split('.');if(extra.length||!payload||!/^[-\w]{43}$/.test(mac||''))return null;
+        const expected=webZipAuthMac(payload);if(!crypto.timingSafeEqual(Buffer.from(mac),Buffer.from(expected)))return null;
+        const value=JSON.parse(Buffer.from(payload,'base64url').toString('utf8'));
+        if(value.socketId!==socket.id||value.sessionId!==socket.data.currentWebZipSessionId||value.deviceId!==socket.data.currentWebZipDeviceId||
+            value.expiresAt<=Date.now()||value.expiresAt>Date.now()+30000||
+            !diskAuth.hasPermission(value.accountId,'webZip.publishEdit')||value.permissionVersion!==(diskAuth.user(value.accountId)?.permissionVersion||0))return null;
+        return value.accountId;
+    }catch(_){return null;}
+}
+function webZipAccount(socket){return verifyWebZipSocketProof(socket,socket.data.webZipAuthProof)||'';}
+function canSocketPublishWebZip(socket){return diskAuth.hasPermission(webZipAccount(socket),'webZip.publishEdit');}
+app.post('/api/telegram/web-zip/verify',(req,res)=>{
+    const {fileId,messageId,sessionId,sha256,stamp,preview}=req.body||{};
+    // Account ID is embedded in the signed stamp, but cannot be chosen by the
+    // recipient: read the account anchor from the persisted transfer record.
+    const message=preview===true?null:readWebZipRecord(sessionId,messageId);
+    const file=preview===true?{id:fileId,webZip:true,webZipSha256:sha256,webZipTrustIntegrityStamp:stamp}:
+        webZipFiles(message).find(value=>value?.id===fileId);
+    if(!file||!isWebZipFile(file)||file.webZipSha256!==sha256||file.webZipTrustIntegrityStamp!==stamp)
+        return res.status(403).json({ok:false,error:'WEB_ZIP_TRUST_RECORD_MISMATCH'});
+    const trusted=validWebZipStamp(file,messageId,sessionId,webZipTrustIntegrityStamp.accountId(stamp));
+    res.setHeader('Cache-Control','no-store');
+    return trusted?res.json({ok:true}):res.status(403).json({ok:false,error:'WEB_ZIP_TRUST_INVALID'});
+});
 const webZipSync = require('./server/web-zip-sync').createWebZipSync({
-    credentials: require('./server/web-zip-credentials').createWebZipCredentials({dataDir:SERVER_DATA_DIR}),
+    credentials: require('./server/web-zip-collaboration-credentials').createWebZipCollaborationCredential({dataDir:SERVER_DATA_DIR}),
+    resign:(target,targetSessionId,targetMessageId,source,sourceSessionId,sourceMessageId)=>{
+        const accountId=webZipTrustIntegrityStamp.accountId(source.webZipTrustIntegrityStamp);
+        if(!validWebZipStamp(source,sourceMessageId,sourceSessionId,accountId))throw Error('WEB_ZIP_TRUST_INVALID');
+        target.webZipTrustIntegrityStamp=webZipTrustIntegrityStamp.issue(webZipScope(target,targetMessageId,targetSessionId,accountId));
+    },
     filename: path.join(SERVER_DATA_DIR, 'web-zip-sync.json'), readRecord: readWebZipRecord, listRecords:listWebZipRecords, writeRecord: writeWebZipRecord,
     isForwardedCopy: (sessionId,messageId,file,origin) => {
         const entry = getHistoryMessageEntry(sessions.get(sessionId),messageId);
@@ -9818,10 +9877,31 @@ io.on('connection', (socket) => {
         });
     });
 
+    socket.on('web-zip-auth',(data,ack)=>{
+        if(typeof ack!=='function')return;
+        const accountId=verifyWebZipSocketProof(socket,data?.proof);
+        if(!accountId)return ack({ok:false,error:'WEB_ZIP_AUTH_DENIED'});
+        socket.data.webZipAuthProof=data.proof;
+        ack({ok:true});
+    });
+    socket.on('web-zip-stamp',(data,ack)=>{
+        if(typeof ack!=='function')return;
+        const sessionId=data?.sessionId,session=sessions.get(sessionId),accountId=webZipAccount(socket);
+        if(!canSocketPublishWebZip(socket)||sessionId!==currentSession||!session?.devices.has(currentDevice)||
+            !canUseTunnelCapability(session,currentDevice,'sendWebZip')||
+            ![data?.fileId,data?.messageId].every(isValidDeviceId))return ack({ok:false,error:'WEB_ZIP_TRUST_DENIED'});
+        if(!checkMessageRate())return ack({ok:false,error:'rate-limited'});
+        try{
+            const stamp=webZipTrustIntegrityStamp.issue({sha256:data.sha256,fileId:data.fileId,messageId:data.messageId,sessionId,accountId});
+            ack({ok:true,stamp});
+        }catch(error){ack({ok:false,error:'WEB_ZIP_TRUST_DENIED'});}
+    });
     socket.on('web-zip-publish', async (data, ack) => {
         const respond = typeof ack === 'function' ? ack : () => {};
         try {
             const sessionId = data?.sessionId, deviceId = currentDevice;
+            if(!canSocketPublishWebZip(socket)||!validWebZipStamp(data?.fileInfo,data?.messageId,sessionId,webZipAccount(socket)))
+                return respond({ok:false,error:'WEB_ZIP_TRUST_DENIED'});
             if (sessionId !== currentSession || !sessions.get(sessionId)?.devices.has(deviceId) ||
                 ![data?.messageId,data?.fileId,data?.fileInfo?.id].every(isValidDeviceId)) return respond({ok:false,error:'WEB_ZIP_UPDATE_INVALID'});
             if (!checkMessageRate()) return respond({ok:false,error:'rate-limited'});
@@ -9833,6 +9913,7 @@ io.on('connection', (socket) => {
     socket.on('web-zip-edit-credential', (data, ack) => {
         if (typeof ack !== 'function') return;
         try {
+            if(!canSocketPublishWebZip(socket))return ack({ok:false,error:'WEB_ZIP_EDIT_DENIED'});
             if (data?.sessionId !== currentSession || !sessions.get(currentSession)?.devices.has(currentDevice)) return ack({ok:false,error:'invalid-session'});
             if (!checkMessageRate()) return ack({ok:false,error:'rate-limited'});
             const credential=webZipSync.issueCredential({sessionId:currentSession,messageId:data.messageId,fileId:data.fileId,deviceId:currentDevice,editCredential:data.editCredential});
@@ -9843,6 +9924,7 @@ io.on('connection', (socket) => {
     socket.on('web-zip-edit-request', (data, ack) => {
         const respond = typeof ack === 'function' ? ack : () => {};
         try {
+            if(!canSocketPublishWebZip(socket))return respond({ok:false,error:'WEB_ZIP_EDIT_DENIED'});
             const sessionId = sanitizeString(data?.sessionId || '', 80);
             const fileId = sanitizeString(data?.fileId || '', 100);
             const session = sessions.get(sessionId);
@@ -9870,6 +9952,7 @@ io.on('connection', (socket) => {
     socket.on('web-zip-edit-response', async (data, ack) => {
         const respond = typeof ack === 'function' ? ack : () => {};
         try {
+            if(!canSocketPublishWebZip(socket))return respond({ok:false,error:'WEB_ZIP_EDIT_DENIED'});
             const requestId=String(data?.requestId||'');
             const request = webZipEditRequests.get(requestId) || pendingDeviceNotifications.find(item=>item.type==='web-zip-edit-request'&&item.data?.requestId===requestId)?.data;
             if (!request || request.creatorDeviceId !== currentDevice) return respond({ ok:false, error:'invalid-or-expired-request' });
@@ -10083,6 +10166,9 @@ io.on('connection', (socket) => {
             
             currentSession = sessionId;
             currentDevice = deviceId;
+            socket.data.currentWebZipSessionId=sessionId;
+            socket.data.currentWebZipDeviceId=deviceId;
+            socket.data.webZipAuthProof='';
             socket.data.vclientSessionId = clientType === 'vclient' ? sessionId : '';
             socket.data.vclientDeviceId = clientType === 'vclient' ? deviceId : '';
             const storedTunnel = infraStore?.getTunnel(sessionId);
@@ -10583,6 +10669,9 @@ io.on('connection', (socket) => {
             if (message.sender !== currentDevice) return;
             const session = sessions.get(sessionId);
             if (!session || !session.devices.has(currentDevice)) return;
+            if(webZipFiles(message).some(isWebZipFile)&&
+                (!canSocketPublishWebZip(socket)||!validWebZipMessage(message,sessionId,webZipAccount(socket))))
+                return socket.emit('permission-denied',{capability:'webZip.publishEdit'});
             delete message.markdownAttachments;
             delete message.snsMarkdownProgress;
             delete message.snsMarkdownRevision;
@@ -10664,6 +10753,17 @@ io.on('connection', (socket) => {
             if (message.sender !== forwardSourceDevice || JSON.stringify(message).length > MAX_MESSAGE_SIZE) {
                 return typeof ack === 'function' && ack({ ok: false, error: 'invalid-forward-message' });
             }
+            const forwardedWebZip=webZipFiles(message).filter(isWebZipFile);
+            if(forwardedWebZip.length){
+                const original=getHistoryMessageEntry(sourceSession,message.id)?.message;
+                if(!canSocketPublishWebZip(socket)||!original)return ack?.({ok:false,error:'WEB_ZIP_TRUST_DENIED'});
+                for(const file of forwardedWebZip){
+                    const source=webZipFiles(original).find(value=>value.id===file.id);
+                    if(!source||source.webZipTrustIntegrityStamp!==file.webZipTrustIntegrityStamp||
+                        !validWebZipStamp(source,message.id,forwardSourceSession,webZipTrustIntegrityStamp.accountId(source.webZipTrustIntegrityStamp)))
+                        return ack?.({ok:false,error:'WEB_ZIP_TRUST_INVALID'});
+                }
+            }
             const targetSession = getOrCreateTelegramSession(
                 targetSessionId,
                 infraStore.findShortCodeForSession(targetSessionId)
@@ -10691,6 +10791,7 @@ io.on('connection', (socket) => {
                 const files = message.type === 'file' ? [message.fileInfo] : message.type === 'collection' ? message.collection?.files || [] : [];
                 if (!isValidDeviceId(message.id) || !files.length || files.some(file => !sourceSession.fileAssets?.get(file?.id)?.providers?.has(forwardSourceDevice))) return typeof ack === 'function' && ack({ok:false,error:'forward-file-cache-required'});
                 for (const file of files) {
+                    if(isWebZipFile(file))file.webZipTrustIntegrityStamp=webZipTrustIntegrityStamp.issue(webZipScope(file,message.id,targetSessionId,webZipAccount(socket)));
                     file.backupSourceSessionId = forwardSourceSession;
                     file.forwardedToSessionId = targetSessionId;
                     delete file.forwardedSourceGrant;
@@ -10921,6 +11022,13 @@ io.on('connection', (socket) => {
             }
             const existingFiles = existingMessage.type === 'file' ? [existingMessage.fileInfo] : (existingMessage.collection?.files || []);
             const incomingFiles = message.type === 'file' ? [message.fileInfo] : (message.collection?.files || []);
+            if([...existingFiles,...incomingFiles].some(isWebZipFile)&&!canSocketPublishWebZip(socket))
+                return socket.emit('permission-denied',{capability:'webZip.publishEdit'});
+            for(const incomingFile of incomingFiles.filter(isWebZipFile)){
+                const previous=existingFiles.find(file=>file?.id===incomingFile?.id);
+                if(!previous&&!validWebZipStamp(incomingFile,message.id,sessionId,webZipAccount(socket)))
+                    return socket.emit('permission-denied',{capability:'webZipTrust'});
+            }
             for (const previousFile of existingFiles.filter(file => file?.webZip || /\.html\.zip$/i.test(String(file?.name || '')))) {
                 const incomingFile = incomingFiles.find(file => file?.id === previousFile.id || file?.replacesFileId === previousFile.id);
                 if (!incomingFile) {
@@ -10937,11 +11045,15 @@ io.on('connection', (socket) => {
                     return socket.emit('permission-denied', { capability:'webZipEdit' });
                 }
                 if (contentChanged) {
+                    if(!validWebZipStamp(incomingFile,message.id,sessionId,webZipAccount(socket)))
+                        return socket.emit('permission-denied',{capability:'webZipTrust'});
                     webZipSync.publish({ sessionId,deviceId:currentDevice,messageId:existingMessage.id,fileId:previousFile.id,fileInfo:incomingFile })
                         .catch(error => emitSocketError('web-zip-update-failed',/^WEB_ZIP_[A-Z_]+$/.test(error.message)?error.message:'WEB_ZIP_SAVE_FAILED'));
                     return;
                 }
                 incomingFile.webZip = true;
+                incomingFile.webZipSha256=previousFile.webZipSha256;
+                incomingFile.webZipTrustIntegrityStamp=previousFile.webZipTrustIntegrityStamp;
                 incomingFile.creatorDeviceId = previousFile.creatorDeviceId;
                 incomingFile.creatorDeviceName = previousFile.creatorDeviceName || incomingFile.creatorDeviceName || '';
                 incomingFile.webZipEditors = editors;

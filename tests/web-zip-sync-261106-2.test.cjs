@@ -12,7 +12,7 @@ function setup(t,{withCredentials=false}={}){
     records.set('B:copy',{id:'copy',type:'file',sender:'editor',timestamp:20,remark:'copy remark',forwardedFrom:{sessionId:'A',messageId:'origin'},fileInfo:{...clone(file),id:'copy-file',ownerDeviceId:'editor'}});
     const state={available:false,allowed:true,content:true,trusted:true,gate:null},readRecord=(s,id)=>records.get(s+':'+id)||null;
     const dependencies={filename,readRecord,
-        credentials:withCredentials?require('../server/web-zip-credentials').createWebZipCredentials({dataDir:directory}):undefined,
+        credentials:withCredentials?require('../server/web-zip-collaboration-credentials').createWebZipCollaborationCredential({dataDir:directory}):undefined,
         writeRecord:async(s,previous,next,options={})=>{
             if(s==='A'&&state.gate)await state.gate;
             if(s==='B'&&state.publishGate)await state.publishGate;
@@ -127,7 +127,7 @@ test('an unreadable sync journal blocks new deferred work but leaves an independ
 });
 test('the real eligibility adapter requires source membership or an online visible helper, never a global online stranger',()=>{
     const code=fs.readFileSync(path.join(__dirname,'../server.js'),'utf8');const context={sessions:new Map(),io:{sockets:{sockets:new Map()}},canUseTunnelCapability:()=>true,getNearbyCandidates:()=>[]};
-    const section=code.slice(code.indexOf('function canSyncWebZipSource('),code.indexOf('const webZipSync =',code.indexOf('function canSyncWebZipSource(')));
+    const section=code.slice(code.indexOf('function canSyncWebZipSource('),code.indexOf('const webZipTrustIntegrityStamp=',code.indexOf('function canSyncWebZipSource(')));
     vm.runInNewContext(section,context);const source={devices:new Map([['H',{socketId:'helper-A'}]])},target={devices:new Map([['editor',{socketId:'editor-B'}]])};
     context.sessions.set('A',source);context.sessions.set('B',target);context.io.sockets.sockets.set('helper-A',{connected:true,data:{deviceId:'H'}});context.io.sockets.sockets.set('editor-B',{connected:true,data:{deviceId:'editor'}});
     assert.equal(context.canSyncWebZipSource('editor','A'),false);
