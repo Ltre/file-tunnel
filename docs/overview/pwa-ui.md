@@ -482,7 +482,7 @@ Service Worker 对已有缓存壳的指定首页路由提供最长约 1 秒的 n
 
 ### 发布资源
 
-Service Worker 静态资源句柄提升至 `instant-tunnel-v155-content-v8-261121-rejoin`；`content-v8` 业务缓存语义保持不变。新语言包仍按原有按需加载策略，不因版本提升清理业务 IndexedDB。
+Service Worker 静态资源句柄在该阶段提升至 `instant-tunnel-v151-content-v8-261119-1`；`content-v8` 业务缓存语义保持不变。新语言包仍按原有按需加载策略，不因版本提升清理业务 IndexedDB。
 
 专项回归：`tests/control-center-drag-261118.browser.cjs`、`tests/markdown-navigation-261116.browser.cjs`、`tests/requirements-261119.browser.cjs`。
 

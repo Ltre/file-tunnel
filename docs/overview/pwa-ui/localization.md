@@ -246,7 +246,7 @@ Git 历史里有过翻译错误回退，因此一个重要原则是：
 - 当前 16 种语言中，`de`（Deutsch）替代旧 `fa`（فارسی）；`client/i18n/de.json` 新增，`client/i18n/fa.json` 删除。总语言数不变，启动包仍包含简中/繁中/英文，其余 13 种语言按需加载。
 - 新增并补齐网页工坊草稿入口“转入草稿箱编辑”等文案，以及“原记录”“发布”“来源隧道:{0}”“{0} 个文件”等动态模板；参数占位符保持原样。相关词条由中央目录生成，不在网页工坊或串流模块内另建词条表。
 - `de` 不是 RTL 语言；当前语言集不再有波斯语方向测试项。布局审查改为检查德语长词、长文本和常见窄屏折行，同时保留未来 RTL 兼容规则。
-- Service Worker 资源版本为 `instant-tunnel-v155-content-v8-261121-rejoin`；`content-v8` 业务缓存语义未变，按需语言包继续走版本校验与缓存更新。
+- Service Worker 资源版本在该阶段为 `instant-tunnel-v151-content-v8-261119-1`；`content-v8` 业务缓存语义未变，按需语言包继续走版本校验与缓存更新。
 
 专项回归：`tests/control-center-drag-261118.browser.cjs`、`tests/requirements-261119.browser.cjs`、`tests/i18n-packs-261109.test.cjs`、`tests/sw-language-update-261109.browser.cjs`。
 
