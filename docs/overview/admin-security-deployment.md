@@ -389,7 +389,7 @@ SNS URL、Telegram target、callback origin、OIDC origin 都需要专门 normal
 
 当前部分路由已经有 express-rate-limit 或内部 throttle；后续 public commercialization 不能把测试环境宽松设置直接上线。
 
-当前通用 HTTP 限流为每 IP **15 分钟 1000 次**。为避免 API 额度耗尽后连首页和强制刷新都无法打开，明确的应用壳页面、记录页和 `/client/`、构建 `/assets/` 下白名单静态资源的 **GET/HEAD** 不再计入该通用 API 额度。例外仅匹配固定路径/资源后缀和安全读取方法；API（即使路径看起来像 JS/JSON）、未知路径及同路径 POST 仍受限，不是按扩展名或 Accept 头全局放行。
+当前通用 HTTP 限流为每 IP **15 分钟 1000 次**。原有 `/api/streaming/`、S3 API 和 Telegram Drive 专用路由豁免保持不变；本轮另为明确的应用壳页面、记录页和 `/client/`、构建 `/assets/` 下白名单静态资源增加 **GET/HEAD** 例外，避免 API 额度耗尽后连首页和强制刷新都无法打开。例外仅匹配固定路径/资源后缀和安全读取方法；未命中既有专用豁免的 API（即使路径看起来像 JS/JSON）、未知路径及同路径 POST 仍受限，不是按扩展名或 Accept 头全局放行。
 
 短码猜测限流仍为每 IP **10 分钟 40 次**。HTTP 短码查询和 Socket `join-by-short-code` 只有在服务端验证了绑定**同一 sessionId + deviceId** 的有效成员 grant 时才不计入猜码次数；空凭据、伪造/错配凭据或其它隧道凭据仍计数。阈值没有提高、计数没有重置，也没有放宽成员授权。前端将 `LOCAL_REQUEST_RATE_LIMIT` 与真正短码猜测限流区分提示；已保存 grant 的临时 API 429 只保留当前隧道选择，后续 Socket 仍由服务端校验。
 
