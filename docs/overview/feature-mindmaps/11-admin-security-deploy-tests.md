@@ -1,7 +1,7 @@
 # 后台管理、安全、部署、存储与测试回归 — 思维导图
 
-> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
-> **文档更新时间**： 2026-11-19
+> **源码基线 Commit**：`4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`  
+> **文档更新时间**：2026-11-21
 > **状态**：现有功能与运行边界  
 > **主要参考**：[../admin-security-deployment.md](./../admin-security-deployment.md)、[../tests-and-regressions.md](./../tests-and-regressions.md)、[../source-map.md](./../source-map.md)
 
@@ -300,3 +300,12 @@ mindmap
 - 管理员新增 `/upstream-exits` 页面；节点、各服务策略独立保存，API 隐藏密码。
 - `tools/sing-box` 包含 Windows x64/Linux x64 运行文件；仅实际任务选择 Trojan 时启动 loopback HTTP 代理，最后任务结束后空闲约 30 秒停止。
 - 项目最低 Node 调整为 22.16.0，Undici 固定 7.30.2；Linux 原生执行和 macOS/ARM 不在当前已验证/随附范围内。
+
+
+## 2026-11-20—21 增量
+
+- 浏览器日志：256 MiB/100 万条滚动保留，错误优先；配额回收仅作用于日志 IndexedDB，不清理业务文件缓存。
+- 请求限流：API 仍为 15 分钟 1000 次；指定应用壳/静态资源 GET/HEAD 不计入该额度。短码仍为 10 分钟 40 次，只有服务端验证同一隧道/设备 grant 的已登记成员重入才跳过猜码计数。
+- 来源权限：加入生命周期检查、目标副本精确回退和 `CAONIMA-GPT` 拒绝诊断；不将诊断当成授权。
+- Trojan 节点：八种格式批量导入/导出、固定节点批量连通性检查、候选全选/撤销全选。
+- 新增 7 个测试文件、修改 5 个旧测试；最新测试结果及未通过边界见 [tests-and-regressions.md](../tests-and-regressions.md)。

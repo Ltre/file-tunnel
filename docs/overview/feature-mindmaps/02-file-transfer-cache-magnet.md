@@ -1,7 +1,7 @@
 # 文件、合辑、P2P、缓存、恢复与磁链 — 思维导图
 
-> **源码基线 Commit**：`1da33930cfb0f7022114825e2cb300ce18ff4eae`  
-> **文档更新时间**： 2026-11-19
+> **源码基线 Commit**：`4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`  
+> **文档更新时间**：2026-11-21
 > **状态**：现有功能与运行边界  
 > **主要参考**：[../transfer-cache.md](./../transfer-cache.md)、[../transfer-cache/magnet-download.md](./../transfer-cache/magnet-download.md)、[../transfer-cache/folder-archive-directory-mirror.md](./../transfer-cache/folder-archive-directory-mirror.md)
 
@@ -299,3 +299,10 @@ mindmap
 - 线路诊断读取 selected candidate pair 的连接级地址、端口、类型、协议、RTT 和字节计数；连接级速率不是单文件独占吞吐。
 - 发送端按文件/接收设备统计本机唯一供源范围，扣除 DataChannel 待排缓冲；接收端按活动范围显示纯 P2P、纯 Relay 或 mixed，完整缓存公告前不结束整文件行。
 - 缓存元数据恢复写入保护完整文件正文；缺少 recordMessageId 的旧恢复请求只在目标持久历史中按精确 fileId 查找并继续原授权校验。
+
+
+## 2026-11-20—21 增量
+
+- 来源权限生命周期：未加入/旧会话/已移除成员的迟到请求不误报来源无权；真正拒绝附 `FILE_SOURCE_ACCESS_DENIED` / `CAONIMA-GPT` 关联诊断。
+- 目标副本回退：仅凭目标成员 read 权限和服务端精确、未删除的目标文件引用，在目标隧道内找源；不授权读取来源隧道其它文件。
+- 发送进度：DataChannel 缓冲未排空时每约 100 ms 采样 `bufferedAmount`，显示进度最多 99%，完整 ACK 后才到 100%；不改变传输协议和选路。
