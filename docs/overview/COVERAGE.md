@@ -267,7 +267,7 @@
 | `client/tunnel-entry.js`、`app.js` | `tunnel-core.md`、`pwa-ui.md`（已授权成员重入与限流提示；来源拒绝诊断） |
 | `client/upstream-exits.js/.css`、`pages/upstream-exits.html` | `upstream-exits.md`、`admin-security-deployment.md`（批量节点操作） |
 | `client/disk-directory-picker.css` | `telegram-drive.md`（目录选择高亮，仅视觉调整） |
-| `client/i18n-catalog.js`、`client/i18n-bootstrap.js`、14 个按需语言 JSON | `pwa-ui/localization.md`（日志滚动保留策略文案） |
+| `client/i18n-catalog.js`、`client/i18n-bootstrap.js`、14 个语言 JSON | `pwa-ui/localization.md`（日志滚动保留策略文案） |
 
 ## 6. 当前服务端模块覆盖表
 
@@ -451,6 +451,14 @@
 
 **第七轮结束时目录计数：Pages 31、Client 121、Server 98、Tests 358、Tools 58。**
 
+### 7.3 2026-11-20—21 测试树增量
+
+- `tests/**` 从 **358 增至 365**：新增 7 个测试文件、修改 5 个既有测试；无删除。
+- 新增：`browser-logs-rolling-261120.browser.cjs`、`requirements-261120.browser.cjs`、`source-access-diagnostic-261120.browser.cjs`、`source-access-feedback-261120.test.cjs`、`trojan-formats-261120.test.cjs`、`tunnel-rejoin-rate-limit-261121.browser.cjs`、`tunnel-rejoin-rate-limit-261121.test.cjs`。
+- 修改：`browser-logs-261103.browser.cjs`、`forwarded-server-assets-261117.test.cjs`、`source-access-261107.test.cjs`、`transfer-baseline-261116.test.cjs`、`whole-file-progress-261116.test.cjs`。
+
+**当前目录计数：Pages 31、Client 121、Server 99、Tests 365、Tools 58。**
+
 ## 8. 根入口覆盖
 
 - `AGENTS.md` → 参与项目协作和 Overview 维护的长期约定，参见 `master.md`、`admin-security-deployment.md`；
@@ -557,12 +565,3 @@
 以上条件已经全部满足，**初始 Overview 创建阶段正式关闭**。
 
 当前已完成第八轮增量维护，下一轮源码比较锚点为 `4502065e4a4a1415d9b7c1a9f7a314f4167ff0cd`，维护规则以 [VERSION.md](./VERSION.md) 为准。
-
-
-### 7.3 2026-11-20—21 测试树增量
-
-- `tests/**` 从 **358 增至 365**：新增 7 个测试文件、修改 5 个既有测试；无删除。
-- 新增：`browser-logs-rolling-261120.browser.cjs`、`requirements-261120.browser.cjs`、`source-access-diagnostic-261120.browser.cjs`、`source-access-feedback-261120.test.cjs`、`trojan-formats-261120.test.cjs`、`tunnel-rejoin-rate-limit-261121.browser.cjs`、`tunnel-rejoin-rate-limit-261121.test.cjs`。
-- 修改：`browser-logs-261103.browser.cjs`、`forwarded-server-assets-261117.test.cjs`、`source-access-261107.test.cjs`、`transfer-baseline-261116.test.cjs`、`whole-file-progress-261116.test.cjs`。
-
-**当前目录计数：Pages 31、Client 121、Server 99、Tests 365、Tools 58。**
