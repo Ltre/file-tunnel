@@ -13,15 +13,29 @@ function proof(pair,jti,audience){const header={typ:'dbsc+jwt',alg:'ES256'};
     const claims={jti,aud:audience,iat:Math.floor(Date.now()/1000),key:pair.publicKey.export({format:'jwk'})};
     const signed=b64(header)+'.'+b64(claims);return signed+'.'+crypto.sign('sha256',Buffer.from(signed),{key:pair.privateKey,dsaEncoding:'ieee-p1363'}).toString('base64url');}
 test('trusted account publishes SHA-only Web ZIP; tamper, cross-record use and subsequent permission revocation fail closed',async t=>{
-    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'webzip-trusted-e2e-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+    const dir=fs.mkdtempSync(path.join(os.tmpdir(),'webzip-trusted-e2e-'));
+    let child,socket;
+    t.after(async()=>{
+        socket?.close();
+        if(child&&child.exitCode===null&&child.signalCode===null){
+            const exited=new Promise(resolve=>child.once('exit',resolve));
+            child.kill('SIGTERM');await exited;
+        }
+        const target=path.resolve(dir);
+        assert.equal(path.dirname(target),path.resolve(os.tmpdir()));
+        assert.ok(path.basename(target).startsWith('webzip-trusted-e2e-'));
+        fs.rmSync(target,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+    });
     const secret='JBSWY3DPEHPK3PXP';fs.writeFileSync(path.join(dir,'.gauth-admin.json'),JSON.stringify({secret,createdAt:'test-marker'}));
     const probe=net.createServer();await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
-    let logs='';const child=spawn(process.execPath,['server.js'],{cwd:path.resolve(__dirname,'..'),env:{...process.env,PORT:String(port),TUNNEL_DATA_DIR:dir,TELEGRAM_OIDC_MOCK_ENABLED:'1'},stdio:['ignore','pipe','pipe']});
-    t.after(()=>{if(child.exitCode===null)child.kill('SIGTERM');});for(const stream of [child.stdout,child.stderr])stream.on('data',value=>logs=(logs+value).slice(-2000));
+    let logs='';child=spawn(process.execPath,['server.js'],{cwd:path.resolve(__dirname,'..'),env:{...process.env,PORT:String(port),TUNNEL_DATA_DIR:dir,TELEGRAM_OIDC_MOCK_ENABLED:'1'},stdio:['ignore','pipe','pipe']});
+    for(const stream of [child.stdout,child.stderr])stream.on('data',value=>logs=(logs+value).slice(-2000));
     const root='http://127.0.0.1:'+port;let ready=false;for(let i=0;i<150;i++){if(child.exitCode!==null)break;try{if((await fetch(root+'/api/admin/auth/status')).ok){ready=true;break;}}catch(_){}await new Promise(resolve=>setTimeout(resolve,40));}
     assert.ok(ready,logs);
 
-    const login=await json(root+'/api/admin/auth/login',{token:totp(secret)});assert.equal(login.status,200);
+    // This fixture exercises the DBSC proof flow, so mark the login as proxied
+    // rather than opting into the direct-loopback HTTP testing session.
+    const login=await json(root+'/api/admin/auth/login',{token:totp(secret)},{'X-Forwarded-Proto':'https'});assert.equal(login.status,200);
     const pending=cookie(login,'__Host-tunnel_admin_dbsc_pending'),challenge=/challenge="([^"]+)"/.exec(login.headers.get('Secure-Session-Registration'))?.[1];
     assert.ok(pending&&challenge);
     const pair=crypto.generateKeyPairSync('ec',{namedCurve:'P-256'});
@@ -40,7 +54,7 @@ test('trusted account publishes SHA-only Web ZIP; tamper, cross-record use and s
         headers:{Cookie:adminCookie,'Content-Type':'application/json'},body:JSON.stringify({permissions:{'webZip.publishEdit':true}})});
     assert.equal(permissions.status,200);
 
-    const socket=io(root,{transports:['websocket'],reconnection:false});t.after(()=>socket.close());
+    socket=io(root,{transports:['websocket'],reconnection:false});
     await new Promise((resolve,reject)=>{socket.once('connect',resolve);socket.once('connect_error',reject);});
     const grantPromise=new Promise(resolve=>socket.once('tunnel-access-grant',resolve));
     const sessionId=crypto.randomUUID(),deviceId=crypto.randomUUID(),messageId=crypto.randomUUID(),fileId=crypto.randomUUID();

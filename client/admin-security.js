@@ -13,7 +13,8 @@ async function update(){
         const cell=value=>{const td=document.createElement('td');td.textContent=String(value);tr.append(td);return td;};
         cell(`${session.model||'未知'}${session.id===data.currentSessionId?'（当前设备）':''}`);
         cell(session.os||'未知');cell(session.browser||'未知');cell(date(session.lastActivityAt));cell(date(session.expiresAt));
-        const bound=cell(session.dbscBound?'已绑定':'未绑定');bound.className=session.dbscBound?'tag':'error';
+        const localLabel='本机 HTTP 测试会话（未绑定 DBSC）';
+        const bound=cell(session.localTest?(window.TunnelI18n?.t(localLabel)||localLabel):session.dbscBound?'已绑定':'未绑定');bound.className=session.dbscBound?'tag':'error';
         const td=document.createElement('td'),button=document.createElement('button');
         button.textContent=session.revokedAt?'已撤销':'踢除此会话';button.disabled=Boolean(session.revokedAt);
         button.addEventListener('click',async()=>{

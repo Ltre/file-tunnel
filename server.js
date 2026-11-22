@@ -1209,6 +1209,7 @@ app.get('/api/admin/auth/status', (req, res) => {
         authReason:authenticated?'VALID':adminAuth.diagnose(req),
         configured,
         setupAllowed,
+        localHttpTestAllowed:adminAuth.localHttpTestAllowed(req),
         setup: setupAllowed ? adminAuth.getSetup(req.query?.issuer) : undefined
     });
 });

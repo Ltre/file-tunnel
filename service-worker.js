@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v156-content-v8-261121-web-zip-security';
+const CACHE_NAME = 'instant-tunnel-v157-content-v8-261122-dbsc-https';
 const APP_SHELL = [
     '/',
     '/index.html',

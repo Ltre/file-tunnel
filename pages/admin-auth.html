@@ -33,6 +33,20 @@ const issuerInput=document.getElementById('issuer');
 const next=new URLSearchParams(location.search).get('next')||'/admin';
 let mode='login';
 let issuerTimer=null;
+let localHttpTestAllowed=false;
+
+function isLocalHttpTest(){return location.protocol==='http:'&&localHttpTestAllowed;}
+function setFormDisabled(disabled){
+    document.getElementById('token').disabled=disabled;
+    issuerInput.disabled=disabled;
+    document.querySelector('#form button').disabled=disabled;
+}
+function requireLoginContext(){
+    if(location.protocol==='https:'||isLocalHttpTest())return true;
+    setFormDisabled(true);
+    statusEl.textContent='管理员 DBSC 登录需要证书有效的 HTTPS。请通过 HTTPS 地址重新打开；HTTP localhost 不会触发浏览器原生注册。';
+    return false;
+}
 
 function renderSetup(setup){
     document.getElementById('secret').textContent=setup.secret;
@@ -42,6 +56,7 @@ function renderSetup(setup){
 }
 
 async function refreshSetup(){
+    if(!requireLoginContext())return;
     const issuer=issuerInput.value.trim();
     const response=await fetch(`/api/admin/auth/status?issuer=${encodeURIComponent(issuer)}`,{cache:'no-store'});
     const data=await response.json();
@@ -49,8 +64,11 @@ async function refreshSetup(){
 }
 
 async function init(){
+    setFormDisabled(true);
     const response=await fetch('/api/admin/auth/status',{cache:'no-store'});
     const data=await response.json();
+    localHttpTestAllowed=data.localHttpTestAllowed===true;
+    if(!requireLoginContext())return;
     if(data.authenticated){location.replace(next);return;}
     if(!data.configured){
         if(!data.setupAllowed){
@@ -66,6 +84,8 @@ async function init(){
         issuerInput.value=data.setup.issuer||'Instant Tunnel Admin';
         renderSetup(data.setup);
     }
+    if(isLocalHttpTest())document.getElementById('description').textContent='本机 HTTP 测试模式：TOTP 验证后使用临时测试会话，未进行原生 DBSC 绑定。该会话仅适用于本机回环地址。';
+    setFormDisabled(false);
 }
 
 issuerInput.addEventListener('input',()=>{
@@ -75,6 +95,7 @@ issuerInput.addEventListener('input',()=>{
 
 document.getElementById('form').addEventListener('submit',async event=>{
     event.preventDefault();
+    if(!requireLoginContext())return;
     statusEl.textContent='正在验证...';
     const response=await fetch(`/api/admin/auth/${mode}`,{
         method:'POST',
@@ -83,6 +104,19 @@ document.getElementById('form').addEventListener('submit',async event=>{
     });
     const data=await response.json().catch(()=>({}));
     if(!response.ok){statusEl.textContent=data.error==='invalid-totp'?'验证码无效或已过期':'验证失败，请稍后重试';return;}
+    if(isLocalHttpTest()){
+        if(data.localTest!==true||data.dbscRequired!==false){statusEl.textContent='验证失败，请稍后重试';return;}
+        document.querySelector('#form button').disabled=true;
+        const check=await fetch('/api/admin/auth/status',{cache:'no-store'}).then(response=>response.ok?response.json():null).catch(()=>null);
+        if(check){
+            localHttpTestAllowed=check.localHttpTestAllowed===true;
+            if(!requireLoginContext())return;
+            if(check.authenticated){location.replace(next);return;}
+        }
+        document.querySelector('#form button').disabled=false;
+        statusEl.textContent='验证失败，请稍后重试';
+        return;
+    }
     statusEl.textContent='动态验证码已通过，正在等待浏览器完成 DBSC 安全设备绑定…';
     document.querySelector('#form button').disabled=true;
     const deadline=Date.now()+120000;
@@ -92,7 +126,7 @@ document.getElementById('form').addEventListener('submit',async event=>{
         if(check.authenticated){location.replace(next);return;}
     }
     document.querySelector('#form button').disabled=false;
-    statusEl.textContent='DBSC 绑定未完成：此浏览器可能尚未支持 DBSC，或当前不是 HTTPS 安全上下文。请更换兼容浏览器重新验证。';
+    statusEl.textContent='DBSC 绑定未完成，尚未取得管理员权限。请确认浏览器支持并已启用原生 DBSC、设备安全密钥可用，以及 HTTPS 证书有效，再重新验证。';
 });
 
 init().catch(error=>{statusEl.textContent=error.message;});

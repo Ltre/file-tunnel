@@ -1,7 +1,7 @@
 'use strict';
 
-// Admin TOTP only opens a short registration window. A real admin session exists
-// only after the browser proves possession of a native DBSC registration key.
+// HTTPS administrators must prove possession of a native DBSC registration key.
+// Explicitly scoped loopback HTTP test sessions use TOTP without claiming DBSC.
 const crypto=require('node:crypto');
 const fs=require('node:fs');
 const path=require('node:path');
@@ -11,6 +11,7 @@ const PENDING_COOKIE='__Host-tunnel_admin_dbsc_pending';
 // Chrome proactively refreshes DBSC credentials within two minutes of expiry.
 // A two-minute cookie would therefore trigger refresh on almost every request.
 const COOKIE_SECONDS=300;
+const LOCAL_TEST_SECONDS=15*24*60*60;
 const PENDING_MS=120000;
 const SESSION_MS=7*24*60*60*1000;
 const cleanId=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{20,128}$/.test(value)?value:'';
@@ -85,6 +86,22 @@ function endpointAudience(req,route){
     return `${scheme}://${host}${route}`;
 }
 
+// This is a local development exception, never proof of a DBSC-bound device.
+// Do not trust Host, req.ip, or forwarded headers as evidence of a local peer.
+function localHttpTestAllowed(req){
+    if(req.protocol!=='http')return false;
+    const remote=String(req.socket?.remoteAddress||'').replace(/^::ffff:/i,'');
+    if(remote!=='127.0.0.1'&&remote!=='::1')return false;
+    const header=name=>req.get?.(name)||req.headers?.[name]||'';
+    if(!/^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i.test(header('host')))return false;
+    if(Object.keys(req.headers||{}).some(name=>{
+        const lower=name.toLowerCase();
+        return lower==='forwarded'||lower.startsWith('x-forwarded-')||lower==='x-real-ip'||lower==='cf-connecting-ip';
+    }))return false;
+    const origin=header('origin');
+    return !origin||origin===endpointAudience(req,'');
+}
+
 function createAdminDbscSessions({dataDir,signingKey,marker}){
     const filename=path.join(dataDir,'.admin-dbsc-sessions.json');
     const pending=new Map();
@@ -110,14 +127,27 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
             const expected=crypto.createHmac('sha256',signingKey()).update('admin-dbsc-cookie\0'+parts[0]).digest('base64url');
             if(parts[1].length!==expected.length||!crypto.timingSafeEqual(Buffer.from(parts[1]),Buffer.from(expected)))return null;
             const value=JSON.parse(Buffer.from(parts[0],'base64url').toString('utf8'));
-            if(!cleanId(value.sid)||value.exp<=Date.now()||value.exp>Date.now()+COOKIE_SECONDS*1000+1000||value.marker!==marker())return null;
+            if(!cleanId(value.sid)||value.exp<=Date.now()||value.marker!==marker())return null;
             const sessions=load(),session=sessions.find(entry=>entry.id===value.sid);
-            if(!session||!session.boundAt||session.revokedAt||session.expiresAt<=Date.now()||session.marker!==value.marker)return null;
+            if(!session||session.revokedAt||session.expiresAt<=Date.now()||session.marker!==value.marker)return null;
+            if(value.exp>Date.now()+(session.localTest?LOCAL_TEST_SECONDS:COOKIE_SECONDS)*1000+1000)return null;
+            if(session.localTest){
+                if(!localHttpTestAllowed(req)||session.origin!==endpointAudience(req,''))return null;
+            }else if(!session.boundAt)return null;
             if(touch&&Date.now()-(session.lastActivityAt||0)>30000){session.lastActivityAt=Date.now();save(sessions);}
             return session;
         }catch(_){return null;}
     }
     function begin(req,res){
+        if(localHttpTestAllowed(req)){
+            const now=Date.now(),session={id:random(),accountId:'administrator',marker:marker(),
+                localTest:true,origin:endpointAudience(req,''),boundAt:0,createdAt:now,lastActivityAt:now,lastRefreshAt:0,
+                expiresAt:now+LOCAL_TEST_SECONDS*1000,revokedAt:0,...deviceInfo(req.get?.('user-agent')||''),address:String(req.socket.remoteAddress)};
+            const sessions=load();sessions.push(session);save(sessions);
+            res.setHeader('Set-Cookie',[cookie(PENDING_COOKIE,'',0),cookie(COOKIE_NAME,grant(session),LOCAL_TEST_SECONDS)]);
+            res.setHeader('Cache-Control','no-store');
+            return {authenticated:true,localTest:true,dbscRequired:false,expiresAt:session.expiresAt};
+        }
         const now=Date.now();for(const [id,item] of pending)if(item.expiresAt<=now)pending.delete(id);
         if(pending.size>=500)throw Error('ADMIN_DBSC_PENDING_BUSY');
         const id=random(),challenge=random();
@@ -128,13 +158,14 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
         return {pending:true,dbscRequired:true,expiresAt:now+PENDING_MS};
     }
     function instructions(id,req){
-        // DBSC permits HTTP for localhost testing. The scope must match the
-        // registration request's actual origin, including its scheme.
+        // Keep scope and proof audience consistent. This URL calculation alone
+        // does not imply native browser support: Chromium's network layer only
+        // processes DBSC response headers over TLS with a valid certificate.
         const origin=endpointAudience(req,'');
         return {session_identifier:id,refresh_url:'/api/admin/auth/dbsc/refresh',scope:{origin,include_site:false,scope_specification:[]},
             credentials:[{type:'cookie',name:COOKIE_NAME,attributes:'Path=/; Secure; HttpOnly; SameSite=Strict'}]};
     }
-    function grant(session){return sign({sid:session.id,exp:Date.now()+COOKIE_SECONDS*1000,marker:session.marker,nonce:random()});}
+    function grant(session){return sign({sid:session.id,exp:Date.now()+(session.localTest?LOCAL_TEST_SECONDS:COOKIE_SECONDS)*1000,marker:session.marker,nonce:random()});}
     function register(req,res){
         const id=cookieValue(req,PENDING_COOKIE),item=pending.get(id);
         // Registration is a native browser request; no JS-provided public key
@@ -156,7 +187,7 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
         const id=cleanId(parseStructuredString(req.get('Sec-Secure-Session-Id')));
         if(!id)return {status:403};
         const sessions=load(),session=sessions.find(value=>value.id===id);
-        if(!session||session.revokedAt||!session.boundAt||session.expiresAt<=Date.now()||session.marker!==marker())return {status:403};
+        if(!session||session.localTest||session.revokedAt||!session.boundAt||session.expiresAt<=Date.now()||session.marker!==marker())return {status:403};
         const proof=session.refreshChallenge&&verifyProof(parseStructuredString(req.get('Secure-Session-Response')),session.publicKey,session.refreshChallenge,false,
             {audience:endpointAudience(req,'/api/admin/auth/dbsc/refresh'),sessionId:id});
         if(proof&&session.refreshChallenge&&session.refreshChallengeAt+60000>Date.now()){
@@ -171,10 +202,10 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
         res.setHeader('Cache-Control','no-store');
         return {status:403};
     }
-    function list(){return load().map(({publicKey,refreshChallenge,refreshChallengeAt,...session})=>({...session,dbscBound:Boolean(session.boundAt)}));}
+    function list(){return load().map(({publicKey,refreshChallenge,refreshChallengeAt,...session})=>({...session,dbscBound:!session.localTest&&Boolean(session.boundAt)}));}
     function revoke(id){const sessions=load(),session=sessions.find(item=>item.id===id);if(!session)return false;if(!session.revokedAt){session.revokedAt=Date.now();save(sessions);}return true;}
     function revokeRequest(req){const session=verify(req);return session?revoke(session.id):false;}
-    return {COOKIE_NAME,PENDING_COOKIE,COOKIE_SECONDS,begin,register,refresh,verify,list,revoke,revokeRequest,
+    return {COOKIE_NAME,PENDING_COOKIE,COOKIE_SECONDS,begin,register,refresh,verify,list,revoke,revokeRequest,localHttpTestAllowed,
         cookieHeader:(_req,value,seconds=COOKIE_SECONDS)=>cookie(COOKIE_NAME,value,seconds),_test:{verifyProof,sign,grant,load}};
 }
 module.exports={createAdminDbscSessions,verifyProof};

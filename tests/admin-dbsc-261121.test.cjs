@@ -25,6 +25,7 @@ test('admin TOTP registration requires signed DBSC device key; refresh and revoc
     const registerRes=makeRes(),registration=auth.registerDbsc(makeReq({cookie:pending,host:'example.com','secure-session-response':jwt(pair,{jti:challenge},true)}),registerRes);
     assert.match(registration.refresh_url,/dbsc\/refresh/);
     const granted=cookieFrom(registerRes,'__Host-tunnel_admin_session');
+    assert.ok([].concat(registerRes.headers['Set-Cookie']).some(value=>value.startsWith(granted)&&value.includes('Max-Age=300')),'native DBSC cookie remains short-lived');
     assert.equal(auth.isAuthenticated(makeReq({cookie:granted})),true);
     const reconstructed=createAdminAuth({dataDir:dir});
     assert.equal(reconstructed.isAuthenticated(makeReq({cookie:granted})),true);
@@ -67,7 +68,8 @@ test('admin DBSC accepts the current payload-key proof format and validates URL 
     assert.equal(auth.refreshDbsc(refreshReq(modernJwt(pair,{jti:renewedChallenge,aud:refreshUrl,sub:id})),makeRes()).status,200);
 });
 
-test('admin DBSC registration scope uses the actual localhost HTTP origin',t=>{
+// These direct calls exercise URL construction, not a native browser's TLS gate.
+test('admin DBSC scope and proof audience use the same origin in synthetic requests',t=>{
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'admin-dbsc-localhost-'));
     t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
     fs.writeFileSync(path.join(dir,'.gauth-admin.json'),JSON.stringify({secret:'JBSWY3DPEHPK3PXP',createdAt:'fixture'}));

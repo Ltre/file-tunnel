@@ -3,12 +3,22 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),fs=requir
 
 test('running server denies anonymous Web ZIP publication, forged trust verification and unbound admin security APIs',async t=>{
     const dir=fs.mkdtempSync(path.join(os.tmpdir(),'webzip-security-http-'));
-    t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+    let child,socket;
+    t.after(async()=>{
+        socket?.close();
+        if(child&&child.exitCode===null&&child.signalCode===null){
+            const exited=new Promise(resolve=>child.once('exit',resolve));
+            child.kill('SIGTERM');await exited;
+        }
+        const target=path.resolve(dir);
+        assert.equal(path.dirname(target),path.resolve(os.tmpdir()));
+        assert.ok(path.basename(target).startsWith('webzip-security-http-'));
+        fs.rmSync(target,{recursive:true,force:true,maxRetries:10,retryDelay:100});
+    });
     const probe=net.createServer();await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));const port=probe.address().port;
     await new Promise(resolve=>probe.close(resolve));
-    const child=spawn(process.execPath,['server.js'],{cwd:path.resolve(__dirname,'..'),
+    child=spawn(process.execPath,['server.js'],{cwd:path.resolve(__dirname,'..'),
         env:{...process.env,PORT:String(port),TUNNEL_DATA_DIR:dir,TELEGRAM_OIDC_MOCK_ENABLED:'1'},stdio:['ignore','pipe','pipe']});
-    t.after(()=>{if(child.exitCode===null)child.kill('SIGTERM');});
     let output='';child.stdout.on('data',value=>output=(output+value).slice(-1200));child.stderr.on('data',value=>output=(output+value).slice(-1200));
     const root='http://127.0.0.1:'+port;
     let ready=false;
@@ -27,7 +37,7 @@ test('running server denies anonymous Web ZIP publication, forged trust verifica
     assert.equal((await fetch(root+'/api/telegram/disk-admin/users')).status,401);
     const admin=await fetch(root+'/admin/security',{redirect:'manual'});assert.equal(admin.status,302);
     assert.equal((await fetch(root+'/api/admin/auth/status')).status,200);
-    const socket=io(root,{transports:['websocket'],reconnection:false});t.after(()=>socket.close());
+    socket=io(root,{transports:['websocket'],reconnection:false});
     await new Promise((resolve,reject)=>{socket.once('connect',resolve);socket.once('connect_error',reject);});
     const joined=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('join timeout')),3000);socket.once('tunnel-access-grant',data=>{clearTimeout(timer);resolve(data);});});
     const sessionId=crypto.randomUUID(),deviceId=crypto.randomUUID(),fileId=crypto.randomUUID(),messageId=crypto.randomUUID();
