@@ -29,6 +29,7 @@ const { createDiskStaticResources } = require('./disk-static-resources');
 const { normalizeMime, isRiskyFile, assertRiskyUploadAllowed } = require('./disk-risky-files');
 const { createDiskPartitions, validateName: validatePartitionName } = require('./disk-partitions');
 const { createDiskTrash } = require('./disk-trash');
+const { installPasskeyRoutes, installPasskeyAuthenticationRoutes, installPasskeyAdminRoutes } = require('./passkey-routes');
 const LOGICAL_FILE_UPLOAD_LIMIT = 2000 * 1024 * 1024;
 
 const publicFile = item => item ? {
@@ -171,12 +172,7 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const measureMetadata = (req, name, work) => req.diskMetadataTiming?.measure ? req.diskMetadataTiming.measure(name, work) : work();
     browser.use(metadataTiming); external.use(metadataTiming);
     const admin = express.Router();
-    admin.get('/passkey-origins',(req,res)=>res.set('Cache-Control','no-store').json({...auth.passkeyOriginSettings(),dependencies:auth.passkeyDomainDependencies()}));
-    admin.put('/passkey-origins',(req,res)=>{
-        if(req.get('Sec-Fetch-Site')==='cross-site'||req.get('Origin')&&req.get('Origin')!==getOrigin(req))return res.status(403).json({error:'ORIGIN_MISMATCH'});
-        if(!req.is('application/json'))return res.status(415).json({error:'CONTENT_TYPE_INVALID'});
-        res.set('Cache-Control','no-store').json({...auth.savePasskeyOriginSettings(req.body),dependencies:auth.passkeyDomainDependencies()});
-    });
+    installPasskeyAdminRoutes(admin, { auth: auth.passkeyAuth || auth, getOrigin });
     admin.get('/risk-file-types',(_req,res)=>res.set('Cache-Control','no-store').json(require('./disk-risky-files').riskyFileTypes()));
     admin.get('/users', (_req, res) => res.set('Cache-Control','no-store').json({users:auth.users()}));
     admin.patch('/users/:id/permissions', (req, res) => {
@@ -185,14 +181,6 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         if (!req.is('application/json')) return res.status(415).json({error:'CONTENT_TYPE_INVALID'});
         try { const user=auth.setPermissions(req.params.id,req.body?.permissions,'administrator');onPermissionsChanged(user);res.set('Cache-Control','no-store').json({user}); }
         catch(error) { res.status(error.message==='USER_NOT_FOUND'?404:400).json({error:error.message}); }
-    });
-    admin.get('/users/:id/passkeys',(req,res)=>{
-        try{res.set('Cache-Control','no-store').json({passkeys:auth.passkeys(req.params.id)});}catch(error){res.status(404).json({error:error.message});}
-    });
-    admin.delete('/users/:id/passkeys/:credentialId',(req,res)=>{
-        if(req.get('Sec-Fetch-Site')==='cross-site'||req.get('Origin')&&req.get('Origin')!==getOrigin(req))return res.status(403).json({error:'ORIGIN_MISMATCH'});
-        try{auth.removePasskey(req.params.id,req.params.credentialId);res.set('Cache-Control','no-store').json({ok:true});}
-        catch(error){res.status(error.message==='PASSKEY_LAST_CREDENTIAL'?409:404).json({error:error.message});}
     });
     const spaces = createDiskSpaces(dataDir, defaultStore);
     const partitions = createDiskPartitions({ dataDir, spaces, s3Credentials: userS3Credentials });
@@ -1439,30 +1427,19 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         req.diskStore = storage;
         next();
     }));
-    const {installPasskeyRoutes,FLOW_COOKIE,COOKIE_PATH}=require('./passkey-routes');
-    installPasskeyRoutes(browser,{auth,getIdentity,setIdentity,getOrigin,limiter,wrap});
-    function passkeys(router, externalMode) {
-        router.post('/passkeys/:kind/options', limiter(), wrap(async (req, res) => {
-            if (!externalMode && isMockRequest(req)) throw new Error('LOCAL_USE_OIDC_MOCK');
-            const current = externalMode || req.body?.addAccount === true ? null : getIdentity(req);
-            const origin = externalMode ? (req.diskApp.passkeyOrigin || getOrigin(req)) : getOrigin(req);
-            if(!externalMode&&req.params.kind==='register'&&current)auth.requireRecentAuthentication(current.id,req.diskSessionCookie,origin);
-            const binding = externalMode ? req.diskApp.appId : crypto.randomBytes(32).toString('base64url');
-            const result = await auth.passkeyOptions({ kind: req.params.kind, username: req.body?.username, existingUserId: current?.id || '', origin, binding, rpID:req.body?.rpID,allowExisting:!externalMode });
-            if (!externalMode) res.cookie(FLOW_COOKIE, binding, { httpOnly: true, secure: true, sameSite: 'lax', path: COOKIE_PATH, maxAge: 300000 });
-            res.json(result);
-        }));
-        router.post('/passkeys/verify', limiter(), wrap(async (req, res) => {
-            if (!externalMode && isMockRequest(req)) throw new Error('LOCAL_USE_OIDC_MOCK');
-            const binding = externalMode ? req.diskApp.appId : (String(req.headers.cookie || '').split(';').map(x => x.trim()).find(x => x.startsWith(FLOW_COOKIE+'=')) || '').slice(FLOW_COOKIE.length+1);
-            const current = externalMode || req.body?.addAccount === true ? null : getIdentity(req);
-            const origin=externalMode?(req.diskApp.passkeyOrigin||getOrigin(req)):getOrigin(req);
-            const identity = await auth.passkeyVerify({ flowId: req.body?.flow_id, response: req.body?.response, binding, existingUserId: current?.id || '',origin });
-            if (!externalMode) { res.clearCookie(FLOW_COOKIE, { path: COOKIE_PATH, httpOnly: true, secure: true, sameSite: 'lax' }); setIdentity(req, res, identity);auth.rememberAuthentication(identity.id,req.diskSessionCookie,origin); }
-            res.json({ identity, user_id: identity.id, authenticatedRpID:identity.authenticatedRpID });
-        }));
-    }
-    passkeys(browser, false); passkeys(external, true);
+    // Existing URLs stay compatible; the account service owns Passkey flows.
+    // Drive contributes only its established session proof and app binding.
+    installPasskeyRoutes(browser, {
+        auth: auth.passkeyAuth || auth, getIdentity, setIdentity,
+        getSessionProof: req => req.diskSessionCookie,
+        getOrigin, limiter, wrap, isMockRequest
+    });
+    installPasskeyAuthenticationRoutes(external, {
+        auth: auth.passkeyAuth || auth, limiter, wrap,
+        getOrigin: req => req.diskApp.passkeyOrigin || getOrigin(req),
+        issueBinding: req => req.diskApp.appId,
+        readBinding: req => req.diskApp.appId
+    });
 
     browser.use(wrap((req, res, next) => {
         const user = getIdentity(req);

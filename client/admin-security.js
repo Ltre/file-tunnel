@@ -1,5 +1,6 @@
 'use strict';
 const tbody=document.getElementById('sessions'),status=document.getElementById('state');
+const translate=value=>window.TunnelI18n?.t(value)||value;
 const date=value=>value?new Date(value).toLocaleString():'—';
 async function update(){
     const response=await fetch('/api/admin/security/sessions',{cache:'no-store'});
@@ -24,7 +25,8 @@ async function update(){
         if(!activity.childNodes.length)activity.textContent=date(session.lastActivityAt);
         cell(date(session.expiresAt));
         const localLabel='本机 HTTP 测试会话（未绑定 DBSC）';
-        const bound=cell(session.localTest?(window.TunnelI18n?.t(localLabel)||localLabel):session.dbscBound?'已绑定':'未绑定');bound.className=session.dbscBound?'tag':'error';
+        const independent=session.independentAuth===true||session.authMethod==='totp-passkey';
+        const bound=cell(session.localTest?translate(localLabel):session.dbscBound?'DBSC · '+translate('已绑定'):independent?translate('TOTP + 管理员 Passkey'):translate('未绑定'));bound.className=session.dbscBound||independent?'tag':'error';
         const td=document.createElement('td'),button=document.createElement('button');
         button.textContent=session.revokedAt?'已撤销':'踢除此会话';button.disabled=Boolean(session.revokedAt);
         button.addEventListener('click',async()=>{
@@ -38,3 +40,43 @@ async function update(){
     }
 }
 update().catch(error=>{status.textContent=error.message;});
+
+// These routes and credentials belong to the administrator security domain.
+// Do not use the front-end account selector, DiskClient or PasskeyClient here.
+(()=>{
+    const form=document.getElementById('adminPasskeyForm'),remark=document.getElementById('adminPasskeyRemark'),bind=document.getElementById('bindAdminPasskey'),notice=document.getElementById('adminPasskeyStatus'),list=document.getElementById('adminPasskeys');
+    if(!form||!remark||!bind||!notice||!list)return;
+    let binding=false;
+    const available=()=>window.isSecureContext&&window.PublicKeyCredential&&window.SimpleWebAuthnBrowser&&navigator.credentials;
+    async function request(path,body){
+        const response=await fetch('/api/admin/security/passkeys'+path,{credentials:'same-origin',cache:'no-store',...(body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{})});
+        if(response.status===401){top.location.href='/admin-auth?next=/admin/security';throw Error('ADMIN_AUTH_REQUIRED');}
+        const data=await response.json().catch(()=>({}));if(!response.ok)throw Error(data.error||'HTTP '+response.status);return data;
+    }
+    async function load(){
+        const data=await request('');list.replaceChildren();
+        for(const key of data.passkeys||[]){
+            const tr=document.createElement('tr');
+            for(const [index,value]of [key.remark||translate('未设置备注'),key.rpID,date(key.createdAt),key.lastUsedAt?date(key.lastUsedAt):translate('尚未使用')].entries()){
+                const td=document.createElement('td');td.textContent=value;if(index<2)td.className='message-content';tr.append(td);
+            }
+            list.append(tr);
+        }
+        notice.textContent=(data.passkeys||[]).length?'':translate('尚未绑定管理员 Passkey');
+        bind.disabled=binding||!available();
+        if(!available())notice.textContent=translate('当前环境无法绑定管理员 Passkey，请使用支持 Passkey 的安全连接浏览器。');
+    }
+    form.addEventListener('submit',async event=>{
+        event.preventDefault();if(binding||bind.disabled)return;binding=true;bind.disabled=true;remark.disabled=true;
+        notice.textContent=translate('请在浏览器中确认绑定管理员 Passkey…');
+        let verified=false;
+        try{
+            const flow=await request('/register/options',{remark:remark.value.trim()});
+            const response=await window.SimpleWebAuthnBrowser.startRegistration({optionsJSON:flow.options});
+            await request('/register/verify',{flow_id:flow.flow_id,response});
+            verified=true;remark.value='';await load();notice.textContent=translate('管理员 Passkey 已绑定');
+        }catch(error){notice.textContent=translate(verified?'管理员 Passkey 已绑定，但列表刷新失败，请刷新页面':'管理员 Passkey 绑定未完成，请重试')+' ['+error.message+']';}
+        finally{binding=false;bind.disabled=!available();remark.disabled=false;}
+    });
+    load().catch(error=>{notice.textContent=translate('无法读取管理员 Passkey，请刷新后重试')+' ['+error.message+']';});
+})();

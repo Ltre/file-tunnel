@@ -1207,6 +1207,7 @@ app.get('/api/admin/auth/status', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.json({
         authenticated,
+        bindingStatus: authenticated ? null : adminAuth.bindingStatus(req),
         authReason:authenticated?'VALID':adminAuth.diagnose(req),
         configured,
         setupAllowed,
@@ -9587,6 +9588,9 @@ function canSyncWebZipSource(deviceId, sourceSessionId, editingSessionId) {
 const webZipTrustIntegrityStamp=require('./server/web-zip-trust-integrity-stamp').createWebZipTrustIntegrityStamp({
     dataDir:SERVER_DATA_DIR,user:id=>diskAuth.user(id),hasPermission:(id,key)=>diskAuth.hasPermission(id,key)
 });
+const webZipLegacy=require('./server/web-zip-legacy').createWebZipLegacy({
+    filename:path.join(SERVER_DATA_DIR,'.web-zip-legacy-261122.json'),log:(event,details)=>console.warn(`[${event}]`,details)
+});
 app.get('/api/telegram/web-zip/access',(req,res)=>{
     const identity=getTelegramDriveIdentity(req);
     res.setHeader('Cache-Control','no-store');
@@ -9632,6 +9636,12 @@ app.post('/api/telegram/web-zip/verify',(req,res)=>{
     const message=preview===true?null:readWebZipRecord(sessionId,messageId);
     const file=preview===true?{id:fileId,webZip:true,webZipSha256:sha256,webZipTrustIntegrityStamp:stamp}:
         webZipFiles(message).find(value=>value?.id===fileId);
+    res.setHeader('Cache-Control','no-store');
+    if(preview!==true&&webZipLegacy.allows(file,messageId,sessionId)) {
+        const knownDigest=/^[a-f0-9]{64}$/.test(file.webZipSha256||'')?file.webZipSha256:'';
+        if(knownDigest&&sha256&&sha256!==knownDigest)return res.status(403).json({ok:false,error:'WEB_ZIP_TRUST_RECORD_MISMATCH'});
+        return res.json({ok:true,legacy:true,sha256:knownDigest});
+    }
     if(!file||!isWebZipFile(file)||file.webZipSha256!==sha256||file.webZipTrustIntegrityStamp!==stamp)
         return res.status(403).json({ok:false,error:'WEB_ZIP_TRUST_RECORD_MISMATCH'});
     const trusted=validWebZipStamp(file,messageId,sessionId,webZipTrustIntegrityStamp.accountId(stamp));
@@ -9943,24 +9953,18 @@ io.on('connection', (socket) => {
             const fileId = sanitizeString(data?.fileId || '', 100);
             const session = sessions.get(sessionId);
             if (sessionId !== currentSession || !session?.devices?.has(currentDevice) || !fileId) return respond({ ok:false, error:'invalid-request' });
-            let fileInfo = null, messageId = '';
-            for (const entry of session.history) {
-                const message = entry.message;
-                const candidate = message?.type === 'file' && message.fileInfo?.id === fileId
-                    ? message.fileInfo
-                    : message?.type === 'collection' ? (message.collection?.files || []).find(file => file?.id === fileId) : null;
-                if (candidate) { fileInfo = candidate; messageId = message.id; break; }
-            }
+            const {fileInfo,messageId}=require('./server/web-zip-edit-request').resolveWebZipEditRequest({
+                sessionId,messageId:sanitizeString(data?.messageId||'',100),fileId,readRecord:readWebZipRecord,listRecords:listWebZipRecords
+            });
             const creatorDeviceId = sanitizeString(fileInfo?.creatorDeviceId || '', 80);
-            if (!fileInfo || !creatorDeviceId || creatorDeviceId === currentDevice) return respond({ ok:false, error:'permission-request-not-required' });
-            if (!webZipSync.needsApproval(sessionId,messageId,fileId,currentDevice)) return respond({ ok:true, alreadyApproved:true, delivered:true, credential:webZipSync.issueCredential({sessionId,messageId,fileId,deviceId:currentDevice}) });
+            if (!webZipSync.needsApproval(sessionId,messageId,fileId,currentDevice)) return respond({ ok:true, alreadyApproved:true, delivered:true, messageId, credential:webZipSync.issueCredential({sessionId,messageId,fileId,deviceId:currentDevice}) });
             const requestId = crypto.randomUUID();
             const request = { requestId, sessionId, messageId, fileId, webZipRootId:fileInfo.webZipRootId || fileInfo.id, fileName:sanitizeString(fileInfo.name || '网页 ZIP', 240), creatorDeviceId, requesterDeviceId:currentDevice, requesterName:sanitizeString(session.devices.get(currentDevice)?.deviceName || '', 80), createdAt:Date.now() };
             webZipEditRequests.set(requestId, request);
             setTimeout(() => webZipEditRequests.delete(requestId), 7 * 24 * 60 * 60 * 1000).unref?.();
             const queuedNotification=queueDeviceNotification(creatorDeviceId,'web-zip-edit-request',request);
             respond({ ok:true, requestId, delivered:queuedNotification.delivered });
-        } catch (error) { respond({ ok:false, error:'permission-request-failed' }); }
+        } catch (error) { respond({ ok:false, error:['WEB_ZIP_RECORD_NOT_FOUND','WEB_ZIP_CREATOR_MISSING'].includes(error.message)?error.message:'permission-request-failed' }); }
     });
 
     socket.on('web-zip-edit-response', async (data, ack) => {
@@ -10769,12 +10773,16 @@ io.on('connection', (socket) => {
             }
             const forwardedWebZip=webZipFiles(message).filter(isWebZipFile);
             if(forwardedWebZip.length){
-                const original=getHistoryMessageEntry(sourceSession,message.id)?.message;
+                const sourceMessageId=message.forwardedFrom?.messageId;
+                const original=sourceMessageId&&readWebZipRecord(forwardSourceSession,sourceMessageId);
                 if(!canSocketPublishWebZip(socket)||!original)return ack?.({ok:false,error:'WEB_ZIP_TRUST_DENIED'});
                 for(const file of forwardedWebZip){
-                    const source=webZipFiles(original).find(value=>value.id===file.id);
-                    if(!source||source.webZipTrustIntegrityStamp!==file.webZipTrustIntegrityStamp||
-                        !validWebZipStamp(source,message.id,forwardSourceSession,webZipTrustIntegrityStamp.accountId(source.webZipTrustIntegrityStamp)))
+                    const source=webZipFiles(original).find(value=>value.id===file.sourceFileId);
+                    const legacy=source&&webZipLegacy.allows(source,original.id,forwardSourceSession);
+                    if(!source||!isWebZipFile(source)||!(/^[a-f0-9]{64}$/).test(file.webZipSha256||'')||
+                        (source.webZipSha256&&source.webZipSha256!==file.webZipSha256)||
+                        (!legacy&&(source.webZipTrustIntegrityStamp!==file.webZipTrustIntegrityStamp||
+                        !validWebZipStamp(source,original.id,forwardSourceSession,webZipTrustIntegrityStamp.accountId(source.webZipTrustIntegrityStamp)))))
                         return ack?.({ok:false,error:'WEB_ZIP_TRUST_INVALID'});
                 }
             }
@@ -11322,7 +11330,8 @@ io.on('connection', (socket) => {
                 // A cold runtime must recover a confirmed webpage publication,
                 // including its pending sync state, from the durable record.
                 const savedWebZip = !session.history.some(entry => entry.message.id === message.id) && infraStore?.getHistoryMessage?.(sessionId,message.id);
-                const restoredFromServer = Boolean(savedWebZip?.webZipUpdateVersion);
+                const restoredFromServer = Boolean(savedWebZip?.webZipUpdateVersion||
+                    webZipFiles(savedWebZip).some(file=>webZipLegacy.allows(file,savedWebZip.id,sessionId)));
                 if (restoredFromServer) message = savedWebZip;
                 const restoredWebZipFiles = webZipFiles(message).filter(isWebZipFile);
                 if (restoredWebZipFiles.length) {
@@ -11330,7 +11339,7 @@ io.on('connection', (socket) => {
                     // a read: never trust a browser snapshot as an old signed
                     // record or let it bypass the normal Socket.IO authorizer.
                     const trusted = restoredFromServer
-                        ? restoredWebZipFiles.every(file => validWebZipStamp(file,message.id,sessionId,
+                        ? restoredWebZipFiles.every(file => webZipLegacy.allows(file,message.id,sessionId)||validWebZipStamp(file,message.id,sessionId,
                             webZipTrustIntegrityStamp.accountId(file.webZipTrustIntegrityStamp)))
                         : message.sender === currentDevice && canSocketPublishWebZip(socket)
                             && canUseTunnelCapability(session,currentDevice,'sendWebZip')
@@ -12185,6 +12194,7 @@ function auditExternalRuntimeDependencies() {
 
 async function startServer() {
     infraStore = await createInfraStore({ dataDir: SERVER_DATA_DIR });
+    webZipLegacy.initialize(infraStore);
     vclientControl = createVClientControl({
         io,
         app,

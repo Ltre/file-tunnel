@@ -4,6 +4,13 @@
     window.DiskClient.setAccount(accountId);
     const status=document.getElementById('status'),add=document.getElementById('add'),context={accountId,diskSpace:''};
     const t=window.PasskeyClient.t;let identity;
+    if(window.parent!==window&&new URLSearchParams(location.search).get('embedded')==='1'){
+        document.documentElement.classList.add('account-center-embedded');
+        const close=()=>window.parent.postMessage({type:'account-center-close'},location.origin);
+        const home=document.querySelector('a[href="/"]');
+        if(home){home.textContent=t('关闭');home.onclick=event=>{event.preventDefault();close();};}
+        window.addEventListener('keydown',event=>{if(event.key==='Escape'&&!document.querySelector('dialog[open]')){event.preventDefault();close();}});
+    }
     const current=()=>window.DiskClient.getAccount()===accountId;
     async function authenticated(run){
         try{return await run();}catch(error){

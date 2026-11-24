@@ -4210,24 +4210,33 @@ function initAssetPresenceRefresh() {
     setInterval(() => refresh('presence-heartbeat', { allowHidden: true }), 30000);
 }
 
-let webZipPublishAllowed=false,webZipAccessRevision=0;
-async function refreshWebZipAccess(){
+let webZipPublishAllowed=false,webZipAccessRevision=0,webZipAccessFlight=null;
+function refreshWebZipAccess(){
+    const accountId=window.DiskClient?.getAccount?.()||'',socket=state.socket,sessionId=state.sessionId,deviceId=state.deviceId,socketId=socket?.id;
+    if(webZipAccessFlight&&webZipAccessFlight.accountId===accountId&&webZipAccessFlight.socket===socket&&
+        webZipAccessFlight.socketId===socketId&&webZipAccessFlight.sessionId===sessionId&&webZipAccessFlight.deviceId===deviceId)return webZipAccessFlight.promise;
+    const flight={accountId,socket,sessionId,deviceId,socketId};
+    flight.promise=loadWebZipAccess().finally(()=>{if(webZipAccessFlight===flight)webZipAccessFlight=null;});
+    webZipAccessFlight=flight;
+    return flight.promise;
+}
+async function loadWebZipAccess(){
     const revision=++webZipAccessRevision,accountId=window.DiskClient?.getAccount?.()||'';
-    const socket=state.socket,sessionId=state.sessionId,socketId=socket?.id;
-    const current=()=>revision===webZipAccessRevision&&accountId===(window.DiskClient?.getAccount?.()||'')&&sessionId===state.sessionId&&socket===state.socket&&socketId===state.socket?.id;
+    const socket=state.socket,sessionId=state.sessionId,socketId=socket?.id,deviceId=state.deviceId;
+    const current=()=>revision===webZipAccessRevision&&accountId===(window.DiskClient?.getAccount?.()||'')&&sessionId===state.sessionId&&deviceId===state.deviceId&&socket===state.socket&&socketId===state.socket?.id;
     const headers=accountId?{'X-Disk-Account':accountId}:{};
-    let allowed=false;
+    let allowed=false,authenticated=false;
     try{
         const response=await fetch('/api/telegram/web-zip/access',{cache:'no-store',headers});
         allowed=response.ok&&(await response.json()).allowed===true;
         if(!current())return;
         if(allowed&&socket?.connected&&sessionId){
             const proofResponse=await fetch('/api/telegram/web-zip/socket-auth',{method:'POST',cache:'no-store',
-                headers:{'Content-Type':'application/json',...headers},body:JSON.stringify({sessionId,deviceId:state.deviceId,
+                headers:{'Content-Type':'application/json',...headers},body:JSON.stringify({sessionId,deviceId,
                     socketId,accessGrant:savedTunnelGrant(sessionId)})});
             const proof=proofResponse.ok?await proofResponse.json():{};
             if(!current())return;
-            if(proof.ok)await new Promise(resolve=>socket.timeout(8000).emit('web-zip-auth',{proof:proof.proof},()=>resolve()));
+            if(proof.ok)authenticated=await new Promise(resolve=>socket.timeout(8000).emit('web-zip-auth',{proof:proof.proof},(error,result)=>resolve(!error&&result?.ok===true)));
         }
     }catch(_){if(!current())return;}
     if(!current())return;
@@ -4240,18 +4249,30 @@ async function refreshWebZipAccess(){
         document.querySelector('.web-zip-edit-dialog')?.remove();
         window.WebWorkshop?.close();
     }
+    return {allowed,authenticated};
+}
+async function requireWebZipSocketAuth(){
+    const socket=state.socket,socketId=socket?.id,sessionId=state.sessionId,deviceId=state.deviceId,accountId=window.DiskClient?.getAccount?.()||'';
+    if(!socket?.connected)throw Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'));
+    const result=await refreshWebZipAccess();
+    if(socket!==state.socket||socketId!==socket.id||sessionId!==state.sessionId||deviceId!==state.deviceId||accountId!==(window.DiskClient?.getAccount?.()||''))throw Error(formatWebZipText('账号操作未完成，请重试'));
+    if(!result?.allowed)throw Error(formatWebZipText('当前账号没有网页 ZIP 编辑／发送权限'));
+    if(!result.authenticated)throw Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'));
+    return {socket,socketId,sessionId,deviceId,accountId};
 }
 async function signWebZipArchive(blob,fileInfo,messageId){
-    await refreshWebZipAccess();
-    if(!webZipPublishAllowed)throw Error('当前账号没有网页 ZIP 编辑／发送权限');
-    if(!state.socket?.connected)throw Error('隧道尚未连接，无法签发网页 ZIP');
-    const sessionId=state.sessionId,accountId=window.DiskClient?.getAccount?.()||'',socket=state.socket;
-    const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())),value=>value.toString(16).padStart(2,'0')).join('');
-    if(sessionId!==state.sessionId||socket!==state.socket||accountId!==(window.DiskClient?.getAccount?.()||''))throw Error('账号操作未完成，请重试');
+    const {sessionId,accountId,socket,socketId,deviceId}=await requireWebZipSocketAuth();
+    const current=()=>sessionId===state.sessionId&&socket===state.socket&&socketId===socket.id&&deviceId===state.deviceId&&accountId===(window.DiskClient?.getAccount?.()||'');
+    const sha256=await window.WebZipRuntime.digestArchive(blob);
+    if(!current())throw Error('账号操作未完成，请重试');
+    // Hashing can outlast the short socket proof. Refresh it for the same
+    // captured account and tunnel immediately before the signing request.
+    await requireWebZipSocketAuth();
+    if(!current())throw Error('账号操作未完成，请重试');
     const result=await new Promise((resolve,reject)=>state.socket.timeout(12000).emit('web-zip-stamp',{
         sessionId,messageId,fileId:fileInfo.id,sha256
     },(error,value)=>error?reject(Error('网页 ZIP 签名请求超时')):resolve(value)));
-    if(!result?.ok||state.sessionId!==sessionId||accountId!==(window.DiskClient?.getAccount?.()||''))throw Error('服务器拒绝签发网页 ZIP，请检查账号权限或隧道状态');
+    if(!result?.ok||!current())throw Error('服务器拒绝签发网页 ZIP，请检查账号权限或隧道状态');
     fileInfo.webZipSha256=sha256;
     fileInfo.webZipTrustIntegrityStamp=result.stamp;
     return {fileId:fileInfo.id,messageId,sessionId,sha256,stamp:result.stamp};
@@ -5020,9 +5041,14 @@ function canEditWebZip(fileInfo) {
 const recentlyPublishedWebZipMessages = new Map();
 
 async function requestWebZipEditPermission(fileInfo) {
+    const {socket,sessionId,deviceId,accountId}=await requireWebZipSocketAuth();
+    const messageId=fileInfo.recordMessageId||'';
     return new Promise((resolve, reject) => {
-        state.socket.timeout(8000).emit('web-zip-edit-request', { sessionId:state.sessionId, fileId:fileInfo.id }, (error, response) => {
-            if (error || !response?.ok) return reject(new Error(response?.error || '编辑权限申请发送失败'));
+        socket.timeout(8000).emit('web-zip-edit-request', { sessionId, messageId, fileId:fileInfo.id }, (error, response) => {
+            const errors={WEB_ZIP_RECORD_NOT_FOUND:'未找到网页 ZIP 原记录，请刷新隧道后重试。',WEB_ZIP_CREATOR_MISSING:'网页 ZIP 缺少创建者信息，无法提交编辑申请。'};
+            if (error || !response?.ok) return reject(new Error(formatWebZipText(errors[response?.error]||response?.error||'编辑权限申请发送失败')));
+            if(sessionId!==state.sessionId||deviceId!==state.deviceId||socket!==state.socket||accountId!==(window.DiskClient?.getAccount?.()||''))return resolve(response);
+            if(response.credential&&response.messageId)rememberWebZipEditCredential(response.credential,sessionId,response.messageId,deviceId);
             showAppToast(response.alreadyApproved ? '本设备已经获得编辑权限' : response.delivered ? '编辑权限申请已发送' : '创建设备当前不在线，申请已排队');
             resolve(response);
         });
@@ -5055,18 +5081,17 @@ function rememberWebZipEditCredential(credential, sessionId, messageId, deviceId
 }
 
 async function requestWebZipEditCredential(fileInfo, messageId) {
-    const sessionId=state.sessionId, deviceId=state.deviceId;
-    if (!state.socket?.connected) throw Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'));
+    const {socket,sessionId,deviceId,accountId}=await requireWebZipSocketAuth();
     let editCredential='';
     try { editCredential=localStorage.getItem(`webZipEditCredential:${deviceId}:${sessionId}:${messageId}`)||''; } catch (_) {}
-    const response=await new Promise((resolve,reject)=>state.socket.timeout(10000).emit('web-zip-edit-credential', {
+    const response=await new Promise((resolve,reject)=>socket.timeout(10000).emit('web-zip-edit-credential', {
         sessionId,messageId,fileId:fileInfo.id,editCredential
     },(error,result)=>error?reject(Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'))):resolve(result)));
     if (!response?.ok) {
         const errors={WEB_ZIP_SOURCE_UNVERIFIED:'原网页关联尚未核验，请保留当前草稿并核对原记录或编辑凭据。',WEB_ZIP_EDIT_CREDENTIAL_INVALID:'网页编辑凭据已失效，请重新向创建者申请编辑权限。',WEB_ZIP_EDIT_DENIED:'网页编辑权限已变化，请重新向创建者申请编辑权限。'};
         throw Error(formatWebZipText(errors[response?.error]||'网页编辑凭据未能取得，请检查连接后重试'));
     }
-    if (!response.credential || state.sessionId!==sessionId || state.deviceId!==deviceId) throw Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'));
+    if (!response.credential || state.sessionId!==sessionId || state.deviceId!==deviceId || state.socket!==socket || accountId!==(window.DiskClient?.getAccount?.()||'')) throw Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'));
     rememberWebZipEditCredential(response.credential,sessionId,messageId,deviceId);
     return response.credential;
 }
@@ -9172,6 +9197,8 @@ function showForwardHistoryProgress(records, done) {
 }
 
 async function cloneForwardFileInfo(fileInfo, targetSessionId) {
+    const isWebZip=fileInfo.webZip===true||/\.html\.zip$/i.test(fileInfo.name||'');
+    const archive=isWebZip?await getWebZipBlob(fileInfo,fileInfo.ownerDeviceId||fileInfo.sender||''):null;
     const nextId = generateId();
     const storedFile = await getFromStore('files', fileInfo.id).catch(() => null);
     if (storedFile) {
@@ -9185,7 +9212,7 @@ async function cloneForwardFileInfo(fileInfo, targetSessionId) {
         await saveToStore('files', nextStored);
         if (hasCompleteFileCache(nextStored, fileInfo)) await fileAssetTransfer?.announce?.(nextStored);
     }
-    return {
+    const next = {
         ...fileInfo,
         id: nextId,
         ownerDeviceId: state.deviceId,
@@ -9195,6 +9222,11 @@ async function cloneForwardFileInfo(fileInfo, targetSessionId) {
         forwardedToSessionId: targetSessionId,
         timestamp: Date.now()
     };
+    if(isWebZip){
+        next.sourceFileId=fileInfo.id;
+        next.webZipSha256=await window.WebZipRuntime.digestArchive(archive);
+    }
+    return next;
 }
 
 async function forwardHistoryMessage(messageId, targetSessionId, options = {}) {
@@ -9237,6 +9269,10 @@ async function forwardHistoryMessage(messageId, targetSessionId, options = {}) {
         };
     }
     checkContext();
+    const forwardedZipFiles=message.type==='file'?[message.fileInfo]:message.type==='collection'?message.collection?.files||[]:[];
+    if(forwardedZipFiles.some(file=>file?.webZip===true||/\.html\.zip$/i.test(file?.name||''))){
+        await requireWebZipSocketAuth();checkContext();
+    }
     pending.set(key,message);
     const response = await new Promise((resolve, reject) => {
         socket.timeout(10000).emit('forward-message', { targetSessionId, message, targetDeviceId: tunnelDeviceId(targetSessionId), targetAccessGrant: savedTunnelGrant(targetSessionId) }, (err, response) => {
@@ -19443,11 +19479,12 @@ function initStreamingConsoleIntegration() {
     window.DiskUI?.init({ formatFileSize, showAppToast, historyLog });
     window.NotificationCenter?.init({
         deviceId: () => localStorage.getItem('deviceId') || state.deviceId,
-        onAction: (item, action) => {
+        onAction: async (item, action) => {
             if (item.type === 'stream-invitation') return window.StreamingConsole.notification(item, action);
+            if (item.type !== 'web-zip-edit-request') return;
+            const {socket}=await requireWebZipSocketAuth();
             return new Promise((resolve, reject) => {
-                if (item.type !== 'web-zip-edit-request') return resolve();
-                state.socket.timeout(8000).emit('web-zip-edit-response', { requestId:item.data?.requestId, approved:action === 'approve' }, (err, response) => err || !response?.ok ? reject(new Error(response?.error || '处理申请失败')) : resolve(response));
+                socket.timeout(8000).emit('web-zip-edit-response', { requestId:item.data?.requestId, approved:action === 'approve' }, (err, response) => err || !response?.ok ? reject(new Error(response?.error || '处理申请失败')) : resolve(response));
             });
         }
     });

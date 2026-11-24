@@ -15,7 +15,7 @@ const localTestNotice='本机 HTTP 测试模式：TOTP 验证后使用临时测�
 
 // This executes the real login-page script with a simulated location, clock and
 // HTTP responses. It verifies UI gating, not native Chrome DBSC registration.
-async function page({protocol='https:',respond}={}){
+async function page({protocol='https:',respond,userAgent=''}={}){
     const elements=new Map(),requests=[],navigations=[],qrCodes=[];
     const element=id=>{
         if(!elements.has(id)){
@@ -35,7 +35,7 @@ async function page({protocol='https:',respond}={}){
     const context=vm.createContext({
         document:{getElementById:element,querySelector:selector=>{
             assert.equal(selector,'#form button');return element('submit');
-        }},location,URLSearchParams,QRCode,isSecureContext:true,
+        }},location,URLSearchParams,QRCode,isSecureContext:true,navigator:{userAgent},
         Date:{now:()=>now},clearTimeout(){},setTimeout(callback,delay){now+=delay;queueMicrotask(callback);return now;},
         fetch:async(url,options={})=>{
             requests.push({url,options,navigations:navigations.slice(),status:element('status').textContent});
@@ -165,5 +165,52 @@ test('HTTPS binding timeout states that administrator access was not obtained (s
     assert.equal(ui.element('submit').disabled,false);
     assert.equal(ui.requests.filter(request=>request.options.method==='POST').length,1);
     assert.equal(ui.requests.filter(request=>request.url==='/api/admin/auth/status').length,81);
+    assert.deepEqual(ui.navigations,[]);
+});
+
+test('Android notice is advisory: only authenticated status permits navigation, even with a native registration response',async()=>{
+    const ui=await page({userAgent:'Mozilla/5.0 (Linux; Android 16; SM-X700) Chrome/156.0.8078.47 Mobile Safari/537.36',
+        respond:(_url,_options,number)=>({body:number===1?{configured:true,authenticated:false}:
+            number===2?{pending:true,dbscRequired:true}:number===3?
+                {authenticated:false,bindingStatus:{state:'awaiting-registration'}}:{authenticated:true}})});
+    assert.equal(ui.element('dbscPlatformHint').classList.contains('hidden'),false);
+    assert.equal(ui.element('submit').disabled,false,'UA must not prohibit a real future implementation');
+    await ui.submit();
+    assert.deepEqual(ui.navigations,['/admin?tab=security']);
+    assert.match(ui.requests[3].status,/Android 版 Chrome/);
+    assert.equal(ui.requests[3].navigations.length,0);
+});
+
+test('server-rejected native proof stops blind polling and never grants admin access',async()=>{
+    const ui=await page({respond:(_url,_options,number)=>({body:number===1?{configured:true,authenticated:false}:
+        number===2?{pending:true,dbscRequired:true}:{authenticated:false,bindingStatus:{state:'registration-rejected'}}})});
+    await ui.submit();
+    assert.match(ui.element('status').textContent,/ADMIN_DBSC_PROOF_REJECTED/);
+    assert.equal(ui.requests.length,3);
+    assert.equal(ui.element('submit').disabled,false);
+    assert.deepEqual(ui.navigations,[]);
+});
+
+test('pending expiry is reported separately from a browser that has not registered',async()=>{
+    const ui=await page({respond:(_url,_options,number)=>({body:number===1?{configured:true,authenticated:false}:
+        number===2?{pending:true,dbscRequired:true}:{authenticated:false,bindingStatus:{state:'expired'}}})});
+    await ui.submit();
+    assert.match(ui.element('status').textContent,/待绑定状态已过期/);
+    assert.equal(ui.requests.length,3);
+    assert.deepEqual(ui.navigations,[]);
+});
+
+test('a failed TOTP request restores controls and does not leave a second submit blocked',async()=>{
+    let attempts=0;
+    const ui=await page({respond:(url,options)=>{
+        if(options.method==='POST'){attempts++;throw Error('network unavailable');}
+        return {body:{configured:true,authenticated:false}};
+    }});
+    await ui.submit();
+    assert.equal(ui.element('status').textContent,'验证失败，请稍后重试');
+    assert.equal(ui.element('token').disabled,false);
+    assert.equal(ui.element('submit').disabled,false);
+    await ui.submit();
+    assert.equal(attempts,2);
     assert.deepEqual(ui.navigations,[]);
 });

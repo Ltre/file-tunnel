@@ -179,6 +179,15 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
             credentials:[{type:'cookie',name:COOKIE_NAME,attributes:'Path=/; Secure; HttpOnly; SameSite=Strict'}]};
     }
     function grant(session){return sign({sid:session.id,exp:Date.now()+(session.localTest?LOCAL_TEST_SECONDS:COOKIE_SECONDS)*1000,marker:session.marker,nonce:random()});}
+    function bindingStatus(req){
+        // Only the browser holding this short-lived, TOTP-issued pending cookie
+        // can observe its own registration progress. Never return challenges,
+        // JWTs, public keys, another pending browser's data, or an auth grant.
+        const item=pending.get(cookieValue(req,PENDING_COOKIE));
+        if(!item)return null;
+        return {state:item.expiresAt<=Date.now()?'expired':
+            item.proofRejected?'registration-rejected':'awaiting-registration',expiresAt:item.expiresAt};
+    }
     function register(req,res){
         const id=cookieValue(req,PENDING_COOKIE),item=pending.get(id);
         // Registration is a native browser request; no JS-provided public key
@@ -186,7 +195,7 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
         if(!item||item.expiresAt<=Date.now())return null;
         const proof=verifyProof(parseStructuredString(req.get('Secure-Session-Response')),null,item.challenge,true,
             {audience:endpointAudience(req,'/api/admin/auth/dbsc/register')});
-        if(!proof)return null;
+        if(!proof){item.proofRejected=true;return null;}
         pending.delete(id);
         const now=Date.now(),session={id:random(),accountId:'administrator',marker:marker(),publicKey:proof.jwk,algorithm:proof.alg,
             createdAt:now,boundAt:now,lastActivityAt:now,lastRefreshAt:now,expiresAt:now+SESSION_MS,revokedAt:0,
@@ -221,7 +230,7 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
         dbscBound:!session.localTest&&Boolean(session.boundAt)}));}
     function revoke(id){const sessions=load(),session=sessions.find(item=>item.id===id);if(!session)return false;if(!session.revokedAt){session.revokedAt=Date.now();save(sessions);}return true;}
     function revokeRequest(req){const session=verify(req);return session?revoke(session.id):false;}
-    return {COOKIE_NAME,PENDING_COOKIE,COOKIE_SECONDS,begin,register,refresh,verify,list,revoke,revokeRequest,localHttpTestAllowed,
+    return {COOKIE_NAME,PENDING_COOKIE,COOKIE_SECONDS,begin,register,refresh,verify,list,revoke,revokeRequest,localHttpTestAllowed,bindingStatus,
         cookieHeader:(_req,value,seconds=COOKIE_SECONDS)=>cookie(COOKIE_NAME,value,seconds),_test:{verifyProof,sign,grant,load}};
 }
 module.exports={createAdminDbscSessions,verifyProof};

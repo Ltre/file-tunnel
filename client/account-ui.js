@@ -2,6 +2,35 @@
     'use strict';
     const t = value => global.TunnelI18n?.t(value) || value;
     let current;
+    let centerHistoryClosing = false;
+    function closeCenter(fromHistory = false) {
+        const center = current?.center;
+        if (!center) return;
+        delete current.center;
+        center.dialog.close(); center.dialog.remove();
+        document.body.style.overflow = center.bodyOverflow;
+        if (center.returnFocus?.isConnected) center.returnFocus.focus();
+        if (!fromHistory && history.state?.globalAccountCenter === center.token) {
+            centerHistoryClosing = true; history.back();
+        }
+    }
+    function openCenter(accountId, returnFocus) {
+        if (!current || current.center || centerHistoryClosing) return;
+        const dialog = document.createElement('dialog'); dialog.className = 'account-center-overlay';
+        dialog.setAttribute('aria-label', t('账号中心'));
+        const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'account-center-close';
+        dismiss.textContent = '×'; dismiss.setAttribute('aria-label', t('关闭')); dismiss.title = t('关闭');
+        dismiss.onclick = () => closeCenter();
+        const frame = document.createElement('iframe'); frame.title = t('账号中心');
+        frame.src = '/account-center?disk_account=' + encodeURIComponent(accountId) + '&embedded=1';
+        const token = 'account-center-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+        current.center = { dialog, frame, token, returnFocus, bodyOverflow: document.body.style.overflow };
+        dialog.addEventListener('cancel', event => { event.preventDefault(); closeCenter(); });
+        dialog.append(dismiss, frame); document.body.append(dialog);
+        document.body.style.overflow = 'hidden';
+        history.pushState({ ...(history.state || {}), globalAccountCenter: token }, '', location.href);
+        dialog.showModal(); dismiss.focus();
+    }
     function open(options) {
         if (current) close();
         const overlay = document.createElement('div'); overlay.className = 'account-overlay';
@@ -46,7 +75,7 @@
                     }); select.classList.add('message-content'); select.textContent = user.name || user.username || user.id;
                     select.setAttribute('aria-pressed', String(user.id === (options.choose ? selected : options.currentAccount())));
                     const focused=!entry.reauthRequired&&user.id===options.currentAccount();
-                    const label = focused?button('管理当前账号',()=>{global.open('/account-center?disk_account='+encodeURIComponent(user.id),'_blank','noopener');}):document.createElement('small');
+                    const label = focused?button('管理当前账号',()=>openCenter(user.id,label)):document.createElement('small');
                     if(!focused)label.textContent=t(entry.reauthRequired?'需要重新登录':'');
                     let confirming = false;
                     const cancel = button('取消', () => { confirming = false; cancel.hidden = true; exit.textContent = t('退出'); status.textContent = ''; }); cancel.hidden = true;
@@ -73,11 +102,25 @@
     }
     function close(value = null) {
         if (!current) return; const previous = current; current = null;
+        if (previous.center) {
+            previous.center.dialog.close(); previous.center.dialog.remove();
+            document.body.style.overflow = previous.center.bodyOverflow;
+        }
         previous.cancelLoad(); previous.options.cancelSignIn?.(previous.signIn); previous.overlay.remove(); previous.resolve(value);
-        if (history.state?.globalAccountPanel) { const next = { ...history.state }; delete next.globalAccountPanel; history.replaceState(next, '', location.href); }
+        if (history.state?.globalAccountPanel) { const next = { ...history.state }; delete next.globalAccountPanel; delete next.globalAccountCenter; history.replaceState(next, '', location.href); }
     }
-    global.addEventListener('popstate', event => { if (current) { close(); event.stopImmediatePropagation(); } }, true);
-    document.addEventListener('keydown', event => { if (current && event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); close(); } }, true);
+    global.addEventListener('popstate', event => {
+        if (centerHistoryClosing) { centerHistoryClosing = false; event.stopImmediatePropagation(); return; }
+        if (current?.center) {
+            if (event.state?.globalAccountCenter !== current.center.token) closeCenter(true);
+            event.stopImmediatePropagation(); return;
+        }
+        if (current) { close(); event.stopImmediatePropagation(); }
+    }, true);
+    global.addEventListener('message', event => {
+        if (current?.center && event.origin === location.origin && event.source === current.center.frame.contentWindow && event.data?.type === 'account-center-close') closeCenter();
+    });
+    document.addEventListener('keydown', event => { if (current && event.key === 'Escape') { event.preventDefault(); event.stopImmediatePropagation(); if (current.center) closeCenter(); else close(); } }, true);
     function completeSignIn(target, identity) {
         if (identity && target && current?.signIn === target) close(identity);
     }

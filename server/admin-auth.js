@@ -171,6 +171,7 @@ function createAdminAuth(options) {
         finishSetup,
         verifyToken,
         beginBinding:dbsc.begin,
+        bindingStatus:dbsc.bindingStatus,
         localHttpTestAllowed:dbsc.localHttpTestAllowed,
         registerDbsc:dbsc.register,
         refreshDbsc:dbsc.refresh,

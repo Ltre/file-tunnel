@@ -62,3 +62,31 @@ test('real Chrome signs in after valid TOTP with an explicitly unbound and local
     assert.equal(auth.revokeSession(session.id),true);
     assert.equal((await page.request.get(base+'/api/admin/security/sessions')).status(),401);
 });
+
+test('real Chrome UI with Android UA shows the platform notice and a rejected proof separately (not native Android DBSC)',{timeout:20000},async t=>{
+    const root=path.resolve(__dirname,'..'),browser=await chromium.launch({channel:'chrome',headless:true});
+    t.after(()=>browser.close());
+    const context=await browser.newContext({locale:'zh-CN',userAgent:'Mozilla/5.0 (Linux; Android 16; SM-X700) AppleWebKit/537.36 Chrome/156.0.8078.47 Mobile Safari/537.36'});
+    let attempted=false,statusReads=0;
+    await context.route('https://admin.test/**',async route=>{
+        const url=new URL(route.request().url());
+        if(url.pathname==='/api/admin/auth/status'){
+            statusReads++;
+            return route.fulfill({json:{configured:true,authenticated:false,localHttpTestAllowed:false,bindingStatus:attempted?{state:'registration-rejected'}:null}});
+        }
+        if(url.pathname==='/api/admin/auth/login'){attempted=true;return route.fulfill({json:{pending:true,dbscRequired:true}});}
+        if(url.pathname==='/admin-auth')return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(root,'pages/admin-auth.html'))});
+        if(url.pathname.startsWith('/client/')){
+            const target=path.resolve(root,'.'+url.pathname);assert.ok(target.startsWith(path.join(root,'client')+path.sep));
+            if(fs.existsSync(target))return route.fulfill({contentType:url.pathname.endsWith('.json')?'application/json':'application/javascript',body:fs.readFileSync(target)});
+        }
+        return route.fulfill({status:404,body:''});
+    });
+    const page=await context.newPage();await page.goto('https://admin.test/admin-auth');
+    await page.locator('#dbscPlatformHint').waitFor({state:'visible'});assert.match(await page.locator('#dbscPlatformHint').innerText(),/Android/);
+    assert.equal(await page.locator('#token').isDisabled(),false);
+    await page.locator('#token').fill('123456');await page.locator('#form button').click();
+    await page.getByText(/ADMIN_DBSC_PROOF_REJECTED/).waitFor();
+    assert.equal(await page.locator('#form button').isDisabled(),false);
+    assert.equal(statusReads,2);assert.match(page.url(),/\/admin-auth$/);
+});

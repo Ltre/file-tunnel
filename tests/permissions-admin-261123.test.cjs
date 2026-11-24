@@ -42,7 +42,7 @@ test('网页功能权限刷新绑定焦点账号，迟到响应不能覆盖新�
 
 test('网页 ZIP 异步摘要期间切换账号，不借用新账号的 Socket 证明签章',async()=>{
     const source=fs.readFileSync(path.join(__dirname,'../app.js'),'utf8'),start=source.indexOf('async function signWebZipArchive('),end=source.indexOf('async function sendFile(',start);let account='alice',resolveDigest,emitted=0;
-    const socket={connected:true,timeout:()=>({emit(){emitted++;}})},context=vm.createContext({window:{DiskClient:{getAccount:()=>account}},state:{sessionId:'A',socket},webZipPublishAllowed:true,refreshWebZipAccess:async()=>{},crypto:{subtle:{digest:()=>new Promise(resolve=>resolveDigest=resolve)}},Uint8Array});
+    const socket={connected:true,timeout:()=>({emit(){emitted++;}})},context=vm.createContext({window:{DiskClient:{getAccount:()=>account},WebZipRuntime:{digestArchive:()=>new Promise(resolve=>resolveDigest=resolve)}},state:{sessionId:'A',socket},requireWebZipSocketAuth:async()=>({sessionId:'A',accountId:account,socket})});
     vm.runInContext(source.slice(start,end),context);const signing=context.signWebZipArchive({arrayBuffer:async()=>new ArrayBuffer(0)},{id:'fixture-file'},'fixture-record');
-    await new Promise(setImmediate);account='bob';resolveDigest(new ArrayBuffer(32));await assert.rejects(signing,/账号操作未完成/);assert.equal(emitted,0);
+    await new Promise(setImmediate);account='bob';resolveDigest('0'.repeat(64));await assert.rejects(signing,/账号操作未完成/);assert.equal(emitted,0);
 });

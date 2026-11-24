@@ -16,6 +16,7 @@
 <main class="panel">
     <h1 id="title">管理员身份验证</h1>
     <p id="description">请输入身份验证器中的 6 位动态验证码。</p>
+    <p id="dbscPlatformHint" class="hidden">Android 版 Chrome 当前未提供原生 DBSC，无法完成此后台要求的设备绑定。请使用支持原生 DBSC 的桌面浏览器。</p>
     <section id="setup" class="hidden">
         <label for="issuer">验证器中的名称</label>
         <input id="issuer" type="text" maxlength="64" autocomplete="off" placeholder="例如：新加坡文件隧道">
@@ -34,6 +35,23 @@ const next=new URLSearchParams(location.search).get('next')||'/admin';
 let mode='login';
 let issuerTimer=null;
 let localHttpTestAllowed=false;
+let submitting=false;
+
+// This is a platform notice, not a capability test or an authentication rule.
+// Native DBSC has no JS feature-detection API; the signed registration and the
+// server's authenticated result remain authoritative, including future builds.
+function isAndroidChrome(){
+    const agent=typeof navigator==='undefined'?'':navigator.userAgent||'';
+    return /Android/i.test(agent)&&/Chrome\//.test(agent);
+}
+function bindingProgressMessage(state){
+    if(state==='registration-rejected')return '浏览器已发起 DBSC 注册，但签名证明未通过服务端校验，尚未取得管理员权限。请重新验证；持续失败时提供错误码 ADMIN_DBSC_PROOF_REJECTED。';
+    if(state==='expired')return 'DBSC 待绑定状态已过期，尚未取得管理员权限。请重新输入动态验证码。';
+    if(state==='awaiting-registration')return isAndroidChrome()?
+        '尚未收到浏览器的原生 DBSC 注册请求，尚未取得管理员权限。Android 版 Chrome 当前未提供原生 DBSC，请使用支持该功能的桌面浏览器。':
+        '尚未收到浏览器的原生 DBSC 注册请求，尚未取得管理员权限。请确认浏览器已启用原生 DBSC，并通过证书有效的 HTTPS 访问。';
+    return '';
+}
 
 function isLocalHttpTest(){return location.protocol==='http:'&&localHttpTestAllowed;}
 function setFormDisabled(disabled){
@@ -70,6 +88,7 @@ async function init(){
     localHttpTestAllowed=data.localHttpTestAllowed===true;
     if(!requireLoginContext())return;
     if(data.authenticated){location.replace(next);return;}
+    if(location.protocol==='https:'&&isAndroidChrome())document.getElementById('dbscPlatformHint').classList.remove('hidden');
     if(!data.configured){
         if(!data.setupAllowed){
             document.getElementById('title').textContent='请在服务器本机完成首次绑定';
@@ -95,7 +114,10 @@ issuerInput.addEventListener('input',()=>{
 
 document.getElementById('form').addEventListener('submit',async event=>{
     event.preventDefault();
-    if(!requireLoginContext())return;
+    if(submitting||!requireLoginContext())return;
+    submitting=true;
+    setFormDisabled(true);
+    try{
     statusEl.textContent='正在验证...';
     const response=await fetch(`/api/admin/auth/${mode}`,{
         method:'POST',
@@ -113,20 +135,33 @@ document.getElementById('form').addEventListener('submit',async event=>{
             if(!requireLoginContext())return;
             if(check.authenticated){location.replace(next);return;}
         }
-        document.querySelector('#form button').disabled=false;
         statusEl.textContent='验证失败，请稍后重试';
         return;
     }
     statusEl.textContent='动态验证码已通过，正在等待浏览器完成 DBSC 安全设备绑定…';
     document.querySelector('#form button').disabled=true;
     const deadline=Date.now()+120000;
+    let lastBindingState='';
     while(Date.now()<deadline){
         await new Promise(resolve=>setTimeout(resolve,1500));
         const check=await fetch('/api/admin/auth/status',{cache:'no-store'}).then(response=>response.json()).catch(()=>({}));
         if(check.authenticated){location.replace(next);return;}
+        const state=check.bindingStatus?.state;
+        if(state){
+            lastBindingState=state;
+            const message=bindingProgressMessage(state);
+            if(message)statusEl.textContent=message;
+            if(state==='registration-rejected'||state==='expired')return;
+        }
     }
     document.querySelector('#form button').disabled=false;
-    statusEl.textContent='DBSC 绑定未完成，尚未取得管理员权限。请确认浏览器支持并已启用原生 DBSC、设备安全密钥可用，以及 HTTPS 证书有效，再重新验证。';
+    statusEl.textContent=bindingProgressMessage(lastBindingState)||'DBSC 绑定未完成，尚未取得管理员权限。请确认浏览器支持并已启用原生 DBSC、设备安全密钥可用，以及 HTTPS 证书有效，再重新验证。';
+    }catch(_){
+        statusEl.textContent='验证失败，请稍后重试';
+    }finally{
+        submitting=false;
+        if(requireLoginContext())setFormDisabled(false);
+    }
 });
 
 init().catch(error=>{statusEl.textContent=error.message;});

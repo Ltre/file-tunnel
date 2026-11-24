@@ -5,10 +5,14 @@ const turn = () => new Promise(setImmediate);
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const section = (start, end) => ui.slice(ui.indexOf(start), ui.indexOf(end, ui.indexOf(start)));
 class Element {
-    constructor(tag) { this.tagName = tag; this.children = []; this.attrs = {}; this.isConnected = true; this.classList = { add() {}, remove() {}, toggle() {} }; }
+    constructor(tag) { this.tagName = tag; this.children = []; this.attrs = {}; this.style = {}; this.isConnected = true; this.classList = { add() {}, remove() {}, toggle() {} }; }
     append(...children) { for (const child of children) { child.parentNode = this; this.children.push(child); } }
     replaceChildren(...children) { this.children = []; this.append(...children); }
     setAttribute(key, value) { this.attrs[key] = value; }
+    addEventListener() {}
+    showModal() { this.open = true; }
+    close() { this.open = false; }
+    focus() {}
     remove() { this.isConnected = false; if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(node => node !== this); }
     contains(node) { return node === this || this.children.some(child => child.contains(node)); }
     querySelectorAll(selector) { return this.children.flatMap(child => [child, ...child.querySelectorAll(selector)]).filter(node => selector === 'button' ? node.tagName === 'button' : selector === '[aria-pressed]' && node.attrs['aria-pressed'] !== undefined); }
@@ -64,11 +68,12 @@ test('account dialog reuses freshly loaded account metadata instead of waiting b
     assert.equal(reads, 1, 'fresh metadata needs no duplicate account read');
 });
 
-test('manage current account opens the account center for the focused account without switching or deleting a login',async()=>{
+test('manage current account overlays the account center for the focused account without opening a tab or switching a login',async()=>{
     const f=fixture(),opened=[];f.window.open=(...args)=>opened.push(args);
     const pending=f.context.manageTelegramDriveAccounts();await turn();
     const manage=f.body.querySelectorAll('button').find(node=>node.textContent==='管理当前账号');assert.ok(manage);await manage.onclick();
-    assert.equal(opened.length,1);assert.equal(opened[0][0],'/account-center?disk_account=alice');assert.equal(opened[0][2],'noopener');
+    assert.equal(opened.length,0);const overlay=f.body.children.find(node=>node.tagName==='dialog');assert.ok(overlay?.open);
+    assert.equal(overlay.children.find(node=>node.tagName==='iframe').src,'/account-center?disk_account=alice&embedded=1');
     assert.equal(f.window.DiskClient.getAccount(),'alice');assert.equal(f.calls.includes('/accounts/select'),false);
     f.window.AccountUI.close();await pending;
 });

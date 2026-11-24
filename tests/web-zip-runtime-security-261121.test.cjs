@@ -22,7 +22,7 @@ test('receiving browser hashes the original archive before accepting a server st
     assert.equal(verificationCalls,1,'tampered archives must not reach server approval');
     serverAllows=false;
     await assert.rejects(window.WebZipRuntime.verifyArchive(archive,trust),/签名无效/);
-    await assert.rejects(window.WebZipRuntime.verifyArchive(archive,{...trust,stamp:''}),/缺少可信发布签名戳/);
+    await assert.rejects(window.WebZipRuntime.verifyArchive(archive,{...trust,stamp:''}),/签名无效/);
 });
 
 test('service worker checks a live server stamp on each executable runtime response',async()=>{

@@ -22,13 +22,53 @@
         return inferred !== 'application/octet-stream' ? inferred : (declaredType || inferred);
     };
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    async function digestArchive(blob) {
+        const cryptoApi = global.crypto || globalThis.crypto;
+        if (cryptoApi?.subtle) {
+            const digest = await cryptoApi.subtle.digest('SHA-256', await blob.arrayBuffer());
+            return Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+        }
+        // HTTP LAN origins do not expose SubtleCrypto. Keep the same SHA-256
+        // integrity check using the existing incremental worker, without
+        // uploading the archive or blocking the main thread.
+        return new Promise((resolve, reject) => {
+            const worker = new Worker('/client/disk-content-hash-worker.js');
+            let settled = false;
+            const finish = (error, digest) => {
+                if (settled) return;
+                settled = true; clearTimeout(timer); worker.terminate();
+                error ? reject(error) : resolve(digest);
+            };
+            const timer = setTimeout(() => finish(new Error('网页 ZIP 内容摘要计算超时')), 120000);
+            worker.onmessage = event => {
+                if (/^[a-f0-9]{64}$/.test(event.data?.sha256 || '')) finish(null, event.data.sha256);
+                else if (event.data?.error) finish(new Error('网页 ZIP 内容摘要计算失败'));
+            };
+            worker.onerror = () => finish(new Error('网页 ZIP 内容摘要计算失败'));
+            try { worker.postMessage({file:blob}); } catch (error) { finish(error); }
+        });
+    }
     async function verifyArchive(blob,trust){
-        if(!trust||!/^[a-f0-9]{64}$/.test(trust.sha256||'')||!trust.stamp||!trust.fileId||!trust.messageId||!trust.sessionId)
+        if(!trust||!trust.fileId||!trust.messageId||!trust.sessionId)
             throw Error('网页 ZIP 缺少可信发布签名戳');
-        const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())),b=>b.toString(16).padStart(2,'0')).join('');
-        if(hash!==trust.sha256)throw Error('网页 ZIP 内容摘要不匹配，已阻止运行');
+        const signed=Boolean(/^[a-f0-9]{64}$/.test(trust.sha256||'')&&trust.stamp);
+        let hash;
+        if(signed){
+            hash=await digestArchive(blob);
+            if(hash!==trust.sha256)throw Error('网页 ZIP 内容摘要不匹配，已阻止运行');
+        }
         const response=await fetch('/api/telegram/web-zip/verify',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:JSON.stringify(trust)});
-        if(!response.ok||(await response.json()).ok!==true)throw Error('网页 ZIP 签名无效或发布权限已撤销');
+        const result=response.ok?await response.json():{};
+        if(!response.ok||result.ok!==true)throw Error('网页 ZIP 签名无效或发布权限已撤销');
+        if(!signed&&result.legacy!==true)throw Error('网页 ZIP 缺少可信发布签名戳');
+        if(result.legacy===true&&result.sha256){
+            hash=hash||await digestArchive(blob);
+            if(hash!==result.sha256)throw Error('网页 ZIP 内容摘要不匹配，已阻止运行');
+            trust.sha256=result.sha256;
+        }
+        // This is a server-confirmed compatibility result, not a client date
+        // exemption. The service worker rechecks the inventory on every use.
+        if(result.legacy===true)trust.legacy=true;else delete trust.legacy;
         return true;
     }
 
@@ -195,7 +235,7 @@
     }
 
     async function mount(entries, options = {}) {
-        if(!options.trust?.stamp)throw Error('网页 ZIP 未经可信发布校验，不允许建立可执行目录');
+        if(!options.trust?.stamp&&options.trust?.legacy!==true)throw Error('网页 ZIP 未经可信发布校验，不允许建立可执行目录');
         options.onStatus?.('正在启动网页 ZIP 运行服务…');
         await ensureController();
         options.onStatus?.('正在准备网页 ZIP 虚拟目录…');
@@ -229,5 +269,5 @@
     }
 
     const unmount = id => id ? transact('readwrite', store => store.delete(id)) : Promise.resolve();
-    global.WebZipRuntime = { mount, verifyArchive, unmount, cleanup, _test:{ normalizePath, guessType, runtimeType, repairExternalScriptTags, supportsRuntime, RUNTIME_PROTOCOL } };
+    global.WebZipRuntime = { mount, verifyArchive, digestArchive, unmount, cleanup, _test:{ normalizePath, guessType, runtimeType, repairExternalScriptTags, supportsRuntime, RUNTIME_PROTOCOL } };
 })(window);
