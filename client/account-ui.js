@@ -45,7 +45,9 @@
                         else { if (await options.select(user.id) === false) return; if (current?.overlay === overlay) close(user); }
                     }); select.classList.add('message-content'); select.textContent = user.name || user.username || user.id;
                     select.setAttribute('aria-pressed', String(user.id === (options.choose ? selected : options.currentAccount())));
-                    const label = document.createElement('small'); label.textContent = t(entry.reauthRequired ? '需要重新登录' : user.id === options.currentAccount() ? '当前账号' : '');
+                    const focused=!entry.reauthRequired&&user.id===options.currentAccount();
+                    const label = focused?button('管理当前账号',()=>{global.open('/account-center?disk_account='+encodeURIComponent(user.id),'_blank','noopener');}):document.createElement('small');
+                    if(!focused)label.textContent=t(entry.reauthRequired?'需要重新登录':'');
                     let confirming = false;
                     const cancel = button('取消', () => { confirming = false; cancel.hidden = true; exit.textContent = t('退出'); status.textContent = ''; }); cancel.hidden = true;
                     const exit = button('退出', async () => {

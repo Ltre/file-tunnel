@@ -105,6 +105,14 @@ function localHttpTestAllowed(req){
 function createAdminDbscSessions({dataDir,signingKey,marker}){
     const filename=path.join(dataDir,'.admin-dbsc-sessions.json');
     const pending=new Map();
+    function activity(session,address,at=Date.now()){
+        session.ipActivity ||= session.address ? [{address:session.address,lastActivityAt:session.createdAt||0,legacy:true}] : [];
+        const value=String(address||'');
+        if(!value)return;
+        const entry=session.ipActivity.find(item=>item.address===value);
+        if(entry){entry.lastActivityAt=at;delete entry.legacy;}else session.ipActivity.push({address:value,lastActivityAt:at});
+        session.lastActivityAt=at;
+    }
     function load(){
         if(!fs.existsSync(filename))return [];
         const value=JSON.parse(fs.readFileSync(filename,'utf8'));
@@ -134,7 +142,11 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
             if(session.localTest){
                 if(!localHttpTestAllowed(req)||session.origin!==endpointAudience(req,''))return null;
             }else if(!session.boundAt)return null;
-            if(touch&&Date.now()-(session.lastActivityAt||0)>30000){session.lastActivityAt=Date.now();save(sessions);}
+            if(touch){
+                const address=String(session.localTest?req.socket?.remoteAddress:req.ip||'');
+                const entry=session.ipActivity?.find(item=>item.address===address);
+                if(!entry||Date.now()-entry.lastActivityAt>30000){activity(session,address);save(sessions);}
+            }
             return session;
         }catch(_){return null;}
     }
@@ -143,6 +155,7 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
             const now=Date.now(),session={id:random(),accountId:'administrator',marker:marker(),
                 localTest:true,origin:endpointAudience(req,''),boundAt:0,createdAt:now,lastActivityAt:now,lastRefreshAt:0,
                 expiresAt:now+LOCAL_TEST_SECONDS*1000,revokedAt:0,...deviceInfo(req.get?.('user-agent')||''),address:String(req.socket.remoteAddress)};
+            activity(session,session.address,now);
             const sessions=load();sessions.push(session);save(sessions);
             res.setHeader('Set-Cookie',[cookie(PENDING_COOKIE,'',0),cookie(COOKIE_NAME,grant(session),LOCAL_TEST_SECONDS)]);
             res.setHeader('Cache-Control','no-store');
@@ -178,6 +191,7 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
         const now=Date.now(),session={id:random(),accountId:'administrator',marker:marker(),publicKey:proof.jwk,algorithm:proof.alg,
             createdAt:now,boundAt:now,lastActivityAt:now,lastRefreshAt:now,expiresAt:now+SESSION_MS,revokedAt:0,
             ...deviceInfo(item.agent),address:item.address};
+        activity(session,session.address,now);
         const sessions=load();sessions.push(session);save(sessions);
         res.setHeader('Set-Cookie',[cookie(PENDING_COOKIE,'',0),cookie(COOKIE_NAME,grant(session),COOKIE_SECONDS)]);
         res.setHeader('Cache-Control','no-store');
@@ -192,7 +206,7 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
             {audience:endpointAudience(req,'/api/admin/auth/dbsc/refresh'),sessionId:id});
         if(proof&&session.refreshChallenge&&session.refreshChallengeAt+60000>Date.now()){
             session.refreshChallenge='';session.refreshChallengeAt=0;
-            session.lastRefreshAt=Date.now();session.lastActivityAt=Date.now();save(sessions);
+            session.lastRefreshAt=Date.now();activity(session,req.ip);save(sessions);
             res.setHeader('Set-Cookie',cookie(COOKIE_NAME,grant(session),COOKIE_SECONDS));
             res.setHeader('Cache-Control','no-store');
             return {status:200,instructions:instructions(id,req)};
@@ -202,7 +216,9 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
         res.setHeader('Cache-Control','no-store');
         return {status:403};
     }
-    function list(){return load().map(({publicKey,refreshChallenge,refreshChallengeAt,...session})=>({...session,dbscBound:!session.localTest&&Boolean(session.boundAt)}));}
+    function list(){return load().map(({publicKey,refreshChallenge,refreshChallengeAt,...session})=>({...session,
+        ipActivity:session.ipActivity||(session.address?[{address:session.address,lastActivityAt:session.createdAt||0,legacy:true}]:[]),
+        dbscBound:!session.localTest&&Boolean(session.boundAt)}));}
     function revoke(id){const sessions=load(),session=sessions.find(item=>item.id===id);if(!session)return false;if(!session.revokedAt){session.revokedAt=Date.now();save(sessions);}return true;}
     function revokeRequest(req){const session=verify(req);return session?revoke(session.id):false;}
     return {COOKIE_NAME,PENDING_COOKIE,COOKIE_SECONDS,begin,register,refresh,verify,list,revoke,revokeRequest,localHttpTestAllowed,

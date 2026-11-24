@@ -168,7 +168,7 @@
         if (url.startsWith(base + '/')) url = url.slice(base.length);
         if (method !== 'GET' && /^\/(?:accounts(?:\/|$)|logout(?:\?|$)|passkeys\/verify(?:\?|$))/.test(url)) invalidateAccountStatus();
         const statusRevision = accountStatusRevision;
-        const globalRoute = /^\/(?:me|accounts|spaces|collaborations|mounts|collaboration-scope|mount-scope|static-resources|settings|cross-scope|trash)(?:[/?]|$)/.test(url)
+        const globalRoute = /^\/(?:me|accounts|passkeys|spaces|collaborations|mounts|collaboration-scope|mount-scope|static-resources|settings|cross-scope|trash)(?:[/?]|$)/.test(url)
             || method !== 'POST' && /^\/shares(?:[/?]|$)/.test(url);
         const target = withSpace(url.startsWith('/api/') ? url : (globalRoute ? base : (options.requestBase || baseUrl())) + url, options.diskSpace ?? diskSpace);
         if (options.onUploadProgress && typeof XMLHttpRequest === 'function') return uploadBody(target, { ...options, accountId: requestAccount });

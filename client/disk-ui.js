@@ -2903,15 +2903,20 @@ function appendPasskeyControls(target, user, { addAccount = !user, embedded = fa
                 if (!window.PublicKeyCredential || !navigator.credentials) throw new Error('当前浏览器不支持 Passkey，请使用支持通行密钥的浏览器');
                 if (!window.SimpleWebAuthnBrowser) throw new Error('Passkey 脚本未加载，请管理员检查 /client/simplewebauthn.js 和发布依赖；这不是账号名或 HTTPS 的问题');
                 const loginContext = window.DiskClient.context();
-                const flow = await window.DiskClient.raw('/passkeys/' + kind + '/options', { ...loginContext, ...window.DiskClient.json('POST', { username: input.value, addAccount }) });
-                const response = kind === 'login'
-                    ? await window.SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: flow.options })
-                    : await window.SimpleWebAuthnBrowser.startRegistration({ optionsJSON: flow.options });
-                const verified = await window.DiskClient.raw('/passkeys/verify', { ...loginContext, ...window.DiskClient.json('POST', { flow_id: flow.flow_id, response, addAccount }) });
+                let verified;
+                const authenticate=()=>window.PasskeyClient.login({username:input.value,context:loginContext,addAccount:true});
+                try{verified=await window.PasskeyClient[kind==='login'?'login':'register']({username:input.value,context:loginContext,addAccount});}
+                catch(error){
+                    if(error.message!=='PASSKEY_REAUTH_REQUIRED')throw error;
+                    const proof=await authenticate();
+                    if(user&&proof.identity?.id!==user.id)throw Error('PASSKEY_FLOW_INVALID');
+                    verified=await window.PasskeyClient.register({username:input.value,context:loginContext,addAccount});
+                }
                 if (!embedded) closeTelegramDriveDialog(null);
                 const status = verified.identity ? verified : await window.DiskClient.raw('/me', { accountId: '' });
                 if (status.identity) { if (await switchTelegramDriveAccount(status.identity.id, { deferContents: true, restoreOnCancel:true }) === false) { window.AccountUI?.refresh(); return; } } else await renderTelegramDrive();
                 if (status.identity && embedded) window.AccountUI?.completeSignIn?.(target, status.identity);
+                if(status.identity)window.PasskeyClient.offer(verified);
                 if (telegramDrivePendingSaveId) resumeTelegramDrivePendingSave().catch(error => (window.TunnelI18n?.alert || alert)(telegramDriveErrorText(error)));
             } catch (error) { (window.TunnelI18n?.alert || alert)(telegramDriveErrorText(error)); } finally { button.disabled = false; button.textContent = idleLabel; }
         };

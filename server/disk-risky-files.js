@@ -33,4 +33,5 @@ function assertRiskyUploadAllowed(auth, userId, name, type) {
     }
 }
 
-module.exports = { normalizeMime, isRiskyFile, assertRiskyUploadAllowed };
+module.exports = { normalizeMime, isRiskyFile, assertRiskyUploadAllowed,
+    riskyFileTypes:()=>({extensions:[...RISKY_EXTENSIONS],names:[...RISKY_NAMES],mimes:[...RISKY_MIMES]}) };

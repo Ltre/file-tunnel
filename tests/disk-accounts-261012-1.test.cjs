@@ -126,6 +126,9 @@ test('Passkey 添加其它账号与给原账号绑定通行密钥分离；默认
         verifyRegistrationResponse: async () => ({ verified: true, registrationInfo: { credential: { id: 'alice-second-passkey', publicKey: new Uint8Array([1, 2, 3]), counter: 0 } } })
     } });
     await call('/fixture-login/alice', {});
+    // Adding a credential now needs a recent verified login for this account.
+    const aliceLogin=await call('/api/telegram/drive/passkeys/login/options',{username:'alice',addAccount:true});
+    await call('/api/telegram/drive/passkeys/verify',{flow_id:aliceLogin.data.flow_id,response:{id:'alice-passkey'},addAccount:true});
     const add = await call('/api/telegram/drive/passkeys/login/options', { username: 'bob', addAccount: true }, { accountId: 'alice' });
     assert.equal(add.response.status, 200);
     const login = await call('/api/telegram/drive/passkeys/verify', { flow_id: add.data.flow_id, response: { id: 'bob-passkey' }, addAccount: true }, { accountId: 'alice' });

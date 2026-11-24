@@ -2053,6 +2053,7 @@ function initSocket() {
                 permissions: { ...DEFAULT_TUNNEL_PERMISSIONS, ...(record.permissions || {}) }
             }]));
         applyTunnelPermissionUi();
+        refreshWebZipAccess().catch(()=>{});
         // Pending disk forwards survive a full tunnel navigation. Resume only
         // after this socket has joined and received the target's permissions.
         window.DiskTunnelAdapter?.resumePendingForward?.();
@@ -4209,24 +4210,28 @@ function initAssetPresenceRefresh() {
     setInterval(() => refresh('presence-heartbeat', { allowHidden: true }), 30000);
 }
 
-let webZipPublishAllowed=false;
+let webZipPublishAllowed=false,webZipAccessRevision=0;
 async function refreshWebZipAccess(){
-    const previous=webZipPublishAllowed;
+    const revision=++webZipAccessRevision,accountId=window.DiskClient?.getAccount?.()||'';
+    const socket=state.socket,sessionId=state.sessionId,socketId=socket?.id;
+    const current=()=>revision===webZipAccessRevision&&accountId===(window.DiskClient?.getAccount?.()||'')&&sessionId===state.sessionId&&socket===state.socket&&socketId===state.socket?.id;
+    const headers=accountId?{'X-Disk-Account':accountId}:{};
+    let allowed=false;
     try{
-        const response=await fetch('/api/telegram/web-zip/access',{cache:'no-store'});
-        webZipPublishAllowed=response.ok&&(await response.json()).allowed===true;
-        if(webZipPublishAllowed&&state.socket?.connected&&state.sessionId){
+        const response=await fetch('/api/telegram/web-zip/access',{cache:'no-store',headers});
+        allowed=response.ok&&(await response.json()).allowed===true;
+        if(!current())return;
+        if(allowed&&socket?.connected&&sessionId){
             const proofResponse=await fetch('/api/telegram/web-zip/socket-auth',{method:'POST',cache:'no-store',
-                headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:state.sessionId,deviceId:state.deviceId,
-                    socketId:state.socket.id,accessGrant:savedTunnelGrant(state.sessionId)})});
+                headers:{'Content-Type':'application/json',...headers},body:JSON.stringify({sessionId,deviceId:state.deviceId,
+                    socketId,accessGrant:savedTunnelGrant(sessionId)})});
             const proof=proofResponse.ok?await proofResponse.json():{};
-            if(!proof.ok)webZipPublishAllowed=false;
-            else{
-                const accepted=await new Promise(resolve=>state.socket.timeout(8000).emit('web-zip-auth',{proof:proof.proof},(error,result)=>resolve(!error&&result?.ok)));
-                webZipPublishAllowed=accepted;
-            }
-        }else if(!state.socket?.connected)webZipPublishAllowed=false;
-    }catch(_){webZipPublishAllowed=false;}
+            if(!current())return;
+            if(proof.ok)await new Promise(resolve=>socket.timeout(8000).emit('web-zip-auth',{proof:proof.proof},()=>resolve()));
+        }
+    }catch(_){if(!current())return;}
+    if(!current())return;
+    const previous=webZipPublishAllowed;webZipPublishAllowed=allowed;
     for(const id of ['webWorkshopBtn','topbarWorkshopBtn']){
         const button=document.getElementById(id);if(button)button.hidden=!webZipPublishAllowed;
     }
@@ -4237,15 +4242,16 @@ async function refreshWebZipAccess(){
     }
 }
 async function signWebZipArchive(blob,fileInfo,messageId){
-    if(!webZipPublishAllowed)await refreshWebZipAccess();
+    await refreshWebZipAccess();
     if(!webZipPublishAllowed)throw Error('当前账号没有网页 ZIP 编辑／发送权限');
     if(!state.socket?.connected)throw Error('隧道尚未连接，无法签发网页 ZIP');
-    const sessionId=state.sessionId;
+    const sessionId=state.sessionId,accountId=window.DiskClient?.getAccount?.()||'',socket=state.socket;
     const sha256=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer())),value=>value.toString(16).padStart(2,'0')).join('');
+    if(sessionId!==state.sessionId||socket!==state.socket||accountId!==(window.DiskClient?.getAccount?.()||''))throw Error('账号操作未完成，请重试');
     const result=await new Promise((resolve,reject)=>state.socket.timeout(12000).emit('web-zip-stamp',{
         sessionId,messageId,fileId:fileInfo.id,sha256
     },(error,value)=>error?reject(Error('网页 ZIP 签名请求超时')):resolve(value)));
-    if(!result?.ok||state.sessionId!==sessionId)throw Error('服务器拒绝签发网页 ZIP，请检查账号权限或隧道状态');
+    if(!result?.ok||state.sessionId!==sessionId||accountId!==(window.DiskClient?.getAccount?.()||''))throw Error('服务器拒绝签发网页 ZIP，请检查账号权限或隧道状态');
     fileInfo.webZipSha256=sha256;
     fileInfo.webZipTrustIntegrityStamp=result.stamp;
     return {fileId:fileInfo.id,messageId,sessionId,sha256,stamp:result.stamp};
@@ -8480,8 +8486,11 @@ function renderMessageRecordActions(messageEl, message) {
             });
         }));
     }
-    const webZipFile = message.type === 'file' && /\.html\.zip$/i.test(String(message.fileInfo?.name || '')) ? message.fileInfo : null;
-    if (webZipFile && webZipPublishAllowed) menuItems.push(createRecordActionButton('🌐', '编辑此网页', '申请权限、转入草稿箱或创建自己的副本', () => showWebZipEditDialog(webZipFile, { messageId:message.id, ownerDeviceId:webZipFile.ownerDeviceId || message.sender, sender:message.sender })));
+    const webZipFile = message.type === 'file' && (message.fileInfo?.webZip===true || /\.html\.zip$/i.test(String(message.fileInfo?.name || ''))) ? message.fileInfo : null;
+    if (webZipFile) {
+        const edit=createRecordActionButton('🌐', '编辑此网页', '申请权限、转入草稿箱或创建自己的副本', () => showWebZipEditDialog(webZipFile, { messageId:message.id, ownerDeviceId:webZipFile.ownerDeviceId || message.sender, sender:message.sender }));
+        edit.dataset.requiresWebZipPermission='true';menuItems.push(edit);
+    }
     if (message.type === 'file' || message.type === 'collection') {
         menuItems.push(createRecordActionButton('✴↗', '使用光媒分享', message.type === 'collection' ? '将整个合辑作为可恢复光媒任务分享' : '将当前文件通过动态二维码分享', () => {
             shareHistoryMessageViaLight(message.id).catch(err => {
@@ -8520,9 +8529,9 @@ function renderMessageRecordActions(messageEl, message) {
     trigger.addEventListener('click', event => {
         event.preventDefault();
         event.stopPropagation();
-        openMessageRecordActionMenu(trigger, menuItems);
+        openMessageRecordActionMenu(trigger, menuItems.filter(item=>!item.dataset.requiresWebZipPermission||webZipPublishAllowed));
     });
-    trigger.addEventListener('record-menu-open', event => openMessageRecordActionMenu(trigger, menuItems, event.detail));
+    trigger.addEventListener('record-menu-open', event => openMessageRecordActionMenu(trigger, menuItems.filter(item=>!item.dataset.requiresWebZipPermission||webZipPublishAllowed), event.detail));
     actions.appendChild(trigger);
     messageEl.appendChild(actions);
     markSelectedHistoryRow(messageEl);
@@ -18363,12 +18372,14 @@ function initTunnelControlCenter(dialog) {
         };
         place(before, wide.matches ? order.filter(id => id !== 'tunnels') : order.slice(0, divider));
         place(after, wide.matches ? [] : order.slice(divider + 1));
-        for (const tile of tiles.values()) slots.set(tile, tile.getBoundingClientRect());
+        slots.clear();
+        for (const tile of tiles.values()) if(!tile.hidden)slots.set(tile, tile.getBoundingClientRect());
         // Moving the captured node between rows can release native capture.
         if (drag?.active) { try { drag.tile.setPointerCapture(drag.id); } catch (_) {} }
         if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) for (const [tile, old] of rects) {
             if (!old.width || tile === drag?.tile) continue;
-            const next = slots.get(tile), x = old.left - next.left, y = old.top - next.top;
+            const next = slots.get(tile);if(!next)continue;
+            const x = old.left - next.left, y = old.top - next.top;
             if (x || y) animations.set(tile, tile.animate([{ transform:`translate(${x}px,${y}px)` }, { transform:'translate(0,0)' }], { duration:180, easing:'ease-out' }));
         }
     };
@@ -18389,7 +18400,8 @@ function initTunnelControlCenter(dialog) {
         // Start from their current layout, not slots measured at mount time.
         for (const animation of animations.values()) animation.cancel();
         animations.clear();
-        for (const tile of tiles.values()) slots.set(tile, tile.getBoundingClientRect());
+        slots.clear();
+        for (const tile of tiles.values()) if(!tile.hidden)slots.set(tile, tile.getBoundingClientRect());
         drag.active = true; drag.tile.classList.add('is-dragging');
         const rect = drag.tile.getBoundingClientRect();
         drag.rect = rect;
@@ -18510,10 +18522,13 @@ function initTunnelControlCenter(dialog) {
     }
     dialog.addEventListener('keydown', event => { if (event.key === 'Escape') { reset(); dialog.dismissControlCenter(); } });
     const reflow = () => { reset(); render(); };
+    const visibility=new MutationObserver(reflow);
+    visibility.observe(tiles.get('workshop'),{attributes:true,attributeFilter:['hidden']});
     wide.addEventListener('change', reflow);
     const cleanup = new MutationObserver(() => {
         if (dialog.isConnected) return;
         wide.removeEventListener('change', reflow);
+        visibility.disconnect();
         for (const animation of animations.values()) animation.cancel();
         cleanup.disconnect();
     });
@@ -19459,6 +19474,9 @@ function initStreamingConsoleIntegration() {
 
 function initUI() {
     refreshWebZipAccess().catch(()=>{});
+    window.addEventListener('global-account-changed',()=>refreshWebZipAccess().catch(()=>{}));
+    window.addEventListener('focus',()=>refreshWebZipAccess().catch(()=>{}));
+    state.socket?.on('account-permissions-changed',()=>{window.dispatchEvent(new CustomEvent('global-account-changed'));});
     setInterval(()=>refreshWebZipAccess().catch(()=>{}),15000);
     initTunnelSettings();
     initHistoryRecordSelection();

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v157-content-v8-261122-dbsc-https';
+const CACHE_NAME = 'instant-tunnel-v157-content-v8-261123-passkeys';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -57,6 +57,12 @@ const APP_SHELL = [
     '/client/streaming-console.js',
     '/client/account-ui.js',
     '/client/account-ui.css',
+    '/client/passkey-client.js',
+    '/client/passkey-client.css',
+    '/client/passkey-view.js',
+    '/client/account-center.js',
+    '/client/account-center.css',
+    '/client/passkey-auth.js',
     '/client/streaming-console.css',
     '/client/streaming-player.js',
     '/client/streaming-peers.js',

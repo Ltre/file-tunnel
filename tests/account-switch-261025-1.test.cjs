@@ -134,6 +134,7 @@ test('shared account chooser and offline action stay open when the switch was ca
 });
 test('sign-in cancellation does not close the account panel or resume a pending save',async()=>{
     const source=read('disk-ui.js'),calls=[],context=vm.createContext({
+        clearTimeout,pollTelegramDriveOidcLogin(){},
         telegramDriveLoginTarget:{},telegramDriveOidcPollGeneration:0,telegramDriveOidcPopup:null,telegramDrivePendingSaveRunning:true,telegramDrivePendingSaveId:'pending',
         window:{DiskClient:{raw:async()=>({identity:{id:'bob'}})},AccountUI:{refresh:()=>calls.push('refresh'),completeSignIn:()=>calls.push('close')}},
         switchTelegramDriveAccount:async(_id,options)=>{assert.equal(options.restoreOnCancel,true);return false;},renderTelegramDrive:async()=>calls.push('render'),showAppToast:()=>calls.push('toast'),resumeTelegramDrivePendingSave:async()=>calls.push('resume'),alert:()=>calls.push('alert')

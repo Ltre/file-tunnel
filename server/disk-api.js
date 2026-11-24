@@ -136,7 +136,7 @@ function errorStatus(code) {
     return 422;
 }
 function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getDefaultBackend, getIdentity, setIdentity, getOrigin, isMockRequest, maxDepth, onDefaultUpload = () => {}, resolveStorageBackend = async backend => backend,
-    contentReuseMode = process.env.DR2T_CONTENT_REUSE_MODE || 'all', contentCleanupMode = process.env.DR2T_CONTENT_CLEANUP_MODE || 'execute', uploadSourceIdleMs = 5 * 60000, uploadNow = Date.now, resolveTaskSource }) {
+    contentReuseMode = process.env.DR2T_CONTENT_REUSE_MODE || 'all', contentCleanupMode = process.env.DR2T_CONTENT_CLEANUP_MODE || 'execute', uploadSourceIdleMs = 5 * 60000, uploadNow = Date.now, resolveTaskSource, onPermissionsChanged = () => {} }) {
     if(!['all','owner','off'].includes(contentReuseMode)) throw new Error('CONTENT_REUSE_MODE_INVALID');
     if(!['execute','observe'].includes(contentCleanupMode)) throw new Error('CONTENT_CLEANUP_MODE_INVALID');
     const log = createDiskUploadLog(dataDir);
@@ -171,13 +171,28 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
     const measureMetadata = (req, name, work) => req.diskMetadataTiming?.measure ? req.diskMetadataTiming.measure(name, work) : work();
     browser.use(metadataTiming); external.use(metadataTiming);
     const admin = express.Router();
+    admin.get('/passkey-origins',(req,res)=>res.set('Cache-Control','no-store').json({...auth.passkeyOriginSettings(),dependencies:auth.passkeyDomainDependencies()}));
+    admin.put('/passkey-origins',(req,res)=>{
+        if(req.get('Sec-Fetch-Site')==='cross-site'||req.get('Origin')&&req.get('Origin')!==getOrigin(req))return res.status(403).json({error:'ORIGIN_MISMATCH'});
+        if(!req.is('application/json'))return res.status(415).json({error:'CONTENT_TYPE_INVALID'});
+        res.set('Cache-Control','no-store').json({...auth.savePasskeyOriginSettings(req.body),dependencies:auth.passkeyDomainDependencies()});
+    });
+    admin.get('/risk-file-types',(_req,res)=>res.set('Cache-Control','no-store').json(require('./disk-risky-files').riskyFileTypes()));
     admin.get('/users', (_req, res) => res.set('Cache-Control','no-store').json({users:auth.users()}));
     admin.patch('/users/:id/permissions', (req, res) => {
         const origin = req.get('Origin');
         if (req.get('Sec-Fetch-Site') === 'cross-site' || origin && origin !== getOrigin(req)) return res.status(403).json({error:'ORIGIN_MISMATCH'});
         if (!req.is('application/json')) return res.status(415).json({error:'CONTENT_TYPE_INVALID'});
-        try { res.set('Cache-Control','no-store').json({user:auth.setPermissions(req.params.id,req.body?.permissions,'administrator')}); }
+        try { const user=auth.setPermissions(req.params.id,req.body?.permissions,'administrator');onPermissionsChanged(user);res.set('Cache-Control','no-store').json({user}); }
         catch(error) { res.status(error.message==='USER_NOT_FOUND'?404:400).json({error:error.message}); }
+    });
+    admin.get('/users/:id/passkeys',(req,res)=>{
+        try{res.set('Cache-Control','no-store').json({passkeys:auth.passkeys(req.params.id)});}catch(error){res.status(404).json({error:error.message});}
+    });
+    admin.delete('/users/:id/passkeys/:credentialId',(req,res)=>{
+        if(req.get('Sec-Fetch-Site')==='cross-site'||req.get('Origin')&&req.get('Origin')!==getOrigin(req))return res.status(403).json({error:'ORIGIN_MISMATCH'});
+        try{auth.removePasskey(req.params.id,req.params.credentialId);res.set('Cache-Control','no-store').json({ok:true});}
+        catch(error){res.status(error.message==='PASSKEY_LAST_CREDENTIAL'?409:404).json({error:error.message});}
     });
     const spaces = createDiskSpaces(dataDir, defaultStore);
     const partitions = createDiskPartitions({ dataDir, spaces, s3Credentials: userS3Credentials });
@@ -1424,23 +1439,27 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         req.diskStore = storage;
         next();
     }));
+    const {installPasskeyRoutes,FLOW_COOKIE,COOKIE_PATH}=require('./passkey-routes');
+    installPasskeyRoutes(browser,{auth,getIdentity,setIdentity,getOrigin,limiter,wrap});
     function passkeys(router, externalMode) {
         router.post('/passkeys/:kind/options', limiter(), wrap(async (req, res) => {
             if (!externalMode && isMockRequest(req)) throw new Error('LOCAL_USE_OIDC_MOCK');
             const current = externalMode || req.body?.addAccount === true ? null : getIdentity(req);
             const origin = externalMode ? (req.diskApp.passkeyOrigin || getOrigin(req)) : getOrigin(req);
+            if(!externalMode&&req.params.kind==='register'&&current)auth.requireRecentAuthentication(current.id,req.diskSessionCookie,origin);
             const binding = externalMode ? req.diskApp.appId : crypto.randomBytes(32).toString('base64url');
-            const result = await auth.passkeyOptions({ kind: req.params.kind, username: req.body?.username, existingUserId: current?.id || '', origin, binding });
-            if (!externalMode) res.cookie('disk_passkey_flow', binding, { httpOnly: true, secure: true, sameSite: 'lax', path: '/api/telegram/drive/passkeys', maxAge: 300000 });
+            const result = await auth.passkeyOptions({ kind: req.params.kind, username: req.body?.username, existingUserId: current?.id || '', origin, binding, rpID:req.body?.rpID,allowExisting:!externalMode });
+            if (!externalMode) res.cookie(FLOW_COOKIE, binding, { httpOnly: true, secure: true, sameSite: 'lax', path: COOKIE_PATH, maxAge: 300000 });
             res.json(result);
         }));
         router.post('/passkeys/verify', limiter(), wrap(async (req, res) => {
             if (!externalMode && isMockRequest(req)) throw new Error('LOCAL_USE_OIDC_MOCK');
-            const binding = externalMode ? req.diskApp.appId : (String(req.headers.cookie || '').split(';').map(x => x.trim()).find(x => x.startsWith('disk_passkey_flow=')) || '').slice('disk_passkey_flow='.length);
+            const binding = externalMode ? req.diskApp.appId : (String(req.headers.cookie || '').split(';').map(x => x.trim()).find(x => x.startsWith(FLOW_COOKIE+'=')) || '').slice(FLOW_COOKIE.length+1);
             const current = externalMode || req.body?.addAccount === true ? null : getIdentity(req);
-            const identity = await auth.passkeyVerify({ flowId: req.body?.flow_id, response: req.body?.response, binding, existingUserId: current?.id || '' });
-            if (!externalMode) { res.clearCookie('disk_passkey_flow', { path: '/api/telegram/drive/passkeys', httpOnly: true, secure: true, sameSite: 'lax' }); setIdentity(req, res, identity); }
-            res.json({ identity, user_id: identity.id });
+            const origin=externalMode?(req.diskApp.passkeyOrigin||getOrigin(req)):getOrigin(req);
+            const identity = await auth.passkeyVerify({ flowId: req.body?.flow_id, response: req.body?.response, binding, existingUserId: current?.id || '',origin });
+            if (!externalMode) { res.clearCookie(FLOW_COOKIE, { path: COOKIE_PATH, httpOnly: true, secure: true, sameSite: 'lax' }); setIdentity(req, res, identity);auth.rememberAuthentication(identity.id,req.diskSessionCookie,origin); }
+            res.json({ identity, user_id: identity.id, authenticatedRpID:identity.authenticatedRpID });
         }));
     }
     passkeys(browser, false); passkeys(external, true);
@@ -1650,7 +1669,9 @@ function createDiskAPI({ dataDir, defaultStore, auth, operations, telegram, getD
         const recovered = partitions.recoverDeleting(req.diskUser.id, partition.id);
         res.json({ partition: recovered, interruptedOperationId: jobs[0].operation_id });
     }));
-    browser.delete('/spaces/:id', wrap((req, res) => {
+    browser.delete('/spaces/:id', wrap((req, res, next) => {
+        // The literal S3 endpoint below disables access, never a partition.
+        if (req.params.id === 's3') return next('route');
         if (req.body?.confirm !== true) throw new Error('DISK_SPACE_DELETE_CONFIRM_REQUIRED');
         const ownerId = req.diskUser.id, partition = partitions.findAny(ownerId, req.params.id);
         if (partition.isDefault) throw new Error('DISK_DEFAULT_SPACE_DELETE_FORBIDDEN');

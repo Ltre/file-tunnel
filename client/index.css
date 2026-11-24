@@ -4229,6 +4229,7 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
 .control-center-tile{display:inline-flex;align-items:center;justify-content:center;min-width:48px;min-height:46px;padding:9px 15px;border:1px solid #c8d7e8;border-radius:13px;background:#eef3ff;color:#354974;box-shadow:0 2px 6px #10203320;font:24px/1.2 system-ui;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .control-center-tile.is-dragging{background:#d9e7fc;outline:2px solid #658bc1;cursor:grabbing}
 .control-center-tile{position:relative}
+.control-center-tile[hidden]{display:none!important}
 #tunnelControlCenter .control-center-tile>.control-center-unread-badge{position:absolute;top:-6px;right:-7px;box-sizing:border-box;min-width:20px;height:20px;padding:0 5px;display:inline-flex;align-items:center;justify-content:center;border:2px solid var(--cc-panel,var(--panel-bg,#fff));border-radius:999px;background:#d73650;color:#fff;box-shadow:0 1px 4px #0003;font:700 11px/1 system-ui;pointer-events:none}
 .control-center-unread-badge[hidden]{display:none}
 .message.is-publish-target{outline:3px solid #4d9ae8;outline-offset:4px;transition:outline-color .25s}
@@ -4289,7 +4290,6 @@ body:is([data-theme="lumen"],[data-theme="orbit"]) .short-code-switch {
     .control-center .notification-center-empty {padding:28px 10px;font-size:13px}
     .control-center-tools {display:flex;flex-direction:column;overflow:hidden}
     .control-center [data-control-side="before"] {display:grid;grid-template-columns:repeat(5,54px);grid-auto-rows:48px;justify-content:center;gap:12px;padding:19px 19px 22px;flex-shrink:0}
-    .control-center [data-control-side="before"]>:nth-child(11) {grid-column:2}
     #tunnelControlCenter .control-center-tile {min-width:0;min-height:0;width:54px;height:48px;padding:4px;background:var(--cc-soft);border:1px solid var(--cc-line);border-radius:12px;color:var(--cc-ink);box-shadow:none}
     #tunnelControlCenter .control-center-tile.is-dragging {background:var(--cc-selected);outline-color:var(--cc-accent)}
     #tunnelControlCenter [data-control-panel] {position:relative;display:flex;flex-direction:column;gap:0;flex:1;width:100%;max-width:none;max-height:none;margin:0;padding:16px 21px 11px;min-height:120px;border:0;border-radius:0;box-shadow:none;background:transparent;color:var(--cc-ink)}

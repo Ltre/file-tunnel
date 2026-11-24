@@ -25,7 +25,7 @@ function fixture({ transport = false } = {}) {
     const context = vm.createContext({ window, document, history, AbortController, setTimeout, clearTimeout, setInterval() {}, URL, URLSearchParams,
         location: { origin: 'http://fixture.test', href: 'http://fixture.test/' },
         fetch: async (route, options) => { calls.push(route); if (options.method === 'POST') return { ok: true, json: async () => ({ identity: bob.identity, accounts: [bob] }) }; return { ok: true, json: () => calls.filter(value => value.includes('/me')).length > 1 ? extraStatus.promise : Promise.resolve(status()) }; },
-        telegramDriveLoginTarget: null, telegramDriveOidcPollGeneration: 1, telegramDriveOidcPopup: { closed: false, close() { this.closed = true; } },
+        telegramDriveLoginTarget: null, telegramDriveOidcPollGeneration: 1, telegramDriveOidcPopup: { closed: false, close() { this.closed = true; } },pollTelegramDriveOidcLogin(){},
         telegramDrivePendingSaveRunning: false, telegramDrivePendingSaveId: '', telegramDriveNavigationVersion: 0, telegramDriveRenderGeneration: 0,
         telegramDriveMountContext: null, telegramDriveCurrentData: null, telegramDriveStaticLinks: [], telegramDriveSpaceOwner: '',
         appendTelegramDriveAddAccount(target) { loginTarget = target; },
@@ -62,6 +62,15 @@ test('account dialog reuses freshly loaded account metadata instead of waiting b
     f.extraStatus.resolve(status()); await turn(); f.window.AccountUI.close(); await chosen;
     assert.equal(visible, true, 'fresh server account metadata should already be visible while connections are busy');
     assert.equal(reads, 1, 'fresh metadata needs no duplicate account read');
+});
+
+test('manage current account opens the account center for the focused account without switching or deleting a login',async()=>{
+    const f=fixture(),opened=[];f.window.open=(...args)=>opened.push(args);
+    const pending=f.context.manageTelegramDriveAccounts();await turn();
+    const manage=f.body.querySelectorAll('button').find(node=>node.textContent==='管理当前账号');assert.ok(manage);await manage.onclick();
+    assert.equal(opened.length,1);assert.equal(opened[0][0],'/account-center?disk_account=alice');assert.equal(opened[0][2],'noopener');
+    assert.equal(f.window.DiskClient.getAccount(),'alice');assert.equal(f.calls.includes('/accounts/select'),false);
+    f.window.AccountUI.close();await pending;
 });
 
 test('account mutations invalidate earlier account metadata before opening the next dialog', async () => {

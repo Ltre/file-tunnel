@@ -12,7 +12,17 @@ async function update(){
         const tr=document.createElement('tr');
         const cell=value=>{const td=document.createElement('td');td.textContent=String(value);tr.append(td);return td;};
         cell(`${session.model||'未知'}${session.id===data.currentSessionId?'（当前设备）':''}`);
-        cell(session.os||'未知');cell(session.browser||'未知');cell(date(session.lastActivityAt));cell(date(session.expiresAt));
+        cell(session.os||'未知');cell(session.browser||'未知');
+        const activity=cell('');
+        for(const entry of session.ipActivity||[]){
+            const line=document.createElement('div');
+            const at=new Date(entry.lastActivityAt),pad=value=>String(value).padStart(2,'0');
+            line.textContent=entry.address+', '+(entry.lastActivityAt?`${at.getFullYear()}-${pad(at.getMonth()+1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`:'—');
+            if(entry.legacy)line.textContent+=' ('+(window.TunnelI18n?.t('仅记录会话建立时间')||'仅记录会话建立时间')+')';
+            activity.append(line);
+        }
+        if(!activity.childNodes.length)activity.textContent=date(session.lastActivityAt);
+        cell(date(session.expiresAt));
         const localLabel='本机 HTTP 测试会话（未绑定 DBSC）';
         const bound=cell(session.localTest?(window.TunnelI18n?.t(localLabel)||localLabel):session.dbscBound?'已绑定':'未绑定');bound.className=session.dbscBound?'tag':'error';
         const td=document.createElement('td'),button=document.createElement('button');

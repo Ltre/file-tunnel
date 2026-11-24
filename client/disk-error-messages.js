@@ -122,5 +122,14 @@
         return `${text} [${value}]`+(error?.errorDetails?.requestId?` · 请求编号：${error.errorDetails.requestId}`:'')+progress;
     }
     codes.UPLOAD_SOURCE_INTERRUPTED = '上传端已中断或长时间无响应，已停止等待并保留恢复记录；请核对已确认的文件后重新上传';
+    Object.assign(codes,{
+        PASSKEY_REAUTH_REQUIRED:'请先重新验证账号，再管理 Passkey',
+        PASSKEY_REMARK_INVALID:'备注名最多 100 个字符，不能包含控制字符',
+        PASSKEY_LAST_CREDENTIAL:'不能移除最后一个登录凭据',
+        PASSKEY_ORIGIN_INVALID:'当前域名未获准用于跨域 Passkey 验证，请联系管理员检查可信域名配置',
+        PASSKEY_EXISTS:'该 Passkey 已绑定，请选择另一把独立凭据，原有凭据未被替换',
+        PASSKEY_TOO_MANY_REQUESTS:'认证请求过多，请稍后重试',
+        PASSKEY_NOT_FOUND:'Passkey 不存在或已移除'
+    });
     return {describe,format,codes,reasons};
 });

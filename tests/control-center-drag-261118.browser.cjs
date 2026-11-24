@@ -8,13 +8,13 @@ before(async()=>{
  const app=express();app.use('/client',express.static(path.join(root,'client')));
  app.get('/editor',(_q,res)=>res.type('html').send(`<!doctype html><meta charset="utf-8">
  <script defer src="/client/i18n-bootstrap.js"></script><script defer src="/client/i18n.js"></script><body><script>
- const state={deviceId:'owner'},canEditWebZip=()=>true,escapeHtml=String,formatWebZipText=text=>window.TunnelI18n?.t(text)||text;
+ const state={deviceId:'owner'},webZipPublishAllowed=true,canEditWebZip=()=>true,escapeHtml=String,formatWebZipText=text=>window.TunnelI18n?.t(text)||text;
  ${section('function showWebZipEditDialog(','async function publishWebZipUpdate(')}
  </script></body>`));
  app.get('/',(_q,res)=>res.type('html').send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
  ${['index','themes-legacy','themes','themes-blamen','themes-lusns'].map(n=>'<link rel="stylesheet" href="/client/'+n+'.css">').join('')}
  <button id="open">打开</button><button id="magnetCacheBtn" onclick="window.tileActions++">磁链</button><script>
- const state={sessionId:'A'};window.tileActions=0;
+ const state={sessionId:'A'};let webZipPublishAllowed=true;window.tileActions=0;
  const getAllFromStore=async()=>Array.from({length:15},(_,i)=>({sessionId:i?'T'+i:'A',shortCode:'ABCDE',remark:'隔离隧道 '+i}));
  const escapeHtml=v=>String(v).replace(/[&<>"']/g,'_'),normalizeLocalShortCode=v=>v||'',hasActiveTransferTasks=()=>false,historyLog=()=>{},cycleTheme=()=>{},updateProgressDrawerSummary=()=>{};
  ${section('function normalizeControlCenterOrder(','function showTunnelRemarkDialog(')}
@@ -35,6 +35,21 @@ test('a slowly advancing finger does not repeatedly swap back into the slot it h
   for(let dx=10;dx<=target.x-start.x;dx+=10){await send('touchMove',start.x+dx,start.y);await page.waitForTimeout(45);orders.push(await page.locator('[data-control-side="before"]').evaluate(n=>[...n.children].slice(0,2).map(n=>n.dataset.controlTile).join(',')));}
   const folder=path.join(root,'.npm-cache/261119-control-center');fs.mkdirSync(folder,{recursive:true});await page.screenshot({path:path.join(folder,'narrow-drag.png')});
   await send('touchEnd');assert.ok(orders.length>2);assert.ok(orders.every(order=>order==='magnet,refresh'),'forward motion must not undo the previous insertion: '+JSON.stringify(orders));
+ }finally{await page.close();}
+});
+
+test('a hidden workshop tile leaves no grid hole and visible tiles can be sorted through its former slot',async()=>{
+ const page=await browser.newPage({viewport:{width:1360,height:900}});try{
+  await page.goto(base);await page.locator('#open').click();
+  const previous=await page.locator('[data-control-tile="workshop"]').boundingBox();
+  await page.evaluate(()=>{webZipPublishAllowed=false;document.querySelector('[data-control-tile="workshop"]').hidden=true;});
+  await page.waitForTimeout(220);
+  const boxes=await page.locator('[data-control-side="before"] [data-control-tile]:not([hidden])').evaluateAll(nodes=>nodes.map(node=>({id:node.dataset.controlTile,x:node.getBoundingClientRect().left,y:node.getBoundingClientRect().top})));
+  assert.equal(new Set(boxes.slice(0,5).map(box=>box.y)).size,1);assert.equal(new Set(boxes.slice(5,10).map(box=>box.y)).size,1,'second row remains densely packed');
+  assert.equal(await page.locator('[data-control-tile="workshop"]').isVisible(),false);
+  const account=page.locator('[data-control-tile="account"]'),from=center(await account.boundingBox());
+  await page.mouse.move(from.x,from.y);await page.mouse.down();await page.mouse.move(previous.x+previous.width/2,previous.y+previous.height/2,{steps:10});await page.mouse.up();
+  const order=await page.locator('[data-control-side="before"] [data-control-tile]:not([hidden])').evaluateAll(nodes=>nodes.map(node=>node.dataset.controlTile));assert.ok(order.indexOf('account')<boxes.length-1,'hidden tile must not reserve a non-droppable slot');
  }finally{await page.close();}
 });
 

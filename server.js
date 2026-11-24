@@ -375,7 +375,8 @@ const telegramDriveStore = createTelegramDriveStore({
     dataDir: SERVER_DATA_DIR,
     maxFileSize: () => getTelegramDriveUploadLimit()
 });
-const diskAuth = createDiskAuth({ dataDir: SERVER_DATA_DIR });
+const diskAuth = createDiskAuth({ dataDir: SERVER_DATA_DIR,
+    trustedOrigins:()=>process.env.DR2T_PASSKEY_ORIGINS||projectConfig.passkeyOrigins||[] });
 const diskOperations = createDiskOperations({ dataDir: SERVER_DATA_DIR });
 // The drive always targets the official Bot API and implements large logical
 // files itself. Other Telegram features may keep their existing endpoint.
@@ -2392,6 +2393,7 @@ function constantTimeStringEqual(left, right) {
 
 function setTelegramDriveIdentityCookie(req, res, identity) {
     diskAccountSessions.set(req, res, resolveDiskUser(req, identity));
+    diskAuth.rememberAuthentication(identity.id,req.diskSessionCookie,getTelegramPublicOrigin(req));
 }
 
 const diskAccountSessions = createDiskAccountSessions({
@@ -2561,6 +2563,7 @@ app.post('/api/telegram/drive/logout', (req, res) => {
     catch { res.status(503).json({error:'DISK_LOGOUT_FAILED'}); }
 });
 const diskAPI = createDiskAPI({
+    onPermissionsChanged:()=>io.emit('account-permissions-changed'),
     dataDir: SERVER_DATA_DIR, defaultStore: telegramDriveStore, auth: diskAuth,
     operations: diskOperations, telegram: diskTelegram,
     resolveTaskSource: require('./server/download-task-source').createDownloadTaskSource({
@@ -2650,6 +2653,16 @@ app.use('/s3', s3Gateway.content);
 app.use('/api/telegram/drive', diskAPI.browser);
 app.use('/api/telegram/disk/v1', diskAPI.external);
 app.use('/api/telegram/disk-admin', adminAuth.requireAuth, diskAPI.admin);
+app.get('/.well-known/webauthn',(req,res)=>{
+    const origins=diskAuth.passkeyOrigins();
+    const rpID=new URL(getTelegramPublicOrigin(req)).hostname;
+    if(!origins.some(origin=>new URL(origin).hostname===rpID))return res.status(404).json({error:'PASSKEY_ORIGIN_INVALID'});
+    res.set('Cache-Control','no-store').json({origins});
+});
+app.get(['/account-center','/passkey-auth'],(req,res)=>{
+    res.set({'Cache-Control':'no-store','Referrer-Policy':'no-referrer'});
+    res.sendFile(path.join(__dirname,'pages',req.path==='/account-center'?'account-center.html':'passkey-auth.html'));
+});
 app.use('/api/telegram/disk-shares', diskAPI.shared);
 const mediaLibrary = require('./server/media-library').registerMediaLibrary(app, {
     dataDir: SERVER_DATA_DIR, root: __dirname, diskAPI, auth: diskAuth,

@@ -6,7 +6,7 @@ const loginSource = source.slice(source.indexOf('async function finishTelegramDr
 function fixture({ identityFailure = false, switched = false } = {}) {
     const calls = [], target = {}, popup = { closed:false, close() { this.closed=true; calls.push('popup-closed'); } };
     let selected='999000001';
-    const context = { telegramDriveLoginTarget:target, telegramDriveOidcPollGeneration:2, telegramDriveOidcPopup:popup,
+    const context = { clearTimeout,pollTelegramDriveOidcLogin(){},telegramDriveLoginTarget:target, telegramDriveOidcPollGeneration:2, telegramDriveOidcPopup:popup,
         telegramDrivePendingSaveRunning:false, telegramDrivePendingSaveId:'',
         window:{ DiskClient:{ getAccount:() => selected, raw:async () => { if (identityFailure) throw Error('NETWORK_ERROR'); return {identity:{id:'999000002'}}; } },
             AccountUI:{ isOpen:() => true, refresh:() => calls.push('refresh-account-list'), completeSignIn:() => calls.push('close-account-panel') } },
