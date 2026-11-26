@@ -26,7 +26,11 @@
         identity=data.identity;
         if(!accountId){accountId=identity.id;context.accountId=accountId;window.DiskClient.setAccount(accountId);const url=new URL(location.href);url.searchParams.set('disk_account',accountId);history.replaceState(history.state,'',url);}
         document.getElementById('identity').textContent=`${identity.username||identity.name} · ${identity.id} · ${data.passkeys.length} Passkey`;
-        document.getElementById('usernameField').hidden=Boolean(identity.username);
+        const username=document.getElementById('username');
+        document.getElementById('usernameField').hidden=false;
+        username.readOnly=Boolean(identity.username);
+        if(identity.username)username.value=identity.username;
+        else if(!username.value)username.value=identity.telegramId||'';
         add.disabled=false;
         const enabled=new Set((data.origins||[]).map(value=>new URL(value).hostname));
         const atRisk=enabled.size&&data.passkeys.length&&data.passkeys.every(key=>!enabled.has(key.rpID));
@@ -40,6 +44,6 @@
             save.onclick=async()=>{save.disabled=true;try{await authenticated(()=>window.DiskClient.raw('/passkeys/'+encodeURIComponent(key.id),{...context,...window.DiskClient.json('PATCH',{remark:input.value})}));dialog.close();await load();}catch(error){notice.textContent=t('操作失败')+' ['+error.message+']';}finally{save.disabled=false;}};
         }});
     }
-    add.onclick=async()=>{add.disabled=true;try{const username=identity.username||document.getElementById('username').value;await authenticated(()=>window.PasskeyClient.register({username,context,addAccount:false}));await load();status.textContent=t('Passkey 已添加，原有凭据保持有效');}catch(error){status.textContent=t('操作失败')+' ['+error.message+']';}finally{add.disabled=false;}};
+    add.onclick=async()=>{add.disabled=true;try{const username=identity.username||document.getElementById('username').value;await authenticated(()=>window.PasskeyClient.register({username,context,addAccount:false}));await load();status.textContent=t('Passkey 已添加，原有凭据保持有效');}catch(error){status.textContent=error.message==='USERNAME_EXISTS'?t('用户名已被使用，请填写其他用户名'):t('操作失败')+' ['+error.message+']';}finally{add.disabled=false;}};
     load().catch(error=>{status.textContent=t('账号操作未完成，请重试')+' ['+error.message+']';});
 })();

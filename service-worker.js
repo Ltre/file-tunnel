@@ -1,4 +1,4 @@
-const CACHE_NAME = 'instant-tunnel-v157-content-v8-261124-admin-webzip';
+const CACHE_NAME = 'instant-tunnel-v157-content-v8-261125-admin-factors';
 const APP_SHELL = [
     '/',
     '/index.html',

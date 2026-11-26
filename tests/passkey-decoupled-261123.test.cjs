@@ -29,6 +29,17 @@ async function register(auth, key, extra = {}) {
     return auth.passkeyVerify({ flowId: flow.flow_id, binding: 'browser', existingUserId: extra.existingUserId || '', response: key.register(flow, extra.origin || 'https://b.test') });
 }
 
+test('并发添加 Passkey 不能覆盖同一账号刚确定的用户名，也不能占用其他账号用户名',async()=>{
+    const f=fixture(),user={id:'unified-telegram-user',telegramId:'123456789'};f.users.push(user);
+    const options={kind:'register',origin:'https://b.test',binding:'browser',existingUserId:user.id};
+    const first=await f.auth.passkeyOptions({...options,username:'chosen_a'}),second=await f.auth.passkeyOptions({...options,username:'chosen_b'});
+    await f.auth.passkeyVerify({flowId:first.flow_id,binding:'browser',existingUserId:user.id,origin:'https://b.test',response:authenticator('b.test').register(first,'https://b.test')});
+    await assert.rejects(f.auth.passkeyVerify({flowId:second.flow_id,binding:'browser',existingUserId:user.id,origin:'https://b.test',response:authenticator('b.test').register(second,'https://b.test')}),/USERNAME_EXISTS/);
+    assert.equal(user.username,'chosen_a');assert.equal(user.passkeys.length,1);
+    f.users.push({id:'other-user',username:'occupied'});
+    await assert.rejects(f.auth.passkeyOptions({...options,username:'occupied'}),/USERNAME_EXISTS/);
+});
+
 test('通用 Passkey 服务脱离网盘存储运行，保留同账号跨 RP 凭据、真实验签和单次交接', async () => {
     const { auth, users, saves } = fixture(), b = authenticator('b.test'), a = authenticator('a.test');
     const user = await register(auth, b);

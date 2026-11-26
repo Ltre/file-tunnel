@@ -143,6 +143,7 @@ function createPasskeyAuth({ accounts, originSettings, now = Date.now,
                 const credential = result.registrationInfo.credential;
                 if (users().some(item => (item.passkeys || []).some(key => key.id === credential.id))) throw new Error('PASSKEY_EXISTS');
                 if (users().some(item => item.username === flow.name && item.id !== flow.userId)) throw new Error('USERNAME_EXISTS');
+                if (user?.username && user.username !== flow.name) throw new Error('USERNAME_EXISTS');
                 if (!user) { user = { id: flow.userId, createdAt: now(), name: flow.name }; accounts.add(user); }
                 user.username = flow.name;
                 (user.passkeys ||= []).push({ id: credential.id, publicKey: Buffer.from(credential.publicKey).toString('base64'), counter: credential.counter, transports: credential.transports || [], rpID: flow.rpID, createdAt: now(), remark:'', lastUsedAt:0 });

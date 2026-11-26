@@ -59,7 +59,7 @@ function createAdminPasskeys({dataDir,marker,signingKey,now=Date.now,webauthn=()
         let result;
         try{result=await methods.verifyRegistrationResponse({response,expectedChallenge:flow.challenge,expectedOrigin:flow.origin,expectedRPID:flow.rpID,requireUserVerification:true});}
         catch(_){throw Error('ADMIN_PASSKEY_REGISTRATION_FAILED');}
-        if(!result.verified||!result.registrationInfo?.credential||flow.marker!==marker())throw Error('ADMIN_PASSKEY_REGISTRATION_FAILED');
+        if(!result.verified||!result.registrationInfo?.credential||flow.marker!==marker()||flow.expiresAt<=now())throw Error('ADMIN_PASSKEY_REGISTRATION_FAILED');
         if(!isSessionCurrent(sessionId))throw Error('ADMIN_PASSKEY_SESSION_INVALID');
         const credentials=load(),credential=result.registrationInfo.credential;
         if(credentials.some(key=>key.id===credential.id))throw Error('ADMIN_PASSKEY_ALREADY_BOUND');
@@ -85,7 +85,7 @@ function createAdminPasskeys({dataDir,marker,signingKey,now=Date.now,webauthn=()
         try{result=await methods.verifyAuthenticationResponse({response,expectedChallenge:flow.challenge,expectedOrigin:flow.origin,expectedRPID:flow.rpID,
             requireUserVerification:true,credential:{id:key.id,publicKey:new Uint8Array(Buffer.from(key.publicKey,'base64')),counter:key.counter,transports:key.transports}});}
         catch(_){throw Error('ADMIN_PASSKEY_AUTHENTICATION_FAILED');}
-        if(!result.verified||flow.marker!==marker())throw Error('ADMIN_PASSKEY_AUTHENTICATION_FAILED');
+        if(!result.verified||flow.marker!==marker()||flow.expiresAt<=now())throw Error('ADMIN_PASSKEY_AUTHENTICATION_FAILED');
         const credentials=load(),current=credentials.find(value=>value.id===key.id&&value.marker===flow.marker),counter=result.authenticationInfo.newCounter;
         if(!current||(counter!==0||current.counter!==0)&&counter<=current.counter)throw Error('ADMIN_PASSKEY_AUTHENTICATION_FAILED');
         current.counter=counter;current.lastUsedAt=now();save(credentials);return publicCredential(current);

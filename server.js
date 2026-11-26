@@ -1208,6 +1208,7 @@ app.get('/api/admin/auth/status', (req, res) => {
     res.json({
         authenticated,
         bindingStatus: authenticated ? null : adminAuth.bindingStatus(req),
+        factors: adminAuth.factorStatus(req),
         authReason:authenticated?'VALID':adminAuth.diagnose(req),
         configured,
         setupAllowed,
@@ -1240,8 +1241,8 @@ app.post('/api/admin/auth/dbsc/refresh',adminAuthRateLimit,(req,res)=>{
 });
 
 app.post('/api/admin/auth/logout', (req, res) => {
-    adminAuth.logout(req);
     res.setHeader('Set-Cookie', adminAuth.cookieHeader(req, '', 0));
+    adminAuth.logout(req,res);
     res.json({ ok: true });
 });
 
@@ -1253,6 +1254,8 @@ app.delete('/api/admin/security/sessions/:id',adminAuth.requireAuth,(req,res)=>{
     if(!adminAuth.revokeSession(req.params.id))return res.status(404).json({error:'session-not-found'});
     res.setHeader('Cache-Control','no-store');res.json({ok:true});
 });
+
+adminAuth.installPasskeyRoutes(app,{requireAuth:adminAuth.requireAuth,rateLimit:adminAuthRateLimit});
 
 
 app.post('/api/light-transfer/network/:taskId', async (req, res) => {
@@ -9942,7 +9945,7 @@ io.on('connection', (socket) => {
             if (!checkMessageRate()) return ack({ok:false,error:'rate-limited'});
             const credential=webZipSync.issueCredential({sessionId:currentSession,messageId:data.messageId,fileId:data.fileId,deviceId:currentDevice,editCredential:data.editCredential});
             ack({ok:true,credential});
-        } catch (error) { ack({ok:false,error:['WEB_ZIP_SOURCE_UNVERIFIED','WEB_ZIP_EDIT_CREDENTIAL_INVALID'].includes(error.message)?error.message:'WEB_ZIP_EDIT_DENIED'}); }
+        } catch (error) { ack({ok:false,error:['WEB_ZIP_SOURCE_UNVERIFIED','WEB_ZIP_EDIT_CREDENTIAL_INVALID'].includes(error.message)?error.message:'WEB_ZIP_EDIT_DENIED',reason:error.reason||'',requiresApproval:error.requiresApproval===true}); }
     });
 
     socket.on('web-zip-edit-request', (data, ack) => {

@@ -28,8 +28,8 @@ async function fixture(t){
 test('管理员安全中心：独立管理员凭据真实 WebAuthn 绑定、备注及列表，不调用前台账号 API',{timeout:30000},async t=>{
     const {page,store,calls}=await fixture(t),errors=[];page.on('pageerror',error=>errors.push(error.message));
     assert.equal(await page.locator('#sessions').getByText('TOTP + 管理员 Passkey',{exact:true}).count(),1);
-    assert.equal(await page.locator('.admin-passkeys button').count(),1,'仅提供绑定，不擅自增加移除或重命名');
-    assert.match(await page.locator('.admin-passkeys').innerText(),/与前台账号的 Passkey 相互独立/);
+    assert.equal(await page.locator('#adminPasskeyForm button').count(),1,'凭据表单仅提供绑定，不擅自增加移除或重命名');
+    assert.match(await page.locator('[aria-labelledby="adminPasskeyTitle"]').innerText(),/与前台账号的 Passkey 相互独立/);
     await page.locator('#adminPasskeyRemark').fill('s10p 管理员凭据');await page.locator('#bindAdminPasskey').click();await page.getByText('管理员 Passkey 已绑定',{exact:true}).waitFor();
     assert.equal(store.list().length,1);assert.equal(store.list()[0].remark,'s10p 管理员凭据');assert.equal(store.list()[0].rpID,'admin.test');assert.ok(store.list()[0].createdAt);
     await page.locator('#adminPasskeys').getByText('s10p 管理员凭据',{exact:true}).waitFor();assert.equal(await page.locator('#adminPasskeyRemark').inputValue(),'');

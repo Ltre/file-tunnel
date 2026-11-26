@@ -11,7 +11,7 @@ const script=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)]
     .map(match=>match[1]).filter(value=>value.trim()).join('\n');
 const httpsRequired='管理员 DBSC 登录需要证书有效的 HTTPS。请通过 HTTPS 地址重新打开；HTTP localhost 不会触发浏览器原生注册。';
 const bindingFailed='DBSC 绑定未完成，尚未取得管理员权限。请确认浏览器支持并已启用原生 DBSC、设备安全密钥可用，以及 HTTPS 证书有效，再重新验证。';
-const localTestNotice='本机 HTTP 测试模式：TOTP 验证后使用临时测试会话，未进行原生 DBSC 绑定。该会话仅适用于本机回环地址。';
+const localTestNotice='本地直连测试模式：仅验证 TOTP，不要求 DBSC 或管理员 Passkey。';
 
 // This executes the real login-page script with a simulated location, clock and
 // HTTP responses. It verifies UI gating, not native Chrome DBSC registration.
@@ -21,8 +21,8 @@ async function page({protocol='https:',respond,userAgent=''}={}){
         if(!elements.has(id)){
             const classes=new Set(id==='setup'?['hidden']:[]);
             elements.set(id,{value:'',textContent:'',disabled:false,listeners:new Map(),
-                classList:{add:name=>classes.add(name),remove:name=>classes.delete(name),contains:name=>classes.has(name)},
-                addEventListener(name,handler){this.listeners.set(name,handler);},replaceChildren(){}});
+                classList:{add:name=>classes.add(name),remove:name=>classes.delete(name),contains:name=>classes.has(name),toggle:(name,on)=>on?classes.add(name):classes.delete(name)},
+                addEventListener(name,handler){this.listeners.set(name,handler);},setAttribute(){},replaceChildren(){}});
         }
         return elements.get(id);
     };
@@ -168,16 +168,16 @@ test('HTTPS binding timeout states that administrator access was not obtained (s
     assert.deepEqual(ui.navigations,[]);
 });
 
-test('Android notice is advisory: only authenticated status permits navigation, even with a native registration response',async()=>{
+test('a platform user-agent never changes authentication: native success still waits for authenticated status',async()=>{
     const ui=await page({userAgent:'Mozilla/5.0 (Linux; Android 16; SM-X700) Chrome/156.0.8078.47 Mobile Safari/537.36',
         respond:(_url,_options,number)=>({body:number===1?{configured:true,authenticated:false}:
             number===2?{pending:true,dbscRequired:true}:number===3?
                 {authenticated:false,bindingStatus:{state:'awaiting-registration'}}:{authenticated:true}})});
-    assert.equal(ui.element('dbscPlatformHint').classList.contains('hidden'),false);
+    assert.equal(/isAndroidChrome/.test(script),false);
     assert.equal(ui.element('submit').disabled,false,'UA must not prohibit a real future implementation');
     await ui.submit();
     assert.deepEqual(ui.navigations,['/admin?tab=security']);
-    assert.match(ui.requests[3].status,/Android 版 Chrome/);
+    assert.match(ui.requests[3].status,/尚未收到浏览器的原生 DBSC/);
     assert.equal(ui.requests[3].navigations.length,0);
 });
 

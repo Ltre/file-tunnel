@@ -2245,7 +2245,7 @@ function initSocket() {
         window.NotificationCenter?.add({ id:data.requestId, type:'web-zip-edit-request', title:'网页 ZIP 编辑权限申请', body:`设备 ${data.requesterName || data.requesterDeviceId || '未知设备'} 申请编辑“${data.fileName || '网页 ZIP'}”`, data });
     });
     state.socket.on('web-zip-edit-response', data => {
-        if (data.approved) rememberWebZipEditCredential(data.credential,data.sessionId,data.messageId);
+        if (data.approved) {rememberWebZipEditCredential(data.credential,data.sessionId,data.messageId);webZipApprovalRequired.delete(JSON.stringify([data.sessionId,state.deviceId,data.fileId]));}
         window.NotificationCenter?.add({ id:`${data.requestId}:response`, type:'web-zip-edit-response', title:data.approved ? '网页编辑权限已获批准' : '网页编辑权限被拒绝', body:`“${data.fileName || '网页 ZIP'}”的编辑申请${data.approved ? '已通过，可重新打开并转入草稿编辑。' : '未通过。'}`, data });
         if (data.approved) requestSessionHistory('web-zip-edit-approved');
     });
@@ -2253,7 +2253,7 @@ function initSocket() {
         const data=notification?.data||{};
         if(notification?.type==='web-zip-edit-request')window.NotificationCenter?.add({id:data.requestId,type:'web-zip-edit-request',title:'网页 ZIP 编辑权限申请',body:`设备 ${data.requesterName||data.requesterDeviceId||'未知设备'} 申请编辑“${data.fileName||'网页 ZIP'}”`,data});
         if(notification?.type==='web-zip-edit-response'){
-            if (data.approved) rememberWebZipEditCredential(data.credential,data.sessionId,data.messageId);
+            if (data.approved) {rememberWebZipEditCredential(data.credential,data.sessionId,data.messageId);webZipApprovalRequired.delete(JSON.stringify([data.sessionId,state.deviceId,data.fileId]));}
             window.NotificationCenter?.add({id:`${data.requestId}:response`,type:'web-zip-edit-response',title:data.approved?'网页编辑权限已获批准':'网页编辑权限被拒绝',body:`“${data.fileName||'网页 ZIP'}”的编辑申请${data.approved?'已通过，可重新打开并转入草稿编辑。':'未通过。'}`,data});
             if(data.approved)requestSessionHistory('web-zip-edit-approved');
         }
@@ -4241,10 +4241,11 @@ async function loadWebZipAccess(){
     }catch(_){if(!current())return;}
     if(!current())return;
     const previous=webZipPublishAllowed;webZipPublishAllowed=allowed;
-    for(const id of ['webWorkshopBtn','topbarWorkshopBtn']){
+    for(const id of ['webWorkshopBtn']){
         const button=document.getElementById(id);if(button)button.hidden=!webZipPublishAllowed;
     }
     document.querySelectorAll('[data-control-tile="workshop"]').forEach(button=>{button.hidden=!webZipPublishAllowed;});
+    window.WebWorkshop?.syncAccess?.();
     if(previous&&!webZipPublishAllowed){
         document.querySelector('.web-zip-edit-dialog')?.remove();
         window.WebWorkshop?.close();
@@ -5039,6 +5040,8 @@ function canEditWebZip(fileInfo) {
 }
 
 const recentlyPublishedWebZipMessages = new Map();
+const webZipApprovalRequired=new Set();
+const webZipApprovalKey=fileId=>JSON.stringify([state.sessionId,state.deviceId,fileId]);
 
 async function requestWebZipEditPermission(fileInfo) {
     const {socket,sessionId,deviceId,accountId}=await requireWebZipSocketAuth();
@@ -5049,6 +5052,7 @@ async function requestWebZipEditPermission(fileInfo) {
             if (error || !response?.ok) return reject(new Error(formatWebZipText(errors[response?.error]||response?.error||'编辑权限申请发送失败')));
             if(sessionId!==state.sessionId||deviceId!==state.deviceId||socket!==state.socket||accountId!==(window.DiskClient?.getAccount?.()||''))return resolve(response);
             if(response.credential&&response.messageId)rememberWebZipEditCredential(response.credential,sessionId,response.messageId,deviceId);
+            if(response.alreadyApproved)webZipApprovalRequired.delete(webZipApprovalKey(fileInfo.id));
             showAppToast(response.alreadyApproved ? '本设备已经获得编辑权限' : response.delivered ? '编辑权限申请已发送' : '创建设备当前不在线，申请已排队');
             resolve(response);
         });
@@ -5087,12 +5091,16 @@ async function requestWebZipEditCredential(fileInfo, messageId) {
     const response=await new Promise((resolve,reject)=>socket.timeout(10000).emit('web-zip-edit-credential', {
         sessionId,messageId,fileId:fileInfo.id,editCredential
     },(error,result)=>error?reject(Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'))):resolve(result)));
+    if(state.sessionId!==sessionId||state.deviceId!==deviceId||state.socket!==socket||accountId!==(window.DiskClient?.getAccount?.()||''))throw Error(formatWebZipText('账号操作未完成，请重试'));
     if (!response?.ok) {
-        const errors={WEB_ZIP_SOURCE_UNVERIFIED:'原网页关联尚未核验，请保留当前草稿并核对原记录或编辑凭据。',WEB_ZIP_EDIT_CREDENTIAL_INVALID:'网页编辑凭据已失效，请重新向创建者申请编辑权限。',WEB_ZIP_EDIT_DENIED:'网页编辑权限已变化，请重新向创建者申请编辑权限。'};
-        throw Error(formatWebZipText(errors[response?.error]||'网页编辑凭据未能取得，请检查连接后重试'));
+        const errors={WEB_ZIP_SOURCE_UNVERIFIED:'原网页关联尚未核验，请保留当前草稿并核对原记录或编辑凭据。',WEB_ZIP_EDIT_CREDENTIAL_INVALID:'网页编辑凭据与当前来源关联不一致，请重新向创建者申请编辑权限。',WEB_ZIP_EDIT_DENIED:'网页编辑权限已变化，请重新向创建者申请编辑权限。'};
+        if(response?.requiresApproval)webZipApprovalRequired.add(webZipApprovalKey(fileInfo.id));
+        const error=Error(formatWebZipText(errors[response?.error]||'网页编辑凭据未能取得，请检查连接后重试')+(response?.reason?' ['+response.reason+']':''));
+        error.requiresApproval=response?.requiresApproval===true;throw error;
     }
     if (!response.credential || state.sessionId!==sessionId || state.deviceId!==deviceId || state.socket!==socket || accountId!==(window.DiskClient?.getAccount?.()||'')) throw Error(formatWebZipText('网页编辑凭据未能取得，请检查连接后重试'));
     rememberWebZipEditCredential(response.credential,sessionId,messageId,deviceId);
+    webZipApprovalRequired.delete(webZipApprovalKey(fileInfo.id));
     return response.credential;
 }
 
@@ -5146,7 +5154,7 @@ function showWebZipEditDialog(fileInfo, context = {}) {
     fileInfo = { ...fileInfo, recordMessageId: context.messageId || context.sourceMessageId || fileInfo.recordMessageId };
     document.querySelector('.web-zip-edit-dialog')?.remove();
     const owner = fileInfo.creatorDeviceName || (fileInfo.creatorDeviceId ? '设备' + fileInfo.creatorDeviceId.slice(-4) : '未知设备');
-    const isOwner = fileInfo.creatorDeviceId === state.deviceId, allowed = canEditWebZip(fileInfo);
+    const isOwner = fileInfo.creatorDeviceId === state.deviceId, allowed = canEditWebZip(fileInfo)&&!webZipApprovalRequired.has(webZipApprovalKey(fileInfo.id));
     const dialog = document.createElement('div'); dialog.className = 'web-zip-edit-dialog';
     const message = formatWebZipText(isOwner ? '本设备是该网页 ZIP 的创建者。' : allowed ? '该网页由“{0}”创建，本设备已经获得编辑授权。' : '该网页由“{0}”创建，本设备还没有编辑权限。',owner);
     const request = !allowed || fileInfo.webZipPendingSync?.lastError === 'WEB_ZIP_SOURCE_EDIT_DENIED';
@@ -5167,7 +5175,7 @@ function showWebZipEditDialog(fileInfo, context = {}) {
             if (!dialog.isConnected) return;
             const draft = await window.WebWorkshop.importPackage(fileInfo, blob, { ...context, revealEditor: true }, action === 'edit' ? 'update' : 'copy');
             if (draft) close();
-        } catch (error) { (window.TunnelI18n?.alert || alert)(`网页 ZIP 导入失败：${error.message}`); }
+        } catch (error) { if(error.requiresApproval&&dialog.isConnected){close();showWebZipEditDialog(fileInfo,context);}(window.TunnelI18n?.alert || alert)(`网页 ZIP 导入失败：${error.message}`); }
         finally { button.disabled = false; button.textContent = text; }
     });
 }
@@ -19082,7 +19090,7 @@ function initThemeSwitcher() {
         openMusicPlayerOverlay({ resetQueue: true });
     });
     document.getElementById('topbarWorkshopBtn')?.addEventListener('click', () => {
-        window.WebWorkshop?.restore();
+        window.WebWorkshop?.open();
     });
 }
 

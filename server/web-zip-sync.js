@@ -10,7 +10,7 @@ const canEdit=(file,deviceId)=>file?.creatorDeviceId===deviceId||Array.isArray(f
 const revision=file=>Number(file?.webZipRevision)||0;
 const equivalent=(a,b)=>a&&b&&a.creatorDeviceId===b.creatorDeviceId&&a.name===b.name&&a.type===b.type&&a.size===b.size&&revision(a)===revision(b)&&(!a.webZipDraftId||!b.webZipDraftId||a.webZipDraftId===b.webZipDraftId);
 const version=file=>({id:file.id,revision:revision(file)});
-const failure=code=>{throw Error(code);};
+const failure=(code,reason='',requiresApproval=false)=>{throw Object.assign(Error(code),{reason,requiresApproval});};
 function replaceFile(message,id,file){const next=clone(message);if(next.type==='file')next.fileInfo=file;else next.collection.files=next.collection.files.map(value=>value.id===id?file:value);return next;}
 function createWebZipSync({filename,readRecord,listRecords=()=>[],writeRecord,canPublish,hasContent,canSync,credentials,resign,isForwardedCopy=()=>false,log=()=>{}}){
     let unavailable=false,saving=Promise.resolve(),scheduled=false,changed=false;
@@ -95,11 +95,13 @@ function createWebZipSync({filename,readRecord,listRecords=()=>[],writeRecord,ca
         permissionAt:file.webZipPermissionUpdatedAt,sourcePermissionAt:origin?.file?.webZipPermissionUpdatedAt});
     function issueCredential({sessionId,messageId,fileId,deviceId,editCredential}){
         const message=readRecord(sessionId,messageId),file=files(message).find(value=>value.id===fileId);
-        if(!webpage(file)||!canEdit(file,deviceId)||!canPublish(sessionId,deviceId))failure('WEB_ZIP_EDIT_DENIED');
+        if(!webpage(file))failure('WEB_ZIP_EDIT_DENIED','RECORD_NOT_FOUND');
+        if(!canPublish(sessionId,deviceId))failure('WEB_ZIP_EDIT_DENIED','TUNNEL_PERMISSION_DENIED');
+        if(!canEdit(file,deviceId))failure('WEB_ZIP_EDIT_DENIED','NOT_IN_EDITOR_LIST',true);
         const origin=sourceOf(sessionId,message,file,editCredential,deviceId);
         if(lostSource(sessionId,message,file,origin))failure('WEB_ZIP_SOURCE_UNVERIFIED');
-        if(!origin&&editCredential&&message?.forwardedFrom?.sessionId!==sessionId&&file.webZipRootId&&!credentials?.verify(editCredential,scopeOf(sessionId,messageId,file,deviceId,null)))failure('WEB_ZIP_EDIT_CREDENTIAL_INVALID');
-        if(origin?.file&&!canEdit(origin.file,deviceId)&&Number(origin.file.webZipPermissionUpdatedAt||0)>Number(file.webZipPermissionUpdatedAt||0))failure('WEB_ZIP_EDIT_DENIED');
+        if(!origin&&editCredential&&message?.forwardedFrom?.sessionId&&message.forwardedFrom.sessionId!==sessionId&&file.webZipRootId&&!credentials?.verify(editCredential,scopeOf(sessionId,messageId,file,deviceId,null)))failure('WEB_ZIP_EDIT_CREDENTIAL_INVALID','SOURCE_PROOF_SCOPE_MISMATCH',true);
+        if(origin?.file&&!canEdit(origin.file,deviceId)&&Number(origin.file.webZipPermissionUpdatedAt||0)>Number(file.webZipPermissionUpdatedAt||0))failure('WEB_ZIP_EDIT_DENIED','SOURCE_EDITOR_PERMISSION_CHANGED',true);
         return credentials?.issue(scopeOf(sessionId,messageId,file,deviceId,origin))||'';
     }
     async function mark(job,error){

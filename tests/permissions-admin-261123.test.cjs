@@ -37,7 +37,7 @@ test('网页功能权限刷新绑定焦点账号，迟到响应不能覆盖新�
     account='bob';const changed=vm.runInContext('refreshWebZipAccess()',context);requests[1].resolve({ok:true,json:async()=>({allowed:false})});await changed;
     requests[0].resolve({ok:true,json:async()=>({allowed:true})});await original;assert.equal(vm.runInContext('webZipPublishAllowed',context),false);assert.equal(tiles[0].hidden,true);
     account='alice';const allowed=vm.runInContext('refreshWebZipAccess()',context);requests[2].resolve({ok:true,json:async()=>({allowed:true})});await allowed;
-    assert.equal(tiles[0].hidden,false);assert.equal(buttons.webWorkshopBtn.hidden,false);assert.equal(buttons.topbarWorkshopBtn.hidden,false);
+    assert.equal(tiles[0].hidden,false);assert.equal(buttons.webWorkshopBtn.hidden,false);assert.equal(buttons.topbarWorkshopBtn.hidden,true,'权限刷新本身不能把关闭的网页工坊显示为已最小化');
 });
 
 test('网页 ZIP 异步摘要期间切换账号，不借用新账号的 Socket 证明签章',async()=>{

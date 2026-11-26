@@ -5,9 +5,11 @@
 const crypto=require('node:crypto');
 const fs=require('node:fs');
 const path=require('node:path');
+const {requestOrigin,localTestAllowed,host:requestHost}=require('./admin-request-context');
 
 const COOKIE_NAME='__Host-tunnel_admin_session';
 const PENDING_COOKIE='__Host-tunnel_admin_dbsc_pending';
+const LOCAL_COOKIE='tunnel_admin_local_test';
 // Chrome proactively refreshes DBSC credentials within two minutes of expiry.
 // A two-minute cookie would therefore trigger refresh on almost every request.
 const COOKIE_SECONDS=300;
@@ -79,27 +81,13 @@ function deviceInfo(agent){
 }
 
 function endpointAudience(req,route){
-    const host=String(req.get?.('host')||req.headers?.host||'');
-    if(!/^[\w.:[\]-]+$/.test(host))return '';
-    const local=/^(?:localhost|127\.0\.0\.1|\[::1\])(?::|$)/i.test(host);
-    const scheme=local&&req.protocol==='http'?'http':'https';
-    return `${scheme}://${host}${route}`;
+    return requestOrigin(req)+route;
 }
 
 // This is a local development exception, never proof of a DBSC-bound device.
 // Do not trust Host, req.ip, or forwarded headers as evidence of a local peer.
 function localHttpTestAllowed(req){
-    if(req.protocol!=='http')return false;
-    const remote=String(req.socket?.remoteAddress||'').replace(/^::ffff:/i,'');
-    if(remote!=='127.0.0.1'&&remote!=='::1')return false;
-    const header=name=>req.get?.(name)||req.headers?.[name]||'';
-    if(!/^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d{1,5})?$/i.test(header('host')))return false;
-    if(Object.keys(req.headers||{}).some(name=>{
-        const lower=name.toLowerCase();
-        return lower==='forwarded'||lower.startsWith('x-forwarded-')||lower==='x-real-ip'||lower==='cf-connecting-ip';
-    }))return false;
-    const origin=header('origin');
-    return !origin||origin===endpointAudience(req,'');
+    return localTestAllowed(req);
 }
 
 function createAdminDbscSessions({dataDir,signingKey,marker}){
@@ -130,7 +118,8 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
     }
     function verify(req,touch=false){
         try{
-            const token=cookieValue(req,COOKIE_NAME),parts=token.split('.');
+            const localToken=localHttpTestAllowed(req)&&cookieValue(req,LOCAL_COOKIE);
+            const token=localToken||cookieValue(req,COOKIE_NAME),parts=token.split('.');
             if(parts.length!==2||parts.some(part=>!/^[\w-]+$/.test(part)))return null;
             const expected=crypto.createHmac('sha256',signingKey()).update('admin-dbsc-cookie\0'+parts[0]).digest('base64url');
             if(parts[1].length!==expected.length||!crypto.timingSafeEqual(Buffer.from(parts[1]),Buffer.from(expected)))return null;
@@ -141,7 +130,7 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
             if(value.exp>Date.now()+(session.localTest?LOCAL_TEST_SECONDS:COOKIE_SECONDS)*1000+1000)return null;
             if(session.localTest){
                 if(!localHttpTestAllowed(req)||session.origin!==endpointAudience(req,''))return null;
-            }else if(!session.boundAt)return null;
+            }else if(localToken||!session.boundAt)return null;
             if(touch){
                 const address=String(session.localTest?req.socket?.remoteAddress:req.ip||'');
                 const entry=session.ipActivity?.find(item=>item.address===address);
@@ -153,18 +142,21 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
     function begin(req,res){
         if(localHttpTestAllowed(req)){
             const now=Date.now(),session={id:random(),accountId:'administrator',marker:marker(),
-                localTest:true,origin:endpointAudience(req,''),boundAt:0,createdAt:now,lastActivityAt:now,lastRefreshAt:0,
+                localTest:true,localNetworkTest:!['localhost','127.0.0.1','::1'].includes(requestHost(req)?.hostname),origin:endpointAudience(req,''),boundAt:0,createdAt:now,lastActivityAt:now,lastRefreshAt:0,
                 expiresAt:now+LOCAL_TEST_SECONDS*1000,revokedAt:0,...deviceInfo(req.get?.('user-agent')||''),address:String(req.socket.remoteAddress)};
             activity(session,session.address,now);
             const sessions=load();sessions.push(session);save(sessions);
-            res.setHeader('Set-Cookie',[cookie(PENDING_COOKIE,'',0),cookie(COOKIE_NAME,grant(session),LOCAL_TEST_SECONDS)]);
+            const testCookie=session.localNetworkTest&&req.protocol==='http'
+                ? `${LOCAL_COOKIE}=${encodeURIComponent(grant(session))}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${LOCAL_TEST_SECONDS}`
+                : cookie(COOKIE_NAME,grant(session),LOCAL_TEST_SECONDS);
+            res.setHeader('Set-Cookie',[cookie(PENDING_COOKIE,'',0),testCookie]);
             res.setHeader('Cache-Control','no-store');
             return {authenticated:true,localTest:true,dbscRequired:false,expiresAt:session.expiresAt};
         }
         const now=Date.now();for(const [id,item] of pending)if(item.expiresAt<=now)pending.delete(id);
         if(pending.size>=500)throw Error('ADMIN_DBSC_PENDING_BUSY');
         const id=random(),challenge=random();
-        pending.set(id,{challenge,expiresAt:now+PENDING_MS,agent:String(req.get?.('user-agent')||req.headers['user-agent']||''),address:String(req.ip||'')});
+        pending.set(id,{challenge,marker:marker(),expiresAt:now+PENDING_MS,agent:String(req.get?.('user-agent')||req.headers['user-agent']||''),address:String(req.ip||'')});
         res.setHeader('Set-Cookie',[cookie(PENDING_COOKIE,id,Math.ceil(PENDING_MS/1000)),cookie(COOKIE_NAME,'',0)]);
         res.setHeader('Secure-Session-Registration',`(ES256 RS256);path="/api/admin/auth/dbsc/register";challenge="${challenge}"`);
         res.setHeader('Cache-Control','no-store');
@@ -185,14 +177,14 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
         // JWTs, public keys, another pending browser's data, or an auth grant.
         const item=pending.get(cookieValue(req,PENDING_COOKIE));
         if(!item)return null;
-        return {state:item.expiresAt<=Date.now()?'expired':
+        return {state:item.expiresAt<=Date.now()||item.marker!==marker()?'expired':
             item.proofRejected?'registration-rejected':'awaiting-registration',expiresAt:item.expiresAt};
     }
     function register(req,res){
         const id=cookieValue(req,PENDING_COOKIE),item=pending.get(id);
         // Registration is a native browser request; no JS-provided public key
         // or device fingerprint is accepted in place of its signed DBSC JWT.
-        if(!item||item.expiresAt<=Date.now())return null;
+        if(!item||item.expiresAt<=Date.now()||item.marker!==marker())return null;
         const proof=verifyProof(parseStructuredString(req.get('Secure-Session-Response')),null,item.challenge,true,
             {audience:endpointAudience(req,'/api/admin/auth/dbsc/register')});
         if(!proof){item.proofRejected=true;return null;}
@@ -233,4 +225,4 @@ function createAdminDbscSessions({dataDir,signingKey,marker}){
     return {COOKIE_NAME,PENDING_COOKIE,COOKIE_SECONDS,begin,register,refresh,verify,list,revoke,revokeRequest,localHttpTestAllowed,bindingStatus,
         cookieHeader:(_req,value,seconds=COOKIE_SECONDS)=>cookie(COOKIE_NAME,value,seconds),_test:{verifyProof,sign,grant,load}};
 }
-module.exports={createAdminDbscSessions,verifyProof};
+module.exports={createAdminDbscSessions,verifyProof,deviceInfo};

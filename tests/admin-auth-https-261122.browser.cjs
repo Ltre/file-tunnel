@@ -46,7 +46,7 @@ test('real Chrome signs in after valid TOTP with an explicitly unbound and local
     browser=await chromium.launch({channel:'chrome',headless:true});const page=await browser.newPage({locale:'zh-CN'});
     const base='http://localhost:'+server.address().port;
     await page.goto(base+'/admin-auth');await page.waitForFunction(()=>!document.getElementById('token').disabled);
-    assert.match(await page.locator('#description').innerText(),/未进行原生 DBSC/);
+    assert.match(await page.locator('#description').innerText(),/不要求 DBSC 或管理员 Passkey/);
     await page.locator('#token').fill('invalid');
     // An empty/invalid code is also checked by the actual server route.
     const bad=await page.request.post(base+'/api/admin/auth/login',{data:{token:'invalid'}});assert.equal(bad.status(),401);assert.equal(auth.sessions().length,0);
@@ -63,7 +63,7 @@ test('real Chrome signs in after valid TOTP with an explicitly unbound and local
     assert.equal((await page.request.get(base+'/api/admin/security/sessions')).status(),401);
 });
 
-test('real Chrome UI with Android UA shows the platform notice and a rejected proof separately (not native Android DBSC)',{timeout:20000},async t=>{
+test('real Chrome with a different UA: a rejected DBSC proof never downgrades authentication',{timeout:20000},async t=>{
     const root=path.resolve(__dirname,'..'),browser=await chromium.launch({channel:'chrome',headless:true});
     t.after(()=>browser.close());
     const context=await browser.newContext({locale:'zh-CN',userAgent:'Mozilla/5.0 (Linux; Android 16; SM-X700) AppleWebKit/537.36 Chrome/156.0.8078.47 Mobile Safari/537.36'});
@@ -83,7 +83,7 @@ test('real Chrome UI with Android UA shows the platform notice and a rejected pr
         return route.fulfill({status:404,body:''});
     });
     const page=await context.newPage();await page.goto('https://admin.test/admin-auth');
-    await page.locator('#dbscPlatformHint').waitFor({state:'visible'});assert.match(await page.locator('#dbscPlatformHint').innerText(),/Android/);
+    assert.equal(await page.locator('#dbscPlatformHint').count(),0,'平台 UA 不决定认证方式');
     assert.equal(await page.locator('#token').isDisabled(),false);
     await page.locator('#token').fill('123456');await page.locator('#form button').click();
     await page.getByText(/ADMIN_DBSC_PROOF_REJECTED/).waitFor();

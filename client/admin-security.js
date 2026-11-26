@@ -23,10 +23,12 @@ async function update(){
             activity.append(line);
         }
         if(!activity.childNodes.length)activity.textContent=date(session.lastActivityAt);
-        cell(date(session.expiresAt));
+        const expiry=cell('');
+        if(session.independentAuth){for(const [label,at]of [['TOTP',session.totpExpiresAt],['Passkey',session.passkeyExpiresAt]]){const line=document.createElement('div');line.textContent=label+': '+date(at);if(at<=Date.now())line.className='error';expiry.append(line);}}
+        else expiry.textContent=date(session.expiresAt);
         const localLabel='本机 HTTP 测试会话（未绑定 DBSC）';
         const independent=session.independentAuth===true||session.authMethod==='totp-passkey';
-        const bound=cell(session.localTest?translate(localLabel):session.dbscBound?'DBSC · '+translate('已绑定'):independent?translate('TOTP + 管理员 Passkey'):translate('未绑定'));bound.className=session.dbscBound||independent?'tag':'error';
+        const bound=cell(session.localTest?translate(session.localNetworkTest?'局域网直连测试会话（仅 TOTP）':localLabel):session.dbscBound?'DBSC · '+translate('已绑定'):independent?translate('TOTP + 管理员 Passkey'):translate('未绑定'));bound.className=session.dbscBound||independent?'tag':'error';
         const td=document.createElement('td'),button=document.createElement('button');
         button.textContent=session.revokedAt?'已撤销':'踢除此会话';button.disabled=Boolean(session.revokedAt);
         button.addEventListener('click',async()=>{
@@ -79,4 +81,16 @@ update().catch(error=>{status.textContent=error.message;});
         finally{binding=false;bind.disabled=!available();remark.disabled=false;}
     });
     load().catch(error=>{notice.textContent=translate('无法读取管理员 Passkey，请刷新后重试')+' ['+error.message+']';});
+})();
+
+(()=>{
+    const form=document.getElementById('adminPolicyForm');if(!form)return;
+    const totp=document.getElementById('totpMonths'),passkey=document.getElementById('passkeyDays'),button=document.getElementById('saveAdminPolicy'),notice=document.getElementById('adminPolicyStatus');let revision;
+    async function load(){const response=await fetch('/api/admin/security/auth-policy',{cache:'no-store'});if(!response.ok)throw Error('HTTP '+response.status);const value=await response.json();totp.value=value.totpMonths;passkey.value=value.passkeyDays;revision=value.revision;button.disabled=false;}
+    form.onsubmit=async event=>{event.preventDefault();button.disabled=true;
+        try{const response=await fetch('/api/admin/security/auth-policy',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({totpMonths:Number(totp.value),passkeyDays:Number(passkey.value),revision})});const value=await response.json();if(!response.ok)throw Error(value.error||'HTTP '+response.status);revision=value.revision;notice.textContent=translate('管理员验证有效期已保存');await update();}
+        catch(error){notice.textContent=translate('保存失败，请确认 TOTP 有效期大于 Passkey 有效期，并刷新后重试')+' ['+error.message+']';}
+        finally{button.disabled=false;}
+    };
+    load().catch(error=>{notice.textContent=translate('无法读取管理员验证有效期，请刷新后重试')+' ['+error.message+']';});
 })();

@@ -149,9 +149,10 @@ function createAdminAuth(options) {
         return Boolean(marker && verifyTotp(marker.secret, token));
     }
     const dbsc=createAdminDbscSessions({dataDir,signingKey,marker:()=>readMarker()?.createdAt||''});
+    const factors=require('./admin-factor-auth').createAdminFactorAuth({dataDir,signingKey,marker:()=>readMarker()?.createdAt||'',dbsc});
 
     function isAuthenticated(req) {
-        return Boolean(dbsc.verify(req,true));
+        return Boolean(dbsc.verify(req,true)||factors.verify(req,true));
     }
 
     function requireAuth(req, res, next) {
@@ -170,15 +171,17 @@ function createAdminAuth(options) {
         getSetup,
         finishSetup,
         verifyToken,
-        beginBinding:dbsc.begin,
+        beginBinding:factors.begin,
+        factorStatus:factors.status,
+        installPasskeyRoutes:factors.installRoutes,
         bindingStatus:dbsc.bindingStatus,
         localHttpTestAllowed:dbsc.localHttpTestAllowed,
-        registerDbsc:dbsc.register,
+        registerDbsc:factors.registerNative,
         refreshDbsc:dbsc.refresh,
-        sessions:dbsc.list,
-        getSession:dbsc.verify,
-        revokeSession:dbsc.revoke,
-        logout:dbsc.revokeRequest,
+        sessions:()=>[...dbsc.list(),...factors.list()],
+        getSession:(req,touch=false)=>dbsc.verify(req,touch)||factors.verify(req,touch),
+        revokeSession:id=>dbsc.revoke(id)||factors.revoke(id),
+        logout:(req,res)=>{dbsc.revokeRequest(req);if(res)factors.logout(req,res);},
         cookieHeader:dbsc.cookieHeader,
         requireAuth
     };
